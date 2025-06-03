@@ -5,17 +5,20 @@ mod transaction;
 
 use std::io::{self, Write};
 
+use log::{debug, info, warn};
 use crate::storage::pager::Pager;
 use crate::storage::btree::BTree;
 use crate::sql::parser::parse_statement;
 use crate::sql::ast::Statement;
 
 fn main() -> io::Result<()> {
-    println!("Welcome to AeroDB v0.3 (B-Tree extended). Type .exit to quit.\n");
+    // Initialize env_logger (reads RUST_LOG, etc.)
+    env_logger::init();
 
-    // Open (or create) the file "aerodb.db"
-    let pager = Pager::new("db.aerodb")?;
-    // Create a B-Tree on top of that pager
+    info!("Starting AeroDB v0.3.1 (with structured logging). Type .exit to quit.");
+
+    // Open (or create) the database file
+    let pager = Pager::new("data.aerodb")?;
     let mut btree = BTree::new(pager)?;
 
     loop {
@@ -24,7 +27,7 @@ fn main() -> io::Result<()> {
 
         let mut input = String::new();
         if io::stdin().read_line(&mut input)? == 0 {
-            // EOF
+            // EOF (Ctrl+D)
             break;
         }
         let trimmed = input.trim();
@@ -35,27 +38,38 @@ fn main() -> io::Result<()> {
             break;
         }
 
+        // Pass a &str to parse_statement()
         match parse_statement(trimmed) {
             Ok(stmt) => match stmt {
                 Statement::Insert { key, payload } => {
+                    debug!("Insert called with key={} payload=\"{}\"", key, payload);
                     match btree.insert(key, &payload) {
-                        Ok(()) => println!("Inserted key={} payload=\"{}\"", key, payload),
-                        Err(e) => println!("Error inserting: {}", e),
+                        Ok(()) => {
+                            info!("Inserted key={} payload=\"{}\"", key, payload);
+                        }
+                        Err(e) => warn!("Error inserting key={} : {}", key, e),
                     }
                 }
-                Statement::Select { key } => match btree.find(key) {
-                    Ok(Some(row)) => println!("Found ▶ key={} payload=\"{}\"", row.key, row.payload),
-                    Ok(None) => println!("Not found key={}", key),
-                    Err(e) => println!("Error selecting: {}", e),
-                },
+                Statement::Select { key } => {
+                    debug!("Select called with key={}", key);
+                    match btree.find(key) {
+                        Ok(Some(row)) => {
+                            info!("Found ▶ key={} payload=\"{}\"", row.key, row.payload);
+                        }
+                        Ok(None) => {
+                            info!("Not found: key={}", key);
+                        }
+                        Err(e) => warn!("Error selecting key={} : {}", key, e),
+                    }
+                }
                 Statement::Exit => break,
             },
-            Err(e) => println!("Parse error: {}", e),
+            Err(e) => warn!("Parse error: {}", e),
         }
     }
 
-    // (Optional) Flush any cached pages on exit
+    // Flush everything on exit
     btree.flush_all()?;
-    println!("Goodbye!");
+    info!("Goodbye!");
     Ok(())
 }
