@@ -19,7 +19,6 @@ fn main() -> io::Result<()> {
     env_logger::init();
     info!("AeroDB v0.4 (extended SQL support + catalog). Type .exit to quit.");
 
-    // 1. Open a single Pager for "aerodb.db"
     let mut catalog = Catalog::open(Pager::new(DATABASE_FILE)?)?;
 
     loop {
@@ -71,15 +70,9 @@ fn main() -> io::Result<()> {
                                 buf.extend(&(vb.len() as u32).to_le_bytes());
                                 buf.extend(vb);
                             }
-                            let payload = String::from_utf8_lossy(&buf).to_string();
-
-                            // Now borrow `catalog.pager` mutably to open the table’s B-Tree
                             {
-                                let mut table_btree = BTree::open_root(
-                                    &mut catalog.pager,
-                                    root_page,
-                                )?;
-                                if let Err(e) = table_btree.insert(key, &payload) {
+                                let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
+                                if let Err(e) = table_btree.insert(key, &buf) {
                                     warn!("Error inserting into {}: {}", table_name, e);
                                 } else {
                                     info!("Row inserted into '{}'", table_name);
@@ -111,22 +104,15 @@ fn main() -> io::Result<()> {
                                 println!("-- Contents of table '{}':", table_name);
                                 while let Some(row) = cursor.next() {
                                     // Deserialize row.payload into Vec<String>
-                                    let bytes = row.payload.as_bytes();
+                                    let bytes = &row.payload[..]; // &[u8]
                                     let mut offset = 0;
-                                    let num_cols = u16::from_le_bytes(
-                                        bytes[offset..offset + 2].try_into().unwrap(),
-                                    ) as usize;
+                                    let num_cols = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
                                     offset += 2;
                                     let mut vals = Vec::with_capacity(num_cols);
                                     for _ in 0..num_cols {
-                                        let len = u32::from_le_bytes(
-                                            bytes[offset..offset + 4].try_into().unwrap(),
-                                        ) as usize;
+                                        let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
                                         offset += 4;
-                                        let v = String::from_utf8_lossy(
-                                            &bytes[offset..offset + len],
-                                        )
-                                            .to_string();
+                                        let v = String::from_utf8_lossy(&bytes[offset..offset + len]).to_string();
                                         offset += len;
                                         vals.push(v);
                                     }

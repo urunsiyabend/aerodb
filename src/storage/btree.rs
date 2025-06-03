@@ -7,7 +7,7 @@ use crate::storage::page::{get_cell_count, get_node_type, set_cell_count, set_no
 #[derive(Debug, Clone)]
 pub struct Row {
     pub key: i32,
-    pub payload: String,
+    pub payload: Vec<u8>, // store raw bytes, not a UTF-8 string
 }
 
 // ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -169,7 +169,7 @@ impl<'a> BTree<'a> {
     }
 
     /// Public insert: adds (key, payload) into the tree.
-    pub fn insert(&mut self, key: i32, payload: &str) -> io::Result<()> {
+    pub fn insert(&mut self, key: i32, payload: &[u8]) -> io::Result<()> {
         debug!(
             "============================================\n\
              insert() → starting at root {} for key={}",
@@ -184,7 +184,7 @@ impl<'a> BTree<'a> {
     }
 
     /// Recursive helper to insert into page `page_num`. May split leaf or internal pages.
-    fn insert_into_page(&mut self, page_num: u32, key: i32, payload: &str) -> io::Result<()> {
+    fn insert_into_page(&mut self, page_num: u32, key: i32, payload: &[u8]) -> io::Result<()> {
         let page = self.pager.get_page(page_num)?;
         let node_type = get_node_type(&page.data);
 
@@ -203,7 +203,7 @@ impl<'a> BTree<'a> {
             }
 
             // Insert new row and sort
-            rows.push(Row { key, payload: payload.to_string() });
+            rows.push(Row { key, payload: payload.to_vec() });
             rows.sort_by_key(|r| r.key);
 
             // Try writing back to leaf
@@ -604,12 +604,15 @@ impl<'a> BTree<'a> {
         let mut offset = HEADER_SIZE;
 
         for _ in 0..cell_count {
+            // 4B key
             let key_bytes = &page.data[offset..offset + 4];
             let key = i32::from_le_bytes(key_bytes.try_into().unwrap());
 
+            // 4B payload length
             let len_bytes = &page.data[offset + 4..offset + 8];
             let payload_len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
 
+            // payload bytes
             let start = offset + 8;
             let end = start + payload_len;
             if end > PAGE_SIZE {
@@ -619,7 +622,8 @@ impl<'a> BTree<'a> {
                 ));
             }
             let payload_bytes = &page.data[start..end];
-            let payload = String::from_utf8_lossy(payload_bytes).to_string();
+            // Copy into a Vec<u8>
+            let payload = payload_bytes.to_vec();
 
             rows.push(Row { key, payload });
             offset = end;
@@ -631,12 +635,14 @@ impl<'a> BTree<'a> {
     fn write_all_rows_to_leaf(&mut self, page_num: u32, rows: &[Row]) -> io::Result<()> {
         let page = self.pager.get_page(page_num)?;
 
+        // Compute total size of all (key + length + payload_bytes)
         let mut total_size = 0;
         for row in rows {
-            total_size += 4;                // key
-            total_size += 4;                // payload_len
-            total_size += row.payload.len(); // payload bytes
+            total_size += 4;                // 4 bytes for key
+            total_size += 4;                // 4 bytes for payload_len
+            total_size += row.payload.len(); // payload_bytes.len()
         }
+
         if HEADER_SIZE + total_size > PAGE_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -644,25 +650,32 @@ impl<'a> BTree<'a> {
             ));
         }
 
-        // Zero out body for safety
+        // Zero out page body
         for idx in HEADER_SIZE..PAGE_SIZE {
             page.data[idx] = 0;
         }
 
+        // Write each [ key (4B) | payload_len (4B) | payload_bytes ]
         let mut offset = HEADER_SIZE;
         for row in rows {
+            // 4B key (little‐endian)
             let key_bytes = row.key.to_le_bytes();
             page.data[offset..offset + 4].copy_from_slice(&key_bytes);
+
+            // 4B payload length
             let payload_len = row.payload.len() as u32;
             let len_bytes = payload_len.to_le_bytes();
             page.data[offset + 4..offset + 8].copy_from_slice(&len_bytes);
-            let payload_bytes = row.payload.as_bytes();
+
+            // payload bytes themselves
             let start = offset + 8;
-            let end = start + payload_bytes.len();
-            page.data[start..end].copy_from_slice(payload_bytes);
+            let end = start + row.payload.len();
+            page.data[start..end].copy_from_slice(&row.payload);
+
             offset = end;
         }
 
+        // Update cell count
         set_cell_count(&mut page.data, rows.len() as u16);
         self.pager.flush_page(page_num)?;
         Ok(())
@@ -824,7 +837,7 @@ impl<'a> Iterator for RowCursor<'a> {
                     return None;
                 }
                 let payload_bytes = &page.data[start..end];
-                let payload = String::from_utf8_lossy(payload_bytes).to_string();
+                let payload = payload_bytes.to_vec(); // Vec<u8>
                 let row = Row { key, payload };
 
                 // Advance cursor
