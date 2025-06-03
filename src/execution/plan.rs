@@ -2,15 +2,29 @@ use crate::sql::ast::Statement;
 
 #[derive(Debug)]
 pub enum PlanNode {
-    Insert { key: i32, payload: String },
-    Select { key: i32 },
+    CreateTable {
+        table_name: String,
+        columns: Vec<String>,
+    },
+    Insert {
+        table_name: String,
+        values: Vec<String>,
+    },
+    Select {
+        table_name: String,
+    },
     Exit,
 }
 
 pub fn plan_statement(stmt: Statement) -> PlanNode {
     match stmt {
-        Statement::Insert { key, payload } => PlanNode::Insert { key, payload },
-        Statement::Select { key } => PlanNode::Select { key },
+        Statement::CreateTable { table_name, columns } => {
+            PlanNode::CreateTable { table_name, columns }
+        }
+        Statement::Insert { table_name, values } => {
+            PlanNode::Insert { table_name, values }
+        }
+        Statement::Select { table_name } => PlanNode::Select { table_name },
         Statement::Exit => PlanNode::Exit,
     }
 }

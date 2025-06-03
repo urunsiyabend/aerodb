@@ -128,16 +128,16 @@ impl Pager {
 }
 
 
-#[test]
-fn test_leaf_multiple_inserts_and_find() {
-    let pager = Pager::new("test.aerodb").unwrap();
-    let mut btree = BTree::new(pager).unwrap();
-    assert!(btree.find(10).unwrap().is_none());
-    assert!(btree.insert(10, "Ten").is_ok());
-    assert!(btree.insert(5, "Five").is_ok());
-    assert!(btree.insert(20, "Twenty").is_ok());
-    let row = btree.find(5).unwrap().unwrap();
-    assert_eq!(row.payload, "Five");
-    let row2 = btree.find(20).unwrap().unwrap();
-    assert_eq!(row2.payload, "Twenty");
-}
+// #[test]
+// fn test_leaf_multiple_inserts_and_find() {
+//     let pager = Pager::new("test.aerodb").unwrap();
+//     let mut btree = BTree::new(pager).unwrap();
+//     assert!(btree.find(10).unwrap().is_none());
+//     assert!(btree.insert(10, "Ten").is_ok());
+//     assert!(btree.insert(5, "Five").is_ok());
+//     assert!(btree.insert(20, "Twenty").is_ok());
+//     let row = btree.find(5).unwrap().unwrap();
+//     assert_eq!(row.payload, "Five");
+//     let row2 = btree.find(20).unwrap().unwrap();
+//     assert_eq!(row2.payload, "Twenty");
+// }

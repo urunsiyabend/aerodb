@@ -1,6 +1,17 @@
+// src/sql/ast.rs
+
 #[derive(Debug)]
 pub enum Statement {
-    Insert { key: i32, payload: String },
-    Select { key: i32 },
+    CreateTable {
+        table_name: String,
+        columns: Vec<String>,
+    },
+    Insert {
+        table_name: String,
+        values: Vec<String>, // all literal values as strings
+    },
+    Select {
+        table_name: String,
+    },
     Exit,
 }

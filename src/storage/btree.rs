@@ -62,16 +62,15 @@ pub struct Row {
 
 
 
-pub struct BTree {
-    /// Always use page 0 as the root in this simple setup.
+pub struct BTree<'a> {
     root_page: u32,
-    pager: Pager,
+    pager: &'a mut Pager,
 }
 
-impl BTree {
+impl<'a> BTree<'a> {
     /// Open or create a B-Tree. If the file is empty, initialize page 0 as a leaf root.
     /// Otherwise, simply reuse page 0 as the existing root (leaf or internal).
-    pub fn new(mut pager: Pager) -> io::Result<Self> {
+    pub fn new(pager: &'a mut Pager) -> io::Result<BTree<'a>> {
         let root_page: u32;
 
         if pager.file_length_pages() == 0 {
@@ -764,11 +763,82 @@ impl BTree {
         Ok(())
     }
 
+    pub fn open_root(pager: &'a mut Pager, root_page: u32) -> io::Result<BTree<'a>> {
+        Ok(BTree { root_page, pager })
+    }
+
+    pub fn scan_all_rows(&'a mut self) -> RowCursor<'a> {
+        // Find the leftmost leaf: start at root, follow leftmost child until a leaf.
+        let mut page_num = self.root_page;
+        loop {
+            let page = self.pager.get_page(page_num).unwrap();
+            let node_type = get_node_type(&page.data);
+            if node_type == NODE_LEAF {
+                break;
+            }
+            // internal: read leftmost child pointer
+            let left_child_bytes = &page.data[HEADER_SIZE..HEADER_SIZE + 4];
+            page_num = u32::from_le_bytes(left_child_bytes.try_into().unwrap());
+        }
+        RowCursor {
+            btree: self,
+            current_page: page_num,
+            offset: HEADER_SIZE,
+            rows_in_page: 0,
+        }
+    }
+
     /// Flush all cached pages to disk (for final cleanup).
     pub fn flush_all(&mut self) -> io::Result<()> {
         for i in 0..self.pager.num_pages() {
             self.pager.flush_page(i)?;
         }
         Ok(())
+    }
+}
+
+pub struct RowCursor<'b> {
+    btree: &'b mut BTree<'b>,
+    current_page: u32,
+    offset: usize,
+    rows_in_page: usize,
+}
+
+impl<'a> Iterator for RowCursor<'a> {
+    type Item = Row;
+
+    fn next(&mut self) -> Option<Row> {
+        loop {
+            let page = self.btree.pager.get_page(self.current_page).ok()?;
+            let cell_count = get_cell_count(&page.data) as usize;
+
+            if self.rows_in_page < cell_count {
+                // Deserialize the next row at `offset`
+                let key_bytes = &page.data[self.offset..self.offset + 4];
+                let key = i32::from_le_bytes(key_bytes.try_into().unwrap());
+                let len_bytes = &page.data[self.offset + 4..self.offset + 8];
+                let payload_len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+                let start = self.offset + 8;
+                let end = start + payload_len;
+                if end > PAGE_SIZE {
+                    return None;
+                }
+                let payload_bytes = &page.data[start..end];
+                let payload = String::from_utf8_lossy(payload_bytes).to_string();
+                let row = Row { key, payload };
+
+                // Advance cursor
+                self.offset = end;
+                self.rows_in_page += 1;
+                return Some(row);
+            }
+
+            // If we’ve yielded all rows in this page, move to the “next” leaf.
+            // We assume a simple linked‐list: the rightmost 4 bytes of header at offset (PAGE_SIZE-4)
+            // store the “next_leaf_page” (u32), or 0 if none. We didn’t set that earlier, so for now
+            // we’ll just stop here. (Implementing sibling pointers is the next step.)
+            // For simplicity, let’s assume no sibling pointers; just stop iteration.
+            return None;
+        }
     }
 }
