@@ -1,8 +1,10 @@
 pub mod executor;
 pub mod plan;
+pub mod runtime;
 
 pub use executor::Executor;
 pub use plan::PlanNode;
+pub use runtime::{execute_delete, execute_select_with_indexes, handle_statement};
 
 /// Entry point for executing a plan (stub).
 pub fn execute_plan(plan: PlanNode /*, btree: &mut storage::BTree */) {
@@ -17,7 +19,13 @@ pub fn execute_plan(plan: PlanNode /*, btree: &mut storage::BTree */) {
             println!("Executing: Insert into {} {:?}", table_name, values);
             // In future: btree.insert(key, &payload).unwrap();
         }
-        PlanNode::Select { table_name, selection } => {
+        PlanNode::CreateIndex { index_name, table_name, column_name } => {
+            println!(
+                "Planning create index {} on {} ({})",
+                index_name, table_name, column_name
+            );
+        }
+        PlanNode::Select { table_name, selection, .. } => {
             println!("Executing: Select from {} where {:?}", table_name, selection);
             // In future: if let Some(row) = btree.find(key).unwrap() { ... }
         }
