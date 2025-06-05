@@ -3,6 +3,7 @@
 mod storage;
 mod sql;
 mod catalog;
+mod execution;
 
 use std::io::{self, Write};
 use log::{debug, info, warn};
@@ -13,127 +14,11 @@ use crate::storage::row::{RowData, ColumnValue, ColumnType, build_row_data};
 use crate::catalog::Catalog;
 use crate::sql::parser::parse_statement;
 use crate::sql::ast::{Statement, Expr};
+use crate::execution::{execute_delete, execute_select_with_indexes, handle_statement};
 
 // const DATABASE_FILE: &str = "data.aerodb";
 const DATABASE_FILE: &str = "data.aerodb";
 
-fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> io::Result<()> {
-    if let Ok(table_info) = catalog.get_table(table_name) {
-        let root_page = table_info.root_page;
-        let columns = table_info.columns.clone();
-        let rows_to_delete = {
-            let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
-            let mut cursor = scan_tree.scan_all_rows();
-            let mut collected = Vec::new();
-            while let Some(row) = cursor.next() {
-                if let Some(ref expr) = selection {
-                    let mut values = std::collections::HashMap::new();
-                    for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
-                        let v = match val {
-                            ColumnValue::Integer(i) => i.to_string(),
-                            ColumnValue::Text(s) => s.clone(),
-                            ColumnValue::Boolean(b) => b.to_string(),
-                        };
-                        values.insert(col.clone(), v);
-                    }
-                    if crate::sql::ast::evaluate_expression(expr, &values) {
-                        collected.push(row);
-                    }
-                } else {
-                    collected.push(row);
-                }
-            }
-            drop(cursor);
-            collected
-        };
-
-        if !rows_to_delete.is_empty() {
-            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
-            for r in &rows_to_delete {
-                table_btree.delete(r.key)?;
-            }
-            let new_root = table_btree.root_page();
-            drop(table_btree);
-            if new_root != root_page {
-                if let Ok(t) = catalog.get_table_mut(table_name) {
-                    t.root_page = new_root;
-                }
-            }
-
-            for r in rows_to_delete {
-                catalog.remove_from_indexes(table_name, &r.data, r.key)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn execute_select_with_indexes(
-    catalog: &mut Catalog,
-    table_name: &str,
-    selection: Option<Expr>,
-    out: &mut Vec<crate::storage::row::Row>,
-) -> io::Result<bool> {
-    let table_info = catalog.get_table(table_name)?;
-    let root_page = table_info.root_page;
-    let columns = table_info.columns.clone();
-
-    // Try to use index for simple equality
-    if let Some(Expr::Equals { left, right }) = selection.clone() {
-        let (col_name, value) = if columns.iter().any(|(c, _)| c == &left) {
-            (left, right)
-        } else if columns.iter().any(|(c, _)| c == &right) {
-            (right, left)
-        } else {
-            ("".into(), String::new())
-        };
-        if !col_name.is_empty() {
-            if let Some(index) = catalog.find_index(table_name, &col_name).cloned() {
-                let mut index_tree = BTree::open_root(&mut catalog.pager, index.root_page)?;
-                let val_cv = ColumnValue::Text(value.clone());
-                let hash = Catalog::hash_value(&val_cv);
-                if let Some(row) = index_tree.find(hash)? {
-                    if let ColumnValue::Text(ref stored) = row.data.0[0] {
-                        if stored == &value {
-                            for val in row.data.0.iter().skip(1) {
-                                if let ColumnValue::Integer(k) = val {
-                                    let mut table_tree = BTree::open_root(&mut catalog.pager, root_page)?;
-                                    if let Some(r) = table_tree.find(*k)? {
-                                        out.push(r);
-                                    }
-                                }
-                            }
-                            return Ok(true);
-                        }
-                    }
-                }
-                return Ok(true);
-            }
-        }
-    }
-
-    let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
-    let mut cursor = table_btree.scan_all_rows();
-    while let Some(row) = cursor.next() {
-        if let Some(ref expr) = selection {
-            let mut values = std::collections::HashMap::new();
-            for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
-                let v = match val {
-                    ColumnValue::Integer(i) => i.to_string(),
-                    ColumnValue::Text(s) => s.clone(),
-                    ColumnValue::Boolean(b) => b.to_string(),
-                };
-                values.insert(col.clone(), v);
-            }
-            if crate::sql::ast::evaluate_expression(expr, &values) {
-                out.push(row);
-            }
-        } else {
-            out.push(row);
-        }
-    }
-    Ok(false)
-}
 
 fn main() -> io::Result<()> {
     env_logger::init();
@@ -158,246 +43,14 @@ fn main() -> io::Result<()> {
         }
 
         match parse_statement(trimmed) {
-            Ok(stmt) => match stmt {
-                Statement::CreateTable { table_name, columns, if_not_exists } => {
-                    debug!("CREATE TABLE {} {:?}", table_name, columns);
-                    match catalog.create_table(&table_name, columns.clone()) {
-                        Ok(()) => info!("Table '{}' created", table_name),
-                        Err(e) => {
-                            if if_not_exists && e.to_string().contains("already exists") {
-                                info!("Table '{}' already exists", table_name);
-                            } else {
-                                warn!("Error creating table {}: {}", table_name, e);
-                            }
-                        }
-                    }
+            Ok(stmt) => {
+                if let Statement::Exit = stmt {
+                    break;
                 }
-                Statement::CreateIndex { index_name, table_name, column_name } => {
-                    debug!("CREATE INDEX {} ON {}({})", index_name, table_name, column_name);
-                    if let Err(e) = catalog.create_index(&index_name, &table_name, &column_name) {
-                        warn!("Error creating index {}: {}", index_name, e);
-                    } else {
-                        info!("Index '{}' created", index_name);
-                    }
+                if let Err(e) = handle_statement(&mut catalog, stmt) {
+                    warn!("Execution error: {}", e);
                 }
-                Statement::Insert { table_name, values } => {
-                    debug!("INSERT INTO {} VALUES {:?}", table_name, values);
-
-                    // First, try to get the table’s metadata (immutable borrow of `catalog`)
-                    match catalog.get_table(&table_name) {
-                        Ok(table_info) => {
-                            // Extract root_page and drop the borrow of `table_info` immediately.
-                            let root_page = table_info.root_page;
-                            let columns = table_info.columns.clone();
-                            // Now the immutable borrow of `catalog` ends here,
-                            // so we can borrow `catalog.pager` mutably below.
-
-                            let row_data = match build_row_data(&values, &columns) {
-                                Ok(d) => d,
-                                Err(msg) => {
-                                    warn!("{}", msg);
-                                    continue;
-                                }
-                            };
-                            let key = match row_data.0.get(0) {
-                                Some(ColumnValue::Integer(i)) => *i,
-                                _ => {
-                                    warn!("First column must be an INTEGER key");
-                                    continue;
-                                }
-                            };
-                            {
-                                let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
-                                let row_copy = row_data.clone();
-                                if let Err(e) = table_btree.insert(key, row_data) {
-                                    warn!("Error inserting into {}: {}", table_name, e);
-                                } else {
-                                    info!("Row inserted into '{}'", table_name);
-                                    let new_root = table_btree.root_page();
-                                    if new_root != root_page {
-                                        if let Ok(t) = catalog.get_table_mut(&table_name) {
-                                            t.root_page = new_root;
-                                        }
-                                    }
-                                    catalog.insert_into_indexes(&table_name, &row_copy)?;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Table '{}' not found: {}", table_name, e);
-                        }
-                    }
-                }
-                Statement::Select { table_name, selection, limit, offset, order_by } => {
-                    debug!("SELECT * FROM {}", table_name);
-
-                    // First, get the table metadata (immutable borrow)
-                    match catalog.get_table(&table_name) {
-                        Ok(table_info) => {
-                            let root_page = table_info.root_page;
-                            let columns = table_info.columns.clone();
-                            // Immutable borrow ends here.
-
-                            // First try to use an index for simple equality queries without
-                            // additional modifiers.
-                            let mut maybe_results = Vec::new();
-                            if selection.is_some()
-                                && limit.is_none()
-                                && offset.is_none()
-                                && order_by.is_none()
-                            {
-                                if execute_select_with_indexes(
-                                    &mut catalog,
-                                    &table_name,
-                                    selection.clone(),
-                                    &mut maybe_results,
-                                )? {
-                                    println!("-- Contents of table '{}':", table_name);
-                                    let header: Vec<String> = columns
-                                        .iter()
-                                        .map(|(c, t)| format!("{} ({})", c, t.as_str()))
-                                        .collect();
-                                    println!("{:?}", header);
-                                    for row in maybe_results {
-                                        let vals: Vec<String> = row
-                                            .data
-                                            .0
-                                            .iter()
-                                            .map(|c| match c {
-                                                ColumnValue::Integer(i) => i.to_string(),
-                                                ColumnValue::Text(s) => s.clone(),
-                                                ColumnValue::Boolean(b) => b.to_string(),
-                                            })
-                                            .collect();
-                                        println!("{:?}", vals);
-                                    }
-                                    continue;
-                                }
-                            }
-
-                            // Now we can borrow `catalog.pager` mutably to scan the table.
-                            {
-                                let mut table_btree = BTree::open_root(
-                                    &mut catalog.pager,
-                                    root_page,
-                                )?;
-
-                                println!("-- Contents of table '{}':", table_name);
-                                let header: Vec<String> = columns
-                                    .iter()
-                                    .map(|(c, t)| format!("{} ({})", c, t.as_str()))
-                                    .collect();
-                                println!("{:?}", header);
-
-                                if let Some(ob) = order_by {
-                                    if ob.descending {
-                                        let rows = table_btree
-                                            .scan_rows_desc_with_bounds(offset.unwrap_or(0), limit);
-                                        for row in rows {
-                                            let vals: Vec<String> = row
-                                                .data
-                                                .0
-                                                .iter()
-                                                .map(|c| match c {
-                                                    ColumnValue::Integer(i) => i.to_string(),
-                                                    ColumnValue::Text(s) => s.clone(),
-                                                    ColumnValue::Boolean(b) => b.to_string(),
-                                                })
-                                                .collect();
-                                            if selection.is_none() {
-                                                println!("{:?}", vals);
-                                            } else {
-                                                let mut map = std::collections::HashMap::new();
-                                                for ((col, _), val) in columns.iter().zip(vals.iter()) {
-                                                    map.insert(col.clone(), val.clone());
-                                                }
-                                                if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
-                                                    println!("{:?}", vals);
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        let mut cursor = table_btree.scan_rows_with_bounds(offset.unwrap_or(0), limit);
-                                        while let Some(row) = cursor.next() {
-                                            let vals: Vec<String> = row
-                                                .data
-                                                .0
-                                                .iter()
-                                                .map(|c| match c {
-                                                    ColumnValue::Integer(i) => i.to_string(),
-                                                    ColumnValue::Text(s) => s.clone(),
-                                                    ColumnValue::Boolean(b) => b.to_string(),
-                                                })
-                                                .collect();
-                                            if selection.is_none() {
-                                                println!("{:?}", vals);
-                                            } else {
-                                                let mut map = std::collections::HashMap::new();
-                                                for ((col, _), val) in columns.iter().zip(vals.iter()) {
-                                                    map.insert(col.clone(), val.clone());
-                                                }
-                                                if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
-                                                    println!("{:?}", vals);
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    let mut cursor = table_btree.scan_rows_with_bounds(offset.unwrap_or(0), limit);
-
-                                    while let Some(row) = cursor.next() {
-                                        let vals: Vec<String> = row
-                                            .data
-                                            .0
-                                            .iter()
-                                            .map(|c| match c {
-                                                ColumnValue::Integer(i) => i.to_string(),
-                                                ColumnValue::Text(s) => s.clone(),
-                                                ColumnValue::Boolean(b) => b.to_string(),
-                                            })
-                                            .collect();
-                                        if selection.is_none() {
-                                            println!("{:?}", vals);
-                                        } else {
-                                            let mut map = std::collections::HashMap::new();
-                                            for ((col, _), val) in columns.iter().zip(vals.iter()) {
-                                                map.insert(col.clone(), val.clone());
-                                            }
-                                            if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
-                                                println!("{:?}", vals);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Table '{}' not found: {}", table_name, e);
-                        }
-                    }
-                }
-                Statement::DropTable { table_name, if_exists } => {
-                    debug!("DROP TABLE {}", table_name);
-                    match catalog.drop_table(&table_name) {
-                        Ok(true) => info!("Table '{}' dropped", table_name),
-                        Ok(false) => {
-                            if if_exists {
-                                info!("Table '{}' does not exist", table_name);
-                            } else {
-                                warn!("Table '{}' does not exist", table_name);
-                            }
-                        }
-                        Err(e) => warn!("Error dropping table {}: {}", table_name, e),
-                    }
-                }
-                Statement::Delete { table_name, selection } => {
-                    debug!("DELETE FROM {}", table_name);
-                    if let Err(e) = execute_delete(&mut catalog, &table_name, selection) {
-                        warn!("Error deleting from {}: {}", table_name, e);
-                    }
-                }
-                Statement::Exit => break,
-            },
+            }
             Err(e) => warn!("Parse error: {}", e),
         }
     }
@@ -566,7 +219,7 @@ mod tests {
             Statement::Delete { table_name, selection } => {
                 assert_eq!(table_name, "users");
                 assert!(selection.is_some());
-                execute_delete(&mut catalog, &table_name, selection).unwrap();
+                crate::execution::execute_delete(&mut catalog, &table_name, selection).unwrap();
                 let root_page = catalog.get_table("users").unwrap().root_page;
                 let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
                 let remaining: Vec<_> = table_btree.scan_all_rows().collect();
@@ -605,7 +258,7 @@ mod tests {
             }
         }
 
-        execute_delete(
+        crate::execution::execute_delete(
             &mut catalog,
             "users",
             Some(Expr::Equals {
@@ -956,7 +609,7 @@ mod tests {
         match stmt {
             Statement::Select { table_name, selection, .. } => {
                 let mut results = Vec::new();
-                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(used, "index should be used for equality predicate");
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].key, 2);
@@ -1003,13 +656,13 @@ mod tests {
 
         // Delete the row with name = user2
         let expr = Expr::Equals { left: "name".into(), right: "user2".into() };
-        execute_delete(&mut catalog, "users", Some(expr)).unwrap();
+        crate::execution::execute_delete(&mut catalog, "users", Some(expr)).unwrap();
 
         let stmt = parse_statement("SELECT * FROM users WHERE name = user2").unwrap();
         match stmt {
             Statement::Select { table_name, selection, .. } => {
                 let mut results = Vec::new();
-                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(used, "index should be used on delete check");
                 assert!(results.is_empty());
             }
@@ -1057,7 +710,7 @@ mod tests {
         match stmt {
             Statement::Select { table_name, selection, .. } => {
                 let mut results = Vec::new();
-                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(used, "index should be used for duplicate values");
                 let keys: Vec<i32> = results.iter().map(|r| r.key).collect();
                 assert_eq!(keys, vec![1, 2, 3]);
@@ -1103,7 +756,7 @@ mod tests {
         match stmt {
             Statement::Select { table_name, selection, .. } => {
                 let mut results = Vec::new();
-                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(!used, "no index should be used when none defined");
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].key, 1);
@@ -1150,12 +803,38 @@ mod tests {
         match stmt {
             Statement::Select { table_name, selection, .. } => {
                 let mut results = Vec::new();
-                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(!used, "index should not be used for inequality");
                 let keys: Vec<i32> = results.iter().map(|r| r.key).collect();
                 assert_eq!(keys, vec![2]);
             }
             _ => panic!("Expected select"),
         }
+    }
+
+    #[test]
+    fn handle_statement_insert() {
+        let filename = "test_handle.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        let create = Statement::CreateTable {
+            table_name: "users".into(),
+            columns: vec![
+                ("id".into(), ColumnType::Integer),
+                ("name".into(), ColumnType::Text),
+            ],
+            if_not_exists: false,
+        };
+        handle_statement(&mut catalog, create).unwrap();
+
+        let insert = Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "bob".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+
+        let root_page = catalog.get_table("users").unwrap().root_page;
+        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let rows: Vec<_> = btree.scan_all_rows().collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, 1);
     }
 }
