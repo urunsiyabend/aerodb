@@ -1,4 +1,6 @@
-# AeroDB
+<p align="center">
+<img src="images/logo.png" width="200px" height="200px" alt="AeroDB">
+</p>
 
 AeroDB is a lightweight experimental database implemented in Rust. It serves as a playground for learning how B-Tree based storage engines and simple SQL parsers work.
 
