@@ -1,4 +1,5 @@
 // src/sql/ast.rs
+use crate::storage::row::ColumnType;
 
 #[derive(Debug)]
 pub enum Expr {
@@ -18,7 +19,7 @@ pub struct OrderBy {
 pub enum Statement {
     CreateTable {
         table_name: String,
-        columns: Vec<String>,
+        columns: Vec<(String, ColumnType)>,
     },
     Insert {
         table_name: String,

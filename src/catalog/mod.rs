@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io;
 
 use crate::storage::btree::BTree;
-use crate::storage::row::{Row, RowData, ColumnValue};
+use crate::storage::row::{Row, RowData, ColumnValue, ColumnType};
 use crate::storage::pager::Pager;
 
 /// In‐memory representation of a table’s metadata.
@@ -10,7 +10,7 @@ use crate::storage::pager::Pager;
 pub struct TableInfo {
     pub name: String,
     pub root_page: u32,
-    pub columns: Vec<String>, // column names, in order
+    pub columns: Vec<(String, ColumnType)>, // column name and type
 }
 
 /// The Catalog holds all user tables. Internally, it also persists itself in B-Tree page 1.
@@ -54,7 +54,7 @@ impl Catalog {
 
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
-    pub fn create_table(&mut self, name: &str, columns: Vec<String>) -> io::Result<()> {
+    pub fn create_table(&mut self, name: &str, columns: Vec<(String, ColumnType)>) -> io::Result<()> {
         if self.tables.contains_key(name) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -109,19 +109,20 @@ impl Catalog {
     ///
     /// [u32 name_len][name_bytes][u32 root_page][u16 num_columns]
     /// for each column: [u32 col_len][col_bytes]
-    fn serialize_catalog_row(name: &str, root_page: u32, columns: &[String]) -> RowData {
+    fn serialize_catalog_row(name: &str, root_page: u32, columns: &[(String, ColumnType)]) -> RowData {
         let mut vals = Vec::new();
         vals.push(ColumnValue::Text(name.to_string()));
         vals.push(ColumnValue::Integer(root_page as i32));
         vals.push(ColumnValue::Integer(columns.len() as i32));
-        for col in columns {
-            vals.push(ColumnValue::Text(col.clone()));
+        for (name, ty) in columns {
+            vals.push(ColumnValue::Text(name.clone()));
+            vals.push(ColumnValue::Integer(ty.to_code()));
         }
         RowData(vals)
     }
 
     /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>).
-    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<String>)> {
+    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>)> {
         let values = &row.data.0;
         if values.len() < 3 {
             return Err(io::Error::new(io::ErrorKind::Other, "catalog row too short"));
@@ -139,11 +140,19 @@ impl Catalog {
             _ => return Err(io::Error::new(io::ErrorKind::Other, "num cols not int")),
         };
         let mut columns = Vec::new();
-        for i in 0..num_cols {
-            match &values[3 + i] {
-                ColumnValue::Text(s) => columns.push(s.clone()),
+        let mut idx = 3;
+        for _ in 0..num_cols {
+            let name = match &values[idx] {
+                ColumnValue::Text(s) => s.clone(),
                 _ => return Err(io::Error::new(io::ErrorKind::Other, "column name not text")),
-            }
+            };
+            idx += 1;
+            let ty = match values.get(idx) {
+                Some(ColumnValue::Integer(code)) => ColumnType::from_code(*code).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "bad type"))?,
+                _ => return Err(io::Error::new(io::ErrorKind::Other, "column type missing")),
+            };
+            idx += 1;
+            columns.push((name, ty));
         }
         Ok((name, root_page, columns))
     }

@@ -1,5 +1,44 @@
 use std::io;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ColumnType {
+    Integer = 1,
+    Text = 2,
+    Boolean = 3,
+}
+
+impl ColumnType {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "INTEGER" | "INT" => Some(ColumnType::Integer),
+            "TEXT" => Some(ColumnType::Text),
+            "BOOLEAN" | "BOOL" => Some(ColumnType::Boolean),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ColumnType::Integer => "INTEGER",
+            ColumnType::Text => "TEXT",
+            ColumnType::Boolean => "BOOLEAN",
+        }
+    }
+
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            1 => Some(ColumnType::Integer),
+            2 => Some(ColumnType::Text),
+            3 => Some(ColumnType::Boolean),
+            _ => None,
+        }
+    }
+
+    pub fn to_code(&self) -> i32 {
+        *self as i32
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColumnValue {
     Integer(i32),

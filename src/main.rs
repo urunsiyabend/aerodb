@@ -9,7 +9,7 @@ use log::{debug, info, warn};
 
 use crate::storage::pager::Pager;
 use crate::storage::btree::BTree;
-use crate::storage::row::{RowData, ColumnValue};
+use crate::storage::row::{RowData, ColumnValue, ColumnType};
 use crate::catalog::Catalog;
 use crate::sql::parser::parse_statement;
 use crate::sql::ast::{Statement, Expr};
@@ -28,7 +28,7 @@ fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Exp
             while let Some(row) = cursor.next() {
                 if let Some(ref expr) = selection {
                     let mut values = std::collections::HashMap::new();
-                    for (col, val) in columns.iter().zip(row.data.0.iter()) {
+                    for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
                         let v = match val {
                             ColumnValue::Integer(i) => i.to_string(),
                             ColumnValue::Text(s) => s.clone(),
@@ -104,21 +104,25 @@ fn main() -> io::Result<()> {
                         Ok(table_info) => {
                             // Extract root_page and drop the borrow of `table_info` immediately.
                             let root_page = table_info.root_page;
+                            let columns = table_info.columns.clone();
                             // Now the immutable borrow of `catalog` ends here,
                             // so we can borrow `catalog.pager` mutably below.
 
+                            if values.len() != columns.len() {
+                                warn!("Column count mismatch");
+                                continue;
+                            }
                             let key: i32 = values[0]
                                 .parse()
                                 .map_err(|_| io::Error::new(io::ErrorKind::Other, "Key must be an integer"))?;
                             let mut cols = Vec::new();
-                            for v in &values {
-                                if let Ok(i) = v.parse::<i32>() {
-                                    cols.push(ColumnValue::Integer(i));
-                                } else if v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("false") {
-                                    cols.push(ColumnValue::Boolean(v.eq_ignore_ascii_case("true")));
-                                } else {
-                                    cols.push(ColumnValue::Text(v.clone()));
-                                }
+                            for (v, (_, ty)) in values.iter().zip(columns.iter()) {
+                                let val = match ty {
+                                    ColumnType::Integer => ColumnValue::Integer(v.parse::<i32>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Expected int"))?),
+                                    ColumnType::Text => ColumnValue::Text(v.clone()),
+                                    ColumnType::Boolean => ColumnValue::Boolean(v.eq_ignore_ascii_case("true")),
+                                };
+                                cols.push(val);
                             }
                             let row_data = RowData(cols);
                             {
@@ -159,6 +163,11 @@ fn main() -> io::Result<()> {
                                 )?;
 
                                 println!("-- Contents of table '{}':", table_name);
+                                let header: Vec<String> = columns
+                                    .iter()
+                                    .map(|(c, t)| format!("{} ({})", c, t.as_str()))
+                                    .collect();
+                                println!("{:?}", header);
 
                                 if let Some(ob) = order_by {
                                     if ob.descending {
@@ -179,7 +188,7 @@ fn main() -> io::Result<()> {
                                                 println!("{:?}", vals);
                                             } else {
                                                 let mut map = std::collections::HashMap::new();
-                                                for (col, val) in columns.iter().zip(vals.iter()) {
+                                                for ((col, _), val) in columns.iter().zip(vals.iter()) {
                                                     map.insert(col.clone(), val.clone());
                                                 }
                                                 if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
@@ -204,7 +213,7 @@ fn main() -> io::Result<()> {
                                                 println!("{:?}", vals);
                                             } else {
                                                 let mut map = std::collections::HashMap::new();
-                                                for (col, val) in columns.iter().zip(vals.iter()) {
+                                                for ((col, _), val) in columns.iter().zip(vals.iter()) {
                                                     map.insert(col.clone(), val.clone());
                                                 }
                                                 if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
@@ -231,7 +240,7 @@ fn main() -> io::Result<()> {
                                             println!("{:?}", vals);
                                         } else {
                                             let mut map = std::collections::HashMap::new();
-                                            for (col, val) in columns.iter().zip(vals.iter()) {
+                                            for ((col, _), val) in columns.iter().zip(vals.iter()) {
                                                 map.insert(col.clone(), val.clone());
                                             }
                                             if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
@@ -268,6 +277,7 @@ fn main() -> io::Result<()> {
 mod tests {
     use super::*; // bring Catalog, Pager, BTree, etc. into scope
     use crate::sql::ast::evaluate_expression;
+    use crate::storage::row::ColumnType;
     use std::fs;
 
     #[test]
@@ -283,7 +293,11 @@ mod tests {
         catalog
             .create_table(
                 "users",
-                vec!["id".into(), "name".into(), "email".into()],
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                    ("email".into(), ColumnType::Text),
+                ],
             )
             .unwrap();
 
@@ -327,7 +341,13 @@ mod tests {
 
         // Create table and insert a few rows
         catalog
-            .create_table("users", vec!["id".into(), "name".into()])
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
             .unwrap();
         for i in 1..=3 {
             let values = vec![i.to_string(), format!("user{}", i)];
@@ -357,7 +377,7 @@ mod tests {
                 let mut found = Vec::new();
                 while let Some(row) = cursor.next() {
                     let mut values = std::collections::HashMap::new();
-                    for (col, val) in columns.iter().zip(row.data.0.iter()) {
+                    for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
                         let v = match val {
                             ColumnValue::Integer(i) => i.to_string(),
                             ColumnValue::Text(s) => s.clone(),
@@ -385,7 +405,13 @@ mod tests {
 
         // Create table and insert a few rows
         catalog
-            .create_table("users", vec!["id".into(), "name".into()])
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
             .unwrap();
         for i in 1..=3 {
             let values = vec![i.to_string(), format!("user{}", i)];
@@ -424,7 +450,13 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("users", vec!["id".into(), "name".into()])
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
             .unwrap();
         for i in 1..=3 {
             let values = vec![i.to_string(), format!("user{}", i)];
@@ -463,7 +495,10 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec!["id".into()])
+            .create_table(
+                "nums",
+                vec![("id".into(), ColumnType::Integer)],
+            )
             .unwrap();
 
         for i in 1..=500 {
@@ -503,7 +538,7 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec!["id".into()])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
             .unwrap();
 
         for i in 1..=600 {
@@ -543,7 +578,7 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec!["id".into()])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
             .unwrap();
 
         for i in 1..=300 {
@@ -632,13 +667,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_create_with_types() {
+        let stmt = parse_statement("CREATE TABLE t (id INTEGER, name TEXT, active BOOLEAN)").unwrap();
+        match stmt {
+            Statement::CreateTable { table_name, columns } => {
+                assert_eq!(table_name, "t");
+                assert_eq!(columns,
+                    vec![
+                        ("id".into(), ColumnType::Integer),
+                        ("name".into(), ColumnType::Text),
+                        ("active".into(), ColumnType::Boolean),
+                    ]
+                );
+            }
+            _ => panic!("Expected create table"),
+        }
+    }
+
+    #[test]
     fn scan_descending_order() {
         let filename = "test_order_desc.db";
         let _ = fs::remove_file(filename);
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec!["id".into()])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
             .unwrap();
 
         for i in 1..=3 {

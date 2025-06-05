@@ -1,4 +1,5 @@
 use crate::sql::ast::{Expr, Statement, OrderBy};
+use crate::storage::row::ColumnType;
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
 /// Returns the expression and the number of tokens consumed.
@@ -60,11 +61,20 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 return Err("Columns must be in parentheses".to_string());
             }
             let inner = &rest[1..rest.len() - 1];
-            let cols: Vec<String> = inner
+            let cols: Vec<(String, ColumnType)> = inner
                 .split(',')
-                .map(|s| s.trim().to_string())
+                .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
-                .collect();
+                .map(|chunk| {
+                    let parts: Vec<&str> = chunk.split_whitespace().collect();
+                    if parts.len() != 2 {
+                        return Err("Column definitions must be <name> <type>".to_string());
+                    }
+                    let ctype = ColumnType::from_str(parts[1])
+                        .ok_or_else(|| format!("Unknown type {}", parts[1]))?;
+                    Ok((parts[0].to_string(), ctype))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             if cols.is_empty() {
                 return Err("At least one column required".to_string());
             }
