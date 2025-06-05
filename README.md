@@ -37,7 +37,7 @@ These tasks outline upcoming work and reference articles we plan to publish.
 - [ ] **Expand SQL parser** to support JOINs, nested queries and basic functions.
 - [ ] **Flesh out transactions** with ACID semantics and accompanying tests.
 - [ ] **Document storage engine** internals and page layout in a dedicated article.
-- [ ] **Add secondary indexes** to accelerate lookups on non-primary keys.
+- [x] **Add secondary indexes** to accelerate lookups on non-primary keys.
 - [ ] **Implement concurrency control** (locking or MVCC) with tests.
 - [ ] **Write tutorial articles** detailing the B-Tree implementation and SQL parsing strategy.
 
