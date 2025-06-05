@@ -1,10 +1,11 @@
 use crate::sql::ast::{Expr, Statement, OrderBy};
+use crate::storage::row::ColumnType;
 
 #[derive(Debug)]
 pub enum PlanNode {
     CreateTable {
         table_name: String,
-        columns: Vec<String>,
+        columns: Vec<(String, ColumnType)>,
     },
     Insert {
         table_name: String,

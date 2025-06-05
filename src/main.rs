@@ -9,6 +9,7 @@ use log::{debug, info, warn};
 
 use crate::storage::pager::Pager;
 use crate::storage::btree::BTree;
+use crate::storage::row::{RowData, ColumnValue, ColumnType, build_row_data};
 use crate::catalog::Catalog;
 use crate::sql::parser::parse_statement;
 use crate::sql::ast::{Statement, Expr};
@@ -26,16 +27,13 @@ fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Exp
             let mut collected = Vec::new();
             while let Some(row) = cursor.next() {
                 if let Some(ref expr) = selection {
-                    let bytes = &row.payload[..];
-                    let mut offset = 0;
-                    let num_cols = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
-                    offset += 2;
                     let mut values = std::collections::HashMap::new();
-                    for col in columns.iter().take(num_cols) {
-                        let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-                        offset += 4;
-                        let v = String::from_utf8_lossy(&bytes[offset..offset + len]).to_string();
-                        offset += len;
+                    for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
+                        let v = match val {
+                            ColumnValue::Integer(i) => i.to_string(),
+                            ColumnValue::Text(s) => s.clone(),
+                            ColumnValue::Boolean(b) => b.to_string(),
+                        };
                         values.insert(col.clone(), v);
                     }
                     if crate::sql::ast::evaluate_expression(expr, &values) {
@@ -106,24 +104,27 @@ fn main() -> io::Result<()> {
                         Ok(table_info) => {
                             // Extract root_page and drop the borrow of `table_info` immediately.
                             let root_page = table_info.root_page;
+                            let columns = table_info.columns.clone();
                             // Now the immutable borrow of `catalog` ends here,
                             // so we can borrow `catalog.pager` mutably below.
 
-                            // Build the row payload: [u16 num_columns][u32 len1][v1]…
-                            let mut buf = Vec::new();
-                            let key: i32 = values[0]
-                                .parse()
-                                .map_err(|_| io::Error::new(io::ErrorKind::Other, "Key must be an integer"))?;
-                            let col_count = values.len() as u16;
-                            buf.extend(&col_count.to_le_bytes());
-                            for v in &values {
-                                let vb = v.as_bytes();
-                                buf.extend(&(vb.len() as u32).to_le_bytes());
-                                buf.extend(vb);
-                            }
+                            let row_data = match build_row_data(&values, &columns) {
+                                Ok(d) => d,
+                                Err(msg) => {
+                                    warn!("{}", msg);
+                                    continue;
+                                }
+                            };
+                            let key = match row_data.0.get(0) {
+                                Some(ColumnValue::Integer(i)) => *i,
+                                _ => {
+                                    warn!("First column must be an INTEGER key");
+                                    continue;
+                                }
+                            };
                             {
                                 let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
-                                if let Err(e) = table_btree.insert(key, &buf) {
+                                if let Err(e) = table_btree.insert(key, row_data) {
                                     warn!("Error inserting into {}: {}", table_name, e);
                                 } else {
                                     info!("Row inserted into '{}'", table_name);
@@ -159,29 +160,32 @@ fn main() -> io::Result<()> {
                                 )?;
 
                                 println!("-- Contents of table '{}':", table_name);
+                                let header: Vec<String> = columns
+                                    .iter()
+                                    .map(|(c, t)| format!("{} ({})", c, t.as_str()))
+                                    .collect();
+                                println!("{:?}", header);
 
                                 if let Some(ob) = order_by {
                                     if ob.descending {
                                         let rows = table_btree
                                             .scan_rows_desc_with_bounds(offset.unwrap_or(0), limit);
                                         for row in rows {
-                                            let bytes = &row.payload[..];
-                                            let mut off = 0;
-                                            let num_cols = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
-                                            off += 2;
-                                            let mut vals = Vec::with_capacity(num_cols);
-                                            for _ in 0..num_cols {
-                                                let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
-                                                off += 4;
-                                                let v = String::from_utf8_lossy(&bytes[off..off + len]).to_string();
-                                                off += len;
-                                                vals.push(v);
-                                            }
+                                            let vals: Vec<String> = row
+                                                .data
+                                                .0
+                                                .iter()
+                                                .map(|c| match c {
+                                                    ColumnValue::Integer(i) => i.to_string(),
+                                                    ColumnValue::Text(s) => s.clone(),
+                                                    ColumnValue::Boolean(b) => b.to_string(),
+                                                })
+                                                .collect();
                                             if selection.is_none() {
                                                 println!("{:?}", vals);
                                             } else {
                                                 let mut map = std::collections::HashMap::new();
-                                                for (col, val) in columns.iter().zip(vals.iter()) {
+                                                for ((col, _), val) in columns.iter().zip(vals.iter()) {
                                                     map.insert(col.clone(), val.clone());
                                                 }
                                                 if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
@@ -192,23 +196,21 @@ fn main() -> io::Result<()> {
                                     } else {
                                         let mut cursor = table_btree.scan_rows_with_bounds(offset.unwrap_or(0), limit);
                                         while let Some(row) = cursor.next() {
-                                            let bytes = &row.payload[..];
-                                            let mut off = 0;
-                                            let num_cols = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
-                                            off += 2;
-                                            let mut vals = Vec::with_capacity(num_cols);
-                                            for _ in 0..num_cols {
-                                                let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
-                                                off += 4;
-                                                let v = String::from_utf8_lossy(&bytes[off..off + len]).to_string();
-                                                off += len;
-                                                vals.push(v);
-                                            }
+                                            let vals: Vec<String> = row
+                                                .data
+                                                .0
+                                                .iter()
+                                                .map(|c| match c {
+                                                    ColumnValue::Integer(i) => i.to_string(),
+                                                    ColumnValue::Text(s) => s.clone(),
+                                                    ColumnValue::Boolean(b) => b.to_string(),
+                                                })
+                                                .collect();
                                             if selection.is_none() {
                                                 println!("{:?}", vals);
                                             } else {
                                                 let mut map = std::collections::HashMap::new();
-                                                for (col, val) in columns.iter().zip(vals.iter()) {
+                                                for ((col, _), val) in columns.iter().zip(vals.iter()) {
                                                     map.insert(col.clone(), val.clone());
                                                 }
                                                 if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
@@ -221,23 +223,21 @@ fn main() -> io::Result<()> {
                                     let mut cursor = table_btree.scan_rows_with_bounds(offset.unwrap_or(0), limit);
 
                                     while let Some(row) = cursor.next() {
-                                        let bytes = &row.payload[..];
-                                        let mut off = 0;
-                                        let num_cols = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
-                                        off += 2;
-                                        let mut vals = Vec::with_capacity(num_cols);
-                                        for _ in 0..num_cols {
-                                            let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
-                                            off += 4;
-                                            let v = String::from_utf8_lossy(&bytes[off..off + len]).to_string();
-                                            off += len;
-                                            vals.push(v);
-                                        }
+                                        let vals: Vec<String> = row
+                                            .data
+                                            .0
+                                            .iter()
+                                            .map(|c| match c {
+                                                ColumnValue::Integer(i) => i.to_string(),
+                                                ColumnValue::Text(s) => s.clone(),
+                                                ColumnValue::Boolean(b) => b.to_string(),
+                                            })
+                                            .collect();
                                         if selection.is_none() {
                                             println!("{:?}", vals);
                                         } else {
                                             let mut map = std::collections::HashMap::new();
-                                            for (col, val) in columns.iter().zip(vals.iter()) {
+                                            for ((col, _), val) in columns.iter().zip(vals.iter()) {
                                                 map.insert(col.clone(), val.clone());
                                             }
                                             if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
@@ -274,6 +274,7 @@ fn main() -> io::Result<()> {
 mod tests {
     use super::*; // bring Catalog, Pager, BTree, etc. into scope
     use crate::sql::ast::evaluate_expression;
+    use crate::storage::row::ColumnType;
     use std::fs;
 
     #[test]
@@ -289,7 +290,11 @@ mod tests {
         catalog
             .create_table(
                 "users",
-                vec!["id".into(), "name".into(), "email".into()],
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                    ("email".into(), ColumnType::Text),
+                ],
             )
             .unwrap();
 
@@ -300,21 +305,13 @@ mod tests {
                 format!("user{}", i),
                 format!("u{}@example.com", i),
             ];
-            // Serialize into buf: [u16 num_cols][u32 len1][bytes1][u32 len2][bytes2]...
-            let mut buf = Vec::new();
-            let col_count = (values.len() as u16).to_le_bytes();
-            buf.extend(&col_count);
-            for v in &values {
-                let vb = v.as_bytes();
-                let len = (vb.len() as u32).to_le_bytes();
-                buf.extend(&len);
-                buf.extend(vb);
-            }
+            let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
+            let row_data = RowData(cols);
 
             // Look up the root_page for “users” and open its B-Tree.
             let root_page = catalog.get_table("users").unwrap().root_page;
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-            table_btree.insert(i as i32, &buf[..]).unwrap();
+            table_btree.insert(i as i32, row_data).unwrap();
             let new_root = table_btree.root_page();
             if new_root != root_page {
                 catalog.get_table_mut("users").unwrap().root_page = new_root;
@@ -341,22 +338,21 @@ mod tests {
 
         // Create table and insert a few rows
         catalog
-            .create_table("users", vec!["id".into(), "name".into()])
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
             .unwrap();
         for i in 1..=3 {
             let values = vec![i.to_string(), format!("user{}", i)];
-            let mut buf = Vec::new();
-            let col_count = (values.len() as u16).to_le_bytes();
-            buf.extend(&col_count);
-            for v in &values {
-                let vb = v.as_bytes();
-                let len = (vb.len() as u32).to_le_bytes();
-                buf.extend(&len);
-                buf.extend(vb);
-            }
+            let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
+            let row_data = RowData(cols);
             let root_page = catalog.get_table("users").unwrap().root_page;
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-            table_btree.insert(i as i32, &buf[..]).unwrap();
+            table_btree.insert(i as i32, row_data).unwrap();
             let new_root = table_btree.root_page();
             if new_root != root_page {
                 catalog.get_table_mut("users").unwrap().root_page = new_root;
@@ -377,17 +373,13 @@ mod tests {
                 let mut cursor = table_btree.scan_all_rows();
                 let mut found = Vec::new();
                 while let Some(row) = cursor.next() {
-                    // Deserialize row to map
-                    let bytes = &row.payload[..];
-                    let mut offset = 0;
-                    let num_cols = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
-                    offset += 2;
                     let mut values = std::collections::HashMap::new();
-                    for col in columns.iter().take(num_cols) {
-                        let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-                        offset += 4;
-                        let v = String::from_utf8_lossy(&bytes[offset..offset + len]).to_string();
-                        offset += len;
+                    for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
+                        let v = match val {
+                            ColumnValue::Integer(i) => i.to_string(),
+                            ColumnValue::Text(s) => s.clone(),
+                            ColumnValue::Boolean(b) => b.to_string(),
+                        };
                         values.insert(col.clone(), v);
                     }
                     if evaluate_expression(selection.as_ref().unwrap(), &values) {
@@ -410,22 +402,21 @@ mod tests {
 
         // Create table and insert a few rows
         catalog
-            .create_table("users", vec!["id".into(), "name".into()])
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
             .unwrap();
         for i in 1..=3 {
             let values = vec![i.to_string(), format!("user{}", i)];
-            let mut buf = Vec::new();
-            let col_count = (values.len() as u16).to_le_bytes();
-            buf.extend(&col_count);
-            for v in &values {
-                let vb = v.as_bytes();
-                let len = (vb.len() as u32).to_le_bytes();
-                buf.extend(&len);
-                buf.extend(vb);
-            }
+            let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
+            let row_data = RowData(cols);
             let root_page = catalog.get_table("users").unwrap().root_page;
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-            table_btree.insert(i as i32, &buf[..]).unwrap();
+            table_btree.insert(i as i32, row_data).unwrap();
             let new_root = table_btree.root_page();
             if new_root != root_page {
                 catalog.get_table_mut("users").unwrap().root_page = new_root;
@@ -456,22 +447,21 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("users", vec!["id".into(), "name".into()])
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
             .unwrap();
         for i in 1..=3 {
             let values = vec![i.to_string(), format!("user{}", i)];
-            let mut buf = Vec::new();
-            let col_count = (values.len() as u16).to_le_bytes();
-            buf.extend(&col_count);
-            for v in &values {
-                let vb = v.as_bytes();
-                let len = (vb.len() as u32).to_le_bytes();
-                buf.extend(&len);
-                buf.extend(vb);
-            }
+            let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
+            let row_data = RowData(cols);
             let root_page = catalog.get_table("users").unwrap().root_page;
             let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-            btree.insert(i as i32, &buf[..]).unwrap();
+            btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             if new_root != root_page {
                 catalog.get_table_mut("users").unwrap().root_page = new_root;
@@ -502,23 +492,19 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec!["id".into()])
+            .create_table(
+                "nums",
+                vec![("id".into(), ColumnType::Integer)],
+            )
             .unwrap();
 
         for i in 1..=500 {
             let values = vec![i.to_string()];
-            let mut buf = Vec::new();
-            let col_count = (values.len() as u16).to_le_bytes();
-            buf.extend(&col_count);
-            for v in &values {
-                let vb = v.as_bytes();
-                let len = (vb.len() as u32).to_le_bytes();
-                buf.extend(&len);
-                buf.extend(vb);
-            }
+            let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
+            let row_data = RowData(cols);
             let root_page = catalog.get_table("nums").unwrap().root_page;
             let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-            btree.insert(i as i32, &buf[..]).unwrap();
+            btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             drop(btree);
             if new_root != root_page {
@@ -549,23 +535,16 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec!["id".into()])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
             .unwrap();
 
         for i in 1..=600 {
             let values = vec![i.to_string()];
-            let mut buf = Vec::new();
-            let col_count = (values.len() as u16).to_le_bytes();
-            buf.extend(&col_count);
-            for v in &values {
-                let vb = v.as_bytes();
-                let len = (vb.len() as u32).to_le_bytes();
-                buf.extend(&len);
-                buf.extend(vb);
-            }
+            let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
+            let row_data = RowData(cols);
             let root_page = catalog.get_table("nums").unwrap().root_page;
             let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-            btree.insert(i as i32, &buf[..]).unwrap();
+            btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             drop(btree);
             if new_root != root_page {
@@ -596,23 +575,16 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec!["id".into()])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
             .unwrap();
 
         for i in 1..=300 {
             let values = vec![i.to_string()];
-            let mut buf = Vec::new();
-            let col_count = (values.len() as u16).to_le_bytes();
-            buf.extend(&col_count);
-            for v in &values {
-                let vb = v.as_bytes();
-                let len = (vb.len() as u32).to_le_bytes();
-                buf.extend(&len);
-                buf.extend(vb);
-            }
+            let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
+            let row_data = RowData(cols);
             let root_page = catalog.get_table("nums").unwrap().root_page;
             let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-            btree.insert(i as i32, &buf[..]).unwrap();
+            btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             drop(btree);
             if new_root != root_page {
@@ -681,29 +653,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_insert_quotes_numbers() {
+        let stmt = parse_statement("INSERT INTO t VALUES (1, 'foo', 42)").unwrap();
+        match stmt {
+            Statement::Insert { values, .. } => {
+                assert_eq!(values, vec!["1", "foo", "42"]);
+            }
+            _ => panic!("Expected insert"),
+        }
+    }
+
+    #[test]
+    fn parse_create_with_types() {
+        let stmt = parse_statement("CREATE TABLE t (id INTEGER, name TEXT, active BOOLEAN)").unwrap();
+        match stmt {
+            Statement::CreateTable { table_name, columns } => {
+                assert_eq!(table_name, "t");
+                assert_eq!(columns,
+                    vec![
+                        ("id".into(), ColumnType::Integer),
+                        ("name".into(), ColumnType::Text),
+                        ("active".into(), ColumnType::Boolean),
+                    ]
+                );
+            }
+            _ => panic!("Expected create table"),
+        }
+    }
+
+    #[test]
     fn scan_descending_order() {
         let filename = "test_order_desc.db";
         let _ = fs::remove_file(filename);
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec!["id".into()])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
             .unwrap();
 
         for i in 1..=3 {
             let values = vec![i.to_string()];
-            let mut buf = Vec::new();
-            let col_count = (values.len() as u16).to_le_bytes();
-            buf.extend(&col_count);
-            for v in &values {
-                let vb = v.as_bytes();
-                let len = (vb.len() as u32).to_le_bytes();
-                buf.extend(&len);
-                buf.extend(vb);
-            }
+            let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
+            let row_data = RowData(cols);
             let root_page = catalog.get_table("nums").unwrap().root_page;
             let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-            btree.insert(i as i32, &buf[..]).unwrap();
+            btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             drop(btree);
             if new_root != root_page {
@@ -716,5 +710,17 @@ mod tests {
         let rows = btree.scan_rows_desc_with_bounds(0, None);
         let keys: Vec<_> = rows.into_iter().map(|r| r.key).collect();
         assert_eq!(keys, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn build_row_data_type_mismatch() {
+        use crate::storage::row::build_row_data;
+        let columns = vec![
+            ("id".into(), ColumnType::Integer),
+            ("name".into(), ColumnType::Text),
+        ];
+        let values = vec!["abc".to_string(), "bob".to_string()];
+        let result = build_row_data(&values, &columns);
+        assert!(result.is_err());
     }
 }
