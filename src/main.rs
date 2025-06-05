@@ -77,6 +77,12 @@ fn main() -> io::Result<()> {
                                     warn!("Error inserting into {}: {}", table_name, e);
                                 } else {
                                     info!("Row inserted into '{}'", table_name);
+                                    let new_root = table_btree.root_page();
+                                    if new_root != root_page {
+                                        if let Ok(t) = catalog.get_table_mut(&table_name) {
+                                            t.root_page = new_root;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -181,6 +187,10 @@ mod tests {
             let root_page = catalog.get_table("users").unwrap().root_page;
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
             table_btree.insert(i as i32, &buf[..]).unwrap();
+            let new_root = table_btree.root_page();
+            if new_root != root_page {
+                catalog.get_table_mut("users").unwrap().root_page = new_root;
+            }
         }
 
         // 5) Now scan all rows in “users” and collect them.

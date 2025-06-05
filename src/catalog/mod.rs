@@ -97,6 +97,13 @@ impl Catalog {
         })
     }
 
+    /// Mutable variant of `get_table` so callers can update the metadata.
+    pub fn get_table_mut(&mut self, name: &str) -> io::Result<&mut TableInfo> {
+        self.tables.get_mut(name).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, format!("No such table: {}", name))
+        })
+    }
+
     /// Serialize a catalog row into a UTF-8 string:
     ///
     /// [u32 name_len][name_bytes][u32 root_page][u16 num_columns]

@@ -796,6 +796,12 @@ impl<'a> BTree<'a> {
         Ok(BTree { root_page, pager })
     }
 
+    /// Return the page number of the current root node. Callers can use this
+    /// after insertions to detect if the root has split.
+    pub fn root_page(&self) -> u32 {
+        self.root_page
+    }
+
     pub fn scan_all_rows(&'a mut self) -> RowCursor<'a> {
         // 1) Find leftmost leaf
         let mut page_num = self.root_page;
