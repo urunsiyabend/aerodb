@@ -23,8 +23,8 @@ pub const NODE_TYPE_OFFSET: usize   = 0;          // 1 byte
 pub const IS_ROOT_OFFSET: usize     = 1;          // 1 byte
 pub const PARENT_PAGE_OFFSET: usize = 2;          // 4 bytes (u32)
 pub const CELL_COUNT_OFFSET: usize  = 6;          // 2 bytes (u16)
-pub const HEADER_SIZE: usize        = 8;          // total header length
 
+pub const HEADER_SIZE: usize = 1 + 1 + 4 + 2 + 4; // =12 bytes now
 pub const NODE_INTERNAL: u8 = 0;
 pub const NODE_LEAF: u8     = 1;
 
@@ -70,4 +70,14 @@ pub fn get_cell_count(page: &[u8; PAGE_SIZE]) -> u16 {
 pub fn set_cell_count(page: &mut [u8; PAGE_SIZE], count: u16) {
     page[CELL_COUNT_OFFSET..CELL_COUNT_OFFSET + 2]
         .copy_from_slice(&count.to_le_bytes());
+}
+
+/// Leaf‐only: read the 4‐byte next‐leaf pointer at offsets (1+1+4+2) .. (1+1+4+2+4)
+pub fn get_next_leaf(page_data: &[u8]) -> u32 {
+    u32::from_le_bytes(page_data[8..12].try_into().unwrap())
+}
+
+/// Leaf‐only: write the 4‐byte next‐leaf pointer
+pub fn set_next_leaf(page_data: &mut [u8], next: u32) {
+    page_data[8..12].copy_from_slice(&next.to_le_bytes());
 }

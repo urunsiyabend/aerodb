@@ -13,6 +13,7 @@ use crate::catalog::Catalog;
 use crate::sql::parser::parse_statement;
 use crate::sql::ast::Statement;
 
+// const DATABASE_FILE: &str = "data.aerodb";
 const DATABASE_FILE: &str = "data.aerodb";
 
 fn main() -> io::Result<()> {
@@ -76,6 +77,12 @@ fn main() -> io::Result<()> {
                                     warn!("Error inserting into {}: {}", table_name, e);
                                 } else {
                                     info!("Row inserted into '{}'", table_name);
+                                    let new_root = table_btree.root_page();
+                                    if new_root != root_page {
+                                        if let Ok(t) = catalog.get_table_mut(&table_name) {
+                                            t.root_page = new_root;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -133,4 +140,67 @@ fn main() -> io::Result<()> {
 
     info!("Goodbye!");
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*; // bring Catalog, Pager, BTree, etc. into scope
+    use std::fs;
+
+    #[test]
+    fn create_100_users_and_select_all() {
+        // 1) Remove any existing test.db
+        let filename = "test.db";
+        let _ = fs::remove_file(filename);
+
+        // 2) Open a new Catalog (which owns its Pager internally)
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        // 3) CREATE TABLE users (id, name, email)
+        catalog
+            .create_table(
+                "users",
+                vec!["id".into(), "name".into(), "email".into()],
+            )
+            .unwrap();
+
+        // 4) Insert 100 rows:
+        for i in 1..=100 {
+            let values = vec![
+                i.to_string(),
+                format!("user{}", i),
+                format!("u{}@example.com", i),
+            ];
+            // Serialize into buf: [u16 num_cols][u32 len1][bytes1][u32 len2][bytes2]...
+            let mut buf = Vec::new();
+            let col_count = (values.len() as u16).to_le_bytes();
+            buf.extend(&col_count);
+            for v in &values {
+                let vb = v.as_bytes();
+                let len = (vb.len() as u32).to_le_bytes();
+                buf.extend(&len);
+                buf.extend(vb);
+            }
+
+            // Look up the root_page for “users” and open its B-Tree.
+            let root_page = catalog.get_table("users").unwrap().root_page;
+            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            table_btree.insert(i as i32, &buf[..]).unwrap();
+            let new_root = table_btree.root_page();
+            if new_root != root_page {
+                catalog.get_table_mut("users").unwrap().root_page = new_root;
+            }
+        }
+
+        // 5) Now scan all rows in “users” and collect them.
+        let root_page = catalog.get_table("users").unwrap().root_page;
+        let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut rows: Vec<_> = table_btree.scan_all_rows().collect();
+
+        // Assert we got exactly 100 rows, with keys 1 and 100 at the ends
+        assert_eq!(rows.len(), 100, "Expected 100 rows in users, got {}", rows.len());
+        assert_eq!(rows.first().unwrap().key, 1);
+        assert_eq!(rows.last().unwrap().key, 100);
+    }
 }
