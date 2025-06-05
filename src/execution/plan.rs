@@ -8,6 +8,11 @@ pub enum PlanNode {
         columns: Vec<(String, ColumnType)>,
         if_not_exists: bool,
     },
+    CreateIndex {
+        index_name: String,
+        table_name: String,
+        column_name: String,
+    },
     DropTable {
         table_name: String,
         if_exists: bool,
@@ -34,6 +39,9 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
     match stmt {
         Statement::CreateTable { table_name, columns, if_not_exists } => {
             PlanNode::CreateTable { table_name, columns, if_not_exists }
+        }
+        Statement::CreateIndex { index_name, table_name, column_name } => {
+            PlanNode::CreateIndex { index_name, table_name, column_name }
         }
         Statement::Insert { table_name, values } => {
             PlanNode::Insert { table_name, values }

@@ -14,9 +14,18 @@ pub struct TableInfo {
     pub columns: Vec<(String, ColumnType)>, // column name and type
 }
 
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub name: String,
+    pub table_name: String,
+    pub column_name: String,
+    pub root_page: u32,
+}
+
 /// The Catalog holds all user tables. Internally, it also persists itself in B-Tree page 1.
 pub struct Catalog {
     tables: HashMap<String, TableInfo>,
+    indexes: HashMap<String, IndexInfo>,
     pub(crate) pager: Pager,
 }
 
@@ -50,7 +59,7 @@ impl Catalog {
             }
         }
 
-        Ok(Catalog { tables, pager })
+        Ok(Catalog { tables, indexes: HashMap::new(), pager })
     }
 
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
@@ -89,6 +98,171 @@ impl Catalog {
             name.to_string(),
             TableInfo { name: name.to_string(), root_page: new_root, columns },
         );
+        Ok(())
+    }
+
+    pub fn create_index(&mut self, index_name: &str, table_name: &str, column_name: &str) -> io::Result<()> {
+        if self.indexes.contains_key(index_name) {
+            return Err(io::Error::new(io::ErrorKind::Other, "Index already exists"));
+        }
+        let (table_root, col_idx) = {
+            let table = self.get_table(table_name)?;
+            let idx = table
+                .columns
+                .iter()
+                .position(|(c, _)| c == column_name)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Column not found"))?;
+            (table.root_page, idx)
+        };
+
+        let mut root_page = self.pager.allocate_page()?;
+        {
+            let page = self.pager.get_page(root_page)?;
+            crate::storage::page::set_node_type(&mut page.data, crate::storage::page::NODE_LEAF);
+            crate::storage::page::set_is_root(&mut page.data, true);
+            crate::storage::page::set_parent(&mut page.data, 0);
+            crate::storage::page::set_cell_count(&mut page.data, 0);
+            self.pager.flush_page(root_page)?;
+        }
+
+        // Build index from existing rows
+        {
+            let mut table_btree = BTree::open_root(&mut self.pager, table_root)?;
+            let mut cursor = table_btree.scan_all_rows();
+            let mut rows = Vec::new();
+            while let Some(row) = cursor.next() {
+                rows.push(row);
+            }
+            drop(cursor);
+            let mut index_tree = BTree::open_root(&mut self.pager, root_page)?;
+            for row in rows {
+                if let Some(val) = row.data.0.get(col_idx).cloned() {
+                    root_page = Catalog::insert_index_value(&mut index_tree, val, row.key)?;
+                }
+            }
+            // update root_page in case tree changed
+            self.pager.flush_page(root_page)?;
+        }
+
+        self.indexes.insert(
+            index_name.to_string(),
+            IndexInfo {
+                name: index_name.to_string(),
+                table_name: table_name.to_string(),
+                column_name: column_name.to_string(),
+                root_page,
+            },
+        );
+        Ok(())
+    }
+
+    fn insert_index_value(index_tree: &mut BTree, value: ColumnValue, row_key: i32) -> io::Result<u32> {
+        let hash = Catalog::hash_value(&value);
+        if let Some(mut existing) = index_tree.find(hash)? {
+            if let ColumnValue::Text(ref s) = existing.data.0[0] {
+                if *s == Self::value_to_string(&value) {
+                    existing.data.0.push(ColumnValue::Integer(row_key));
+                    index_tree.delete(hash)?;
+                    index_tree.insert(hash, existing.data)?;
+                    return Ok(index_tree.root_page());
+                }
+            }
+        }
+        let data = RowData(vec![ColumnValue::Text(Self::value_to_string(&value)), ColumnValue::Integer(row_key)]);
+        index_tree.insert(hash, data)?;
+        Ok(index_tree.root_page())
+    }
+
+    fn value_to_string(val: &ColumnValue) -> String {
+        match val {
+            ColumnValue::Integer(i) => i.to_string(),
+            ColumnValue::Text(s) => s.clone(),
+            ColumnValue::Boolean(b) => b.to_string(),
+        }
+    }
+
+    pub fn hash_value(val: &ColumnValue) -> i32 {
+        match val {
+            ColumnValue::Integer(i) => *i,
+            ColumnValue::Text(s) => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                s.hash(&mut h);
+                (h.finish() as i64 & 0x7FFF_FFFF) as i32
+            }
+            ColumnValue::Boolean(b) => if *b { 1 } else { 0 },
+        }
+    }
+
+    pub fn insert_into_indexes(&mut self, table_name: &str, row_data: &RowData) -> io::Result<()> {
+        let indices: Vec<IndexInfo> = self.indexes.values().cloned().collect();
+        for idx in indices {
+            if idx.table_name == table_name {
+                let col_pos = self
+                    .tables
+                    .get(table_name)
+                    .and_then(|t| t.columns.iter().position(|(c, _)| c == &idx.column_name))
+                    .unwrap();
+                if let Some(val) = row_data.0.get(col_pos).cloned() {
+                    let mut tree = BTree::open_root(&mut self.pager, idx.root_page)?;
+                    let key = match row_data.0[0] {
+                        ColumnValue::Integer(i) => i,
+                        _ => continue,
+                    };
+                    let new_root = Catalog::insert_index_value(&mut tree, val, key)?;
+                    if let Some(idx_info) = self.indexes.get_mut(&idx.name) {
+                        idx_info.root_page = new_root;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn find_index(&self, table: &str, column: &str) -> Option<&IndexInfo> {
+        self.indexes.values().find(|idx| idx.table_name == table && idx.column_name == column)
+    }
+
+    pub fn remove_from_indexes(&mut self, table_name: &str, row_data: &RowData, row_key: i32) -> io::Result<()> {
+        let indices: Vec<IndexInfo> = self.indexes.values().cloned().collect();
+        for idx in indices {
+            if idx.table_name == table_name {
+                let col_pos = self
+                    .tables
+                    .get(table_name)
+                    .and_then(|t| t.columns.iter().position(|(c, _)| c == &idx.column_name))
+                    .unwrap();
+                if let Some(val) = row_data.0.get(col_pos).cloned() {
+                    let mut tree = BTree::open_root(&mut self.pager, idx.root_page)?;
+                    let hash = Catalog::hash_value(&val);
+                    if let Some(mut entry) = tree.find(hash)? {
+                        if let ColumnValue::Text(ref stored) = entry.data.0[0] {
+                            if *stored == Self::value_to_string(&val) {
+                                let mut keep = Vec::new();
+                                for v in entry.data.0.iter().skip(1) {
+                                    if let ColumnValue::Integer(k) = v {
+                                        if *k != row_key {
+                                            keep.push(*k);
+                                        }
+                                    }
+                                }
+                                tree.delete(hash)?;
+                                if !keep.is_empty() {
+                                    let mut data = vec![ColumnValue::Text(stored.clone())];
+                                    for k in keep {
+                                        data.push(ColumnValue::Integer(k));
+                                    }
+                                    tree.insert(hash, RowData(data))?;
+                                }
+                                if let Some(idx_info) = self.indexes.get_mut(&idx.name) {
+                                    idx_info.root_page = tree.root_page();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 

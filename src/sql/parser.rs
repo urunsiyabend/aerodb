@@ -50,6 +50,19 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
     }
     match tokens[0].to_uppercase().as_str() {
         "CREATE" => {
+            if tokens.len() >= 3 && tokens[1].eq_ignore_ascii_case("INDEX") {
+                if tokens.len() < 6 || !tokens[3].eq_ignore_ascii_case("ON") {
+                    return Err("Usage: CREATE INDEX <name> ON <table>(<column>)".to_string());
+                }
+                let index_name = tokens[2].to_string();
+                let table_name = tokens[4].trim_end_matches(';').to_string();
+                let rest = input[input.find('(').ok_or("Missing '('")?..].trim();
+                if !rest.starts_with('(') || !rest.ends_with(')') {
+                    return Err("Column must be in parentheses".to_string());
+                }
+                let col = rest[1..rest.len() - 1].trim().to_string();
+                return Ok(Statement::CreateIndex { index_name, table_name, column_name: col });
+            }
             // Expect: CREATE TABLE [IF NOT EXISTS] table_name (col1 TYPE, ...)
             if tokens.len() < 4 || !tokens[1].eq_ignore_ascii_case("TABLE") {
                 return Err("Usage: CREATE TABLE <name> (col1, col2, ...)".to_string());

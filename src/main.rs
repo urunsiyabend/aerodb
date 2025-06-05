@@ -21,7 +21,7 @@ fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Exp
     if let Ok(table_info) = catalog.get_table(table_name) {
         let root_page = table_info.root_page;
         let columns = table_info.columns.clone();
-        let keys = {
+        let rows_to_delete = {
             let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
             let mut cursor = scan_tree.scan_all_rows();
             let mut collected = Vec::new();
@@ -37,20 +37,20 @@ fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Exp
                         values.insert(col.clone(), v);
                     }
                     if crate::sql::ast::evaluate_expression(expr, &values) {
-                        collected.push(row.key);
+                        collected.push(row);
                     }
                 } else {
-                    collected.push(row.key);
+                    collected.push(row);
                 }
             }
             drop(cursor);
             collected
         };
 
-        if !keys.is_empty() {
+        if !rows_to_delete.is_empty() {
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
-            for k in keys {
-                table_btree.delete(k)?;
+            for r in &rows_to_delete {
+                table_btree.delete(r.key)?;
             }
             let new_root = table_btree.root_page();
             drop(table_btree);
@@ -59,9 +59,80 @@ fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Exp
                     t.root_page = new_root;
                 }
             }
+
+            for r in rows_to_delete {
+                catalog.remove_from_indexes(table_name, &r.data, r.key)?;
+            }
         }
     }
     Ok(())
+}
+
+fn execute_select_with_indexes(
+    catalog: &mut Catalog,
+    table_name: &str,
+    selection: Option<Expr>,
+    out: &mut Vec<crate::storage::row::Row>,
+) -> io::Result<bool> {
+    let table_info = catalog.get_table(table_name)?;
+    let root_page = table_info.root_page;
+    let columns = table_info.columns.clone();
+
+    // Try to use index for simple equality
+    if let Some(Expr::Equals { left, right }) = selection.clone() {
+        let (col_name, value) = if columns.iter().any(|(c, _)| c == &left) {
+            (left, right)
+        } else if columns.iter().any(|(c, _)| c == &right) {
+            (right, left)
+        } else {
+            ("".into(), String::new())
+        };
+        if !col_name.is_empty() {
+            if let Some(index) = catalog.find_index(table_name, &col_name).cloned() {
+                let mut index_tree = BTree::open_root(&mut catalog.pager, index.root_page)?;
+                let val_cv = ColumnValue::Text(value.clone());
+                let hash = Catalog::hash_value(&val_cv);
+                if let Some(row) = index_tree.find(hash)? {
+                    if let ColumnValue::Text(ref stored) = row.data.0[0] {
+                        if stored == &value {
+                            for val in row.data.0.iter().skip(1) {
+                                if let ColumnValue::Integer(k) = val {
+                                    let mut table_tree = BTree::open_root(&mut catalog.pager, root_page)?;
+                                    if let Some(r) = table_tree.find(*k)? {
+                                        out.push(r);
+                                    }
+                                }
+                            }
+                            return Ok(true);
+                        }
+                    }
+                }
+                return Ok(true);
+            }
+        }
+    }
+
+    let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
+    let mut cursor = table_btree.scan_all_rows();
+    while let Some(row) = cursor.next() {
+        if let Some(ref expr) = selection {
+            let mut values = std::collections::HashMap::new();
+            for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
+                let v = match val {
+                    ColumnValue::Integer(i) => i.to_string(),
+                    ColumnValue::Text(s) => s.clone(),
+                    ColumnValue::Boolean(b) => b.to_string(),
+                };
+                values.insert(col.clone(), v);
+            }
+            if crate::sql::ast::evaluate_expression(expr, &values) {
+                out.push(row);
+            }
+        } else {
+            out.push(row);
+        }
+    }
+    Ok(false)
 }
 
 fn main() -> io::Result<()> {
@@ -101,6 +172,14 @@ fn main() -> io::Result<()> {
                         }
                     }
                 }
+                Statement::CreateIndex { index_name, table_name, column_name } => {
+                    debug!("CREATE INDEX {} ON {}({})", index_name, table_name, column_name);
+                    if let Err(e) = catalog.create_index(&index_name, &table_name, &column_name) {
+                        warn!("Error creating index {}: {}", index_name, e);
+                    } else {
+                        info!("Index '{}' created", index_name);
+                    }
+                }
                 Statement::Insert { table_name, values } => {
                     debug!("INSERT INTO {} VALUES {:?}", table_name, values);
 
@@ -129,6 +208,7 @@ fn main() -> io::Result<()> {
                             };
                             {
                                 let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
+                                let row_copy = row_data.clone();
                                 if let Err(e) = table_btree.insert(key, row_data) {
                                     warn!("Error inserting into {}: {}", table_name, e);
                                 } else {
@@ -139,6 +219,7 @@ fn main() -> io::Result<()> {
                                             t.root_page = new_root;
                                         }
                                     }
+                                    catalog.insert_into_indexes(&table_name, &row_copy)?;
                                 }
                             }
                         }
@@ -774,5 +855,177 @@ mod tests {
         drop(catalog);
         let catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
         assert!(catalog.get_table("users").is_err());
+    }
+
+    #[test]
+    fn parse_create_index() {
+        let stmt = parse_statement("CREATE INDEX idx_name ON users (name)").unwrap();
+        match stmt {
+            Statement::CreateIndex { index_name, table_name, column_name } => {
+                assert_eq!(index_name, "idx_name");
+                assert_eq!(table_name, "users");
+                assert_eq!(column_name, "name");
+            }
+            _ => panic!("Expected create index"),
+        }
+    }
+
+    #[test]
+    fn index_insert_and_select() {
+        let filename = "test_index.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
+            .unwrap();
+
+        catalog
+            .create_index("idx_name", "users", "name")
+            .unwrap();
+
+        for i in 1..=3 {
+            let values = vec![i.to_string(), format!("user{}", i)];
+            let stmt = Statement::Insert { table_name: "users".into(), values };
+            match stmt {
+                Statement::Insert { table_name, values } => {
+                    let table_info = catalog.get_table(&table_name).unwrap();
+                    let row_data = build_row_data(&values, &table_info.columns).unwrap();
+                    let key = match row_data.0[0] {
+                        ColumnValue::Integer(k) => k,
+                        _ => unreachable!(),
+                    };
+                    let root_page = table_info.root_page;
+                    let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+                    bt.insert(key, row_data.clone()).unwrap();
+                    let new_root = bt.root_page();
+                    drop(bt);
+                    if new_root != root_page {
+                        catalog.get_table_mut(&table_name).unwrap().root_page = new_root;
+                    }
+                    catalog.insert_into_indexes(&table_name, &row_data).unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        let stmt = parse_statement("SELECT * FROM users WHERE name = user2").unwrap();
+        match stmt {
+            Statement::Select { table_name, selection, .. } => {
+                let mut results = Vec::new();
+                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                assert!(used, "index should be used for equality predicate");
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].key, 2);
+            }
+            _ => panic!("Expected select"),
+        }
+    }
+
+    #[test]
+    fn index_deletes_are_visible() {
+        let filename = "test_index_delete.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
+            .unwrap();
+        catalog.create_index("idx_name", "users", "name").unwrap();
+
+        for i in 1..=3 {
+            let values = vec![i.to_string(), format!("user{}", i)];
+            let table_info = catalog.get_table("users").unwrap();
+            let row_data = build_row_data(&values, &table_info.columns).unwrap();
+            let key = match row_data.0[0] {
+                ColumnValue::Integer(k) => k,
+                _ => unreachable!(),
+            };
+            let root_page = table_info.root_page;
+            let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            bt.insert(key, row_data.clone()).unwrap();
+            let new_root = bt.root_page();
+            drop(bt);
+            if new_root != root_page {
+                catalog.get_table_mut("users").unwrap().root_page = new_root;
+            }
+            catalog.insert_into_indexes("users", &row_data).unwrap();
+        }
+
+        // Delete the row with name = user2
+        let expr = Expr::Equals { left: "name".into(), right: "user2".into() };
+        execute_delete(&mut catalog, "users", Some(expr)).unwrap();
+
+        let stmt = parse_statement("SELECT * FROM users WHERE name = user2").unwrap();
+        match stmt {
+            Statement::Select { table_name, selection, .. } => {
+                let mut results = Vec::new();
+                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                assert!(used, "index should be used on delete check");
+                assert!(results.is_empty());
+            }
+            _ => panic!("Expected select"),
+        }
+    }
+
+    #[test]
+    fn index_handles_duplicates() {
+        let filename = "test_index_dup.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
+            .unwrap();
+        catalog.create_index("idx_name", "users", "name").unwrap();
+
+        for i in 1..=3 {
+            let values = vec![i.to_string(), "dup".to_string()];
+            let table_info = catalog.get_table("users").unwrap();
+            let row_data = build_row_data(&values, &table_info.columns).unwrap();
+            let key = match row_data.0[0] {
+                ColumnValue::Integer(k) => k,
+                _ => unreachable!(),
+            };
+            let root_page = table_info.root_page;
+            let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            bt.insert(key, row_data.clone()).unwrap();
+            let new_root = bt.root_page();
+            drop(bt);
+            if new_root != root_page {
+                catalog.get_table_mut("users").unwrap().root_page = new_root;
+            }
+            catalog.insert_into_indexes("users", &row_data).unwrap();
+        }
+
+        let stmt = parse_statement("SELECT * FROM users WHERE name = dup").unwrap();
+        match stmt {
+            Statement::Select { table_name, selection, .. } => {
+                let mut results = Vec::new();
+                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                assert!(used, "index should be used for duplicate values");
+                let keys: Vec<i32> = results.iter().map(|r| r.key).collect();
+                assert_eq!(keys, vec![1, 2, 3]);
+            }
+            _ => panic!("Expected select"),
+        }
     }
 }

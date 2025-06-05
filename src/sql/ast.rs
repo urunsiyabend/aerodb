@@ -1,7 +1,7 @@
 // src/sql/ast.rs
 use crate::storage::row::ColumnType;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     Equals { left: String, right: String },
     NotEquals { left: String, right: String },
@@ -21,6 +21,11 @@ pub enum Statement {
         table_name: String,
         columns: Vec<(String, ColumnType)>,
         if_not_exists: bool,
+    },
+    CreateIndex {
+        index_name: String,
+        table_name: String,
+        column_name: String,
     },
     DropTable {
         table_name: String,
