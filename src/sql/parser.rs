@@ -84,10 +84,16 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 return Err("Values must be in parentheses".to_string());
             }
             let inner = &rest[1..rest.len() - 1];
-            // For simplicity, treat each comma‐separated chunk as a literal string (no quotes).
             let vals: Vec<String> = inner
                 .split(',')
-                .map(|s| s.trim().to_string())
+                .map(|s| {
+                    let v = s.trim();
+                    if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+                        v[1..v.len() - 1].to_string()
+                    } else {
+                        v.to_string()
+                    }
+                })
                 .filter(|s| !s.is_empty())
                 .collect();
             if vals.is_empty() {

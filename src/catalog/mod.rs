@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::io;
 
-use crate::storage::btree::{BTree, Row};
+use crate::storage::btree::BTree;
+use crate::storage::row::{Row, RowData, ColumnValue};
 use crate::storage::pager::Pager;
 
 /// In‐memory representation of a table’s metadata.
@@ -73,13 +74,13 @@ impl Catalog {
         }
 
         // Build the catalog row payload: [name_len][name][root_page][num_columns][col1_len][col1]...
-        let blob_bytes = Self::serialize_catalog_row(name, new_root, &columns);
+        let blob_data = Self::serialize_catalog_row(name, new_root, &columns);
 
         // Use a synthetic key = (current number of tables + 1)
         let key = (self.tables.len() as i32) + 1;
         {
             let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
-            catalog_btree.insert(key, &blob_bytes)?;
+            catalog_btree.insert(key, blob_data)?;
         }
 
         // Update in-memory
@@ -108,46 +109,42 @@ impl Catalog {
     ///
     /// [u32 name_len][name_bytes][u32 root_page][u16 num_columns]
     /// for each column: [u32 col_len][col_bytes]
-    fn serialize_catalog_row(name: &str, root_page: u32, columns: &[String]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        let name_bytes = name.as_bytes();
-        buf.extend(&(name_bytes.len() as u32).to_le_bytes());
-        buf.extend(name_bytes);
-        buf.extend(&root_page.to_le_bytes());
-        buf.extend(&(columns.len() as u16).to_le_bytes());
+    fn serialize_catalog_row(name: &str, root_page: u32, columns: &[String]) -> RowData {
+        let mut vals = Vec::new();
+        vals.push(ColumnValue::Text(name.to_string()));
+        vals.push(ColumnValue::Integer(root_page as i32));
+        vals.push(ColumnValue::Integer(columns.len() as i32));
         for col in columns {
-            let cbytes = col.as_bytes();
-            buf.extend(&(cbytes.len() as u32).to_le_bytes());
-            buf.extend(cbytes);
+            vals.push(ColumnValue::Text(col.clone()));
         }
-        buf
+        RowData(vals)
     }
 
     /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>).
     fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<String>)> {
-        let bytes = &row.payload[..];
-        let mut offset = 0;
-
-        let name_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-        let name = String::from_utf8_lossy(&bytes[offset..offset + name_len]).to_string();
-        offset += name_len;
-
-        let root_page = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        offset += 4;
-
-        let num_cols = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
-        offset += 2;
-
-        let mut columns = Vec::with_capacity(num_cols);
-        for _ in 0..num_cols {
-            let col_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-            offset += 4;
-            let col_name = String::from_utf8_lossy(&bytes[offset..offset + col_len]).to_string();
-            offset += col_len;
-            columns.push(col_name);
+        let values = &row.data.0;
+        if values.len() < 3 {
+            return Err(io::Error::new(io::ErrorKind::Other, "catalog row too short"));
         }
-
+        let name = match &values[0] {
+            ColumnValue::Text(s) => s.clone(),
+            _ => return Err(io::Error::new(io::ErrorKind::Other, "catalog name not text")),
+        };
+        let root_page = match values[1] {
+            ColumnValue::Integer(i) => i as u32,
+            _ => return Err(io::Error::new(io::ErrorKind::Other, "root page not int")),
+        };
+        let num_cols = match values[2] {
+            ColumnValue::Integer(i) => i as usize,
+            _ => return Err(io::Error::new(io::ErrorKind::Other, "num cols not int")),
+        };
+        let mut columns = Vec::new();
+        for i in 0..num_cols {
+            match &values[3 + i] {
+                ColumnValue::Text(s) => columns.push(s.clone()),
+                _ => return Err(io::Error::new(io::ErrorKind::Other, "column name not text")),
+            }
+        }
         Ok((name, root_page, columns))
     }
 }

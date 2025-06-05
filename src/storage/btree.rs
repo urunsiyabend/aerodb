@@ -1,29 +1,9 @@
 use std::io;
 use log::debug;
 use crate::storage::pager::Pager;
+use crate::storage::row::{Row, RowData, ColumnValue};
 use crate::storage::page::{get_cell_count, get_node_type, set_cell_count, set_node_type, set_parent, set_is_root, NODE_LEAF, HEADER_SIZE, PAGE_SIZE, NODE_INTERNAL, get_parent, get_next_leaf, set_next_leaf};
 
-/// A single row in our leaf: (key, payload).
-#[derive(Debug, Clone)]
-pub struct Row {
-    pub key: i32,
-    pub payload: Vec<u8>, // store raw bytes, not a UTF-8 string
-}
-
-// ┌──────────────────────────────────────────────────────────────────────────────┐
-// │ Offset │ Length │ Description                                                │
-// │────────┼────────┼────────────────────────────────────────────────────────────│
-// │   0    │   1    │ NODE_TYPE (0=internal, 1=leaf)                             │
-// │   1    │   1    │ IS_ROOT (0=false, 1=true)                                  │
-// │   2    │   4    │ PARENT_PAGE (u32) – page number of parent (0 if none)      │
-// │   6    │   2    │ CELL_COUNT (u16) – how many cells are in this node         │
-// │────────┼────────┼────────────────────────────────────────────────────────────│
-// │   8    │ (PAGE_SIZE − 8) │ Cells: [key,u32][payload_len,u32][payload_bytes]… │
-// └──────────────────────────────────────────────────────────────────────────────┘
-
-
-/// A B-Tree that can grow to arbitrary height by splitting leaves and internal nodes.
-/// Internally, pages with NODE_TYPE=NODE_LEAF store multiple rows; pages with NODE_TYPE=NODE_INTERNAL
 /// store multiple separator keys and child pointers.
 ///
 /// Page format is:
@@ -163,14 +143,14 @@ impl<'a> BTree<'a> {
         self.find_in_page(child_page, key)
     }
 
-    /// Public insert: adds (key, payload) into the tree.
-    pub fn insert(&mut self, key: i32, payload: &[u8]) -> io::Result<()> {
+    /// Public insert: adds (key, data) into the tree.
+    pub fn insert(&mut self, key: i32, data: RowData) -> io::Result<()> {
         debug!(
             "insert() → starting at root {} for key={}",
             self.root_page, key
         );
 
-        let res = self.insert_into_page(self.root_page, key, payload);
+        let res = self.insert_into_page(self.root_page, key, data);
         debug!("insert() complete for key={}", key);
         res
     }
@@ -217,7 +197,7 @@ impl<'a> BTree<'a> {
         // Replace root and insert rows back
         self.root_page = new_root;
         for row in all_rows {
-            self.insert(row.key, &row.payload)?;
+            self.insert(row.key, row.data.clone())?;
         }
         Ok(true)
     }
@@ -250,7 +230,7 @@ impl<'a> BTree<'a> {
     }
 
     /// Recursive helper to insert into page `page_num`. May split leaf or internal pages.
-    fn insert_into_page(&mut self, page_num: u32, key: i32, payload: &[u8]) -> io::Result<()> {
+    fn insert_into_page(&mut self, page_num: u32, key: i32, data: RowData) -> io::Result<()> {
         let page = self.pager.get_page(page_num)?;
         let node_type = get_node_type(&page.data);
 
@@ -269,7 +249,7 @@ impl<'a> BTree<'a> {
             }
 
             // Insert new row and sort
-            rows.push(Row { key, payload: payload.to_vec() });
+            rows.push(Row { key, data: data.clone() });
             rows.sort_by_key(|r| r.key);
 
             // Try writing back to leaf
@@ -318,7 +298,7 @@ impl<'a> BTree<'a> {
                     child_page, page_num
                 );
 
-                return self.insert_into_page(child_page, key, payload);
+                return self.insert_into_page(child_page, key, data.clone());
             } else {
                 child_page = right_child;
             }
@@ -330,7 +310,7 @@ impl<'a> BTree<'a> {
         );
 
         // Descend to last child
-        self.insert_into_page(child_page, key, payload)
+        self.insert_into_page(child_page, key, data.clone())
     }
 
     /// Split a leaf page that has overflowed. `all_rows` is the full (sorted) list of rows.
@@ -709,9 +689,10 @@ impl<'a> BTree<'a> {
                     "read_all_rows_from_leaf: corrupt payload length",
                 ));
             }
-            let payload = page.data[start..end].to_vec();
+            let bytes = &page.data[start..end];
+            let data = RowData::deserialize(bytes)?;
 
-            rows.push(Row { key, payload });
+            rows.push(Row { key, data });
             offset = end;
         }
 
@@ -726,9 +707,10 @@ impl<'a> BTree<'a> {
         // 1) Compute total size of all row‐bodies (4B key + 4B length + payload.len())
         let mut total_size: usize = 0;
         for row in rows {
-            total_size += 4;                 // key
-            total_size += 4;                 // length
-            total_size += row.payload.len(); // actual bytes
+            let bytes = row.data.serialize();
+            total_size += 4; // key
+            total_size += 4; // length
+            total_size += bytes.len();
         }
 
         // 2) Check overflow: if HEADER_SIZE + total_size > PAGE_SIZE, it truly won't fit
@@ -747,18 +729,19 @@ impl<'a> BTree<'a> {
         // 4) Pack each row at offset = HEADER_SIZE
         let mut offset = HEADER_SIZE;
         for row in rows {
+            let bytes = row.data.serialize();
             // 4A: 4 bytes for key
             let key_bytes = row.key.to_le_bytes();
             page.data[offset..offset + 4].copy_from_slice(&key_bytes);
 
             // 4B: 4 bytes for payload length
-            let plen = (row.payload.len() as u32).to_le_bytes();
+            let plen = (bytes.len() as u32).to_le_bytes();
             page.data[offset + 4..offset + 8].copy_from_slice(&plen);
 
             // 4C: payload bytes
             let start = offset + 8;
-            let end = start + row.payload.len();
-            page.data[start..end].copy_from_slice(&row.payload);
+            let end = start + bytes.len();
+            page.data[start..end].copy_from_slice(&bytes);
 
             offset = end;
         }
@@ -963,8 +946,9 @@ impl<'b> Iterator for RowCursor<'b> {
                 if end > PAGE_SIZE {
                     return None;
                 }
-                let payload = page.data[start..end].to_vec();
-                let row = Row { key, payload };
+                let bytes = &page.data[start..end];
+                let data = RowData::deserialize(bytes).ok()?;
+                let row = Row { key, data };
 
                 // Advance offsets
                 self.offset = end;
