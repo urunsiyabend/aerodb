@@ -238,6 +238,43 @@ fn main() -> io::Result<()> {
                             let columns = table_info.columns.clone();
                             // Immutable borrow ends here.
 
+                            // First try to use an index for simple equality queries without
+                            // additional modifiers.
+                            let mut maybe_results = Vec::new();
+                            if selection.is_some()
+                                && limit.is_none()
+                                && offset.is_none()
+                                && order_by.is_none()
+                            {
+                                if execute_select_with_indexes(
+                                    &mut catalog,
+                                    &table_name,
+                                    selection.clone(),
+                                    &mut maybe_results,
+                                )? {
+                                    println!("-- Contents of table '{}':", table_name);
+                                    let header: Vec<String> = columns
+                                        .iter()
+                                        .map(|(c, t)| format!("{} ({})", c, t.as_str()))
+                                        .collect();
+                                    println!("{:?}", header);
+                                    for row in maybe_results {
+                                        let vals: Vec<String> = row
+                                            .data
+                                            .0
+                                            .iter()
+                                            .map(|c| match c {
+                                                ColumnValue::Integer(i) => i.to_string(),
+                                                ColumnValue::Text(s) => s.clone(),
+                                                ColumnValue::Boolean(b) => b.to_string(),
+                                            })
+                                            .collect();
+                                        println!("{:?}", vals);
+                                    }
+                                    continue;
+                                }
+                            }
+
                             // Now we can borrow `catalog.pager` mutably to scan the table.
                             {
                                 let mut table_btree = BTree::open_root(
@@ -1024,6 +1061,99 @@ mod tests {
                 assert!(used, "index should be used for duplicate values");
                 let keys: Vec<i32> = results.iter().map(|r| r.key).collect();
                 assert_eq!(keys, vec![1, 2, 3]);
+            }
+            _ => panic!("Expected select"),
+        }
+    }
+
+    #[test]
+    fn index_not_used_when_missing() {
+        let filename = "test_index_missing.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
+            .unwrap();
+
+        for i in 1..=2 {
+            let values = vec![i.to_string(), format!("user{}", i)];
+            let table_info = catalog.get_table("users").unwrap();
+            let row_data = build_row_data(&values, &table_info.columns).unwrap();
+            let key = match row_data.0[0] {
+                ColumnValue::Integer(k) => k,
+                _ => unreachable!(),
+            };
+            let root_page = table_info.root_page;
+            let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            bt.insert(key, row_data.clone()).unwrap();
+            if bt.root_page() != root_page {
+                catalog.get_table_mut("users").unwrap().root_page = bt.root_page();
+            }
+            catalog.insert_into_indexes("users", &row_data).unwrap();
+        }
+
+        let stmt = parse_statement("SELECT * FROM users WHERE id = 1").unwrap();
+        match stmt {
+            Statement::Select { table_name, selection, .. } => {
+                let mut results = Vec::new();
+                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                assert!(!used, "no index should be used when none defined");
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].key, 1);
+            }
+            _ => panic!("Expected select"),
+        }
+    }
+
+    #[test]
+    fn index_not_used_for_inequality() {
+        let filename = "test_index_inequality.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
+            .unwrap();
+        catalog.create_index("idx_name", "users", "name").unwrap();
+
+        for i in 1..=2 {
+            let values = vec![i.to_string(), format!("user{}", i)];
+            let table_info = catalog.get_table("users").unwrap();
+            let row_data = build_row_data(&values, &table_info.columns).unwrap();
+            let key = match row_data.0[0] {
+                ColumnValue::Integer(k) => k,
+                _ => unreachable!(),
+            };
+            let root_page = table_info.root_page;
+            let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            bt.insert(key, row_data.clone()).unwrap();
+            if bt.root_page() != root_page {
+                catalog.get_table_mut("users").unwrap().root_page = bt.root_page();
+            }
+            catalog.insert_into_indexes("users", &row_data).unwrap();
+        }
+
+        let stmt = parse_statement("SELECT * FROM users WHERE name != user1").unwrap();
+        match stmt {
+            Statement::Select { table_name, selection, .. } => {
+                let mut results = Vec::new();
+                let used = crate::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
+                assert!(!used, "index should not be used for inequality");
+                let keys: Vec<i32> = results.iter().map(|r| r.key).collect();
+                assert_eq!(keys, vec![2]);
             }
             _ => panic!("Expected select"),
         }
