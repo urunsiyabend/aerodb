@@ -50,11 +50,23 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
     }
     match tokens[0].to_uppercase().as_str() {
         "CREATE" => {
-            // Expect: CREATE TABLE table_name (col1, col2, col3)
+            // Expect: CREATE TABLE [IF NOT EXISTS] table_name (col1 TYPE, ...)
             if tokens.len() < 4 || !tokens[1].eq_ignore_ascii_case("TABLE") {
                 return Err("Usage: CREATE TABLE <name> (col1, col2, ...)".to_string());
             }
-            let name = tokens[2].to_string();
+            let mut idx = 2;
+            let mut if_not_exists = false;
+            if tokens.get(idx).map(|s| s.to_uppercase()) == Some("IF".to_string())
+                && tokens.get(idx + 1).map(|s| s.to_uppercase()) == Some("NOT".to_string())
+                && tokens.get(idx + 2).map(|s| s.to_uppercase()) == Some("EXISTS".to_string())
+            {
+                if_not_exists = true;
+                idx += 3;
+            }
+            if idx >= tokens.len() {
+                return Err("Usage: CREATE TABLE <name> (col1, col2, ...)".to_string());
+            }
+            let name = tokens[idx].to_string();
             // The rest is "(col1,col2,...)". Rejoin and strip parens.
             let rest = input[input.find('(').ok_or("Missing '('")?..].trim();
             if !rest.starts_with('(') || !rest.ends_with(')') {
@@ -81,6 +93,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             Ok(Statement::CreateTable {
                 table_name: name,
                 columns: cols,
+                if_not_exists,
             })
         }
         "INSERT" => {
@@ -174,6 +187,24 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             }
 
             Ok(Statement::Select { table_name: table, selection, limit, offset, order_by })
+        }
+        "DROP" => {
+            if tokens.len() < 3 || !tokens[1].eq_ignore_ascii_case("TABLE") {
+                return Err("Usage: DROP TABLE <name>".to_string());
+            }
+            let mut idx = 2;
+            let mut if_exists = false;
+            if tokens.get(idx).map(|s| s.to_uppercase()) == Some("IF".to_string())
+                && tokens.get(idx + 1).map(|s| s.to_uppercase()) == Some("EXISTS".to_string())
+            {
+                if_exists = true;
+                idx += 2;
+            }
+            if idx >= tokens.len() {
+                return Err("Usage: DROP TABLE <name>".to_string());
+            }
+            let table = tokens[idx].trim_end_matches(';').to_string();
+            Ok(Statement::DropTable { table_name: table, if_exists })
         }
         "DELETE" => {
             if tokens.len() < 5 || !tokens[1].eq_ignore_ascii_case("FROM") || !tokens[3].eq_ignore_ascii_case("WHERE") {

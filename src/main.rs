@@ -88,12 +88,17 @@ fn main() -> io::Result<()> {
 
         match parse_statement(trimmed) {
             Ok(stmt) => match stmt {
-                Statement::CreateTable { table_name, columns } => {
+                Statement::CreateTable { table_name, columns, if_not_exists } => {
                     debug!("CREATE TABLE {} {:?}", table_name, columns);
-                    if let Err(e) = catalog.create_table(&table_name, columns.clone()) {
-                        warn!("Error creating table {}: {}", table_name, e);
-                    } else {
-                        info!("Table '{}' created", table_name);
+                    match catalog.create_table(&table_name, columns.clone()) {
+                        Ok(()) => info!("Table '{}' created", table_name),
+                        Err(e) => {
+                            if if_not_exists && e.to_string().contains("already exists") {
+                                info!("Table '{}' already exists", table_name);
+                            } else {
+                                warn!("Error creating table {}: {}", table_name, e);
+                            }
+                        }
                     }
                 }
                 Statement::Insert { table_name, values } => {
@@ -251,6 +256,20 @@ fn main() -> io::Result<()> {
                         Err(e) => {
                             warn!("Table '{}' not found: {}", table_name, e);
                         }
+                    }
+                }
+                Statement::DropTable { table_name, if_exists } => {
+                    debug!("DROP TABLE {}", table_name);
+                    match catalog.drop_table(&table_name) {
+                        Ok(true) => info!("Table '{}' dropped", table_name),
+                        Ok(false) => {
+                            if if_exists {
+                                info!("Table '{}' does not exist", table_name);
+                            } else {
+                                warn!("Table '{}' does not exist", table_name);
+                            }
+                        }
+                        Err(e) => warn!("Error dropping table {}: {}", table_name, e),
                     }
                 }
                 Statement::Delete { table_name, selection } => {
@@ -667,7 +686,7 @@ mod tests {
     fn parse_create_with_types() {
         let stmt = parse_statement("CREATE TABLE t (id INTEGER, name TEXT, active BOOLEAN)").unwrap();
         match stmt {
-            Statement::CreateTable { table_name, columns } => {
+            Statement::CreateTable { table_name, columns, if_not_exists } => {
                 assert_eq!(table_name, "t");
                 assert_eq!(columns,
                     vec![
@@ -676,6 +695,7 @@ mod tests {
                         ("active".into(), ColumnType::Boolean),
                     ]
                 );
+                assert!(!if_not_exists);
             }
             _ => panic!("Expected create table"),
         }
@@ -722,5 +742,37 @@ mod tests {
         let values = vec!["abc".to_string(), "bob".to_string()];
         let result = build_row_data(&values, &columns);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_drop_table() {
+        let stmt = parse_statement("DROP TABLE IF EXISTS t").unwrap();
+        match stmt {
+            Statement::DropTable { table_name, if_exists } => {
+                assert_eq!(table_name, "t");
+                assert!(if_exists);
+            }
+            _ => panic!("Expected drop table"),
+        }
+    }
+
+    #[test]
+    fn drop_table_removes_catalog() {
+        let filename = "test_drop_table.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+        catalog
+            .create_table(
+                "users",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+        assert!(catalog.get_table("users").is_ok());
+        assert!(catalog.drop_table("users").unwrap());
+        assert!(catalog.get_table("users").is_err());
+
+        drop(catalog);
+        let catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+        assert!(catalog.get_table("users").is_err());
     }
 }
