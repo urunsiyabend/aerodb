@@ -9,7 +9,7 @@ use log::{debug, info, warn};
 
 use crate::storage::pager::Pager;
 use crate::storage::btree::BTree;
-use crate::storage::row::{RowData, ColumnValue, ColumnType};
+use crate::storage::row::{RowData, ColumnValue, ColumnType, build_row_data};
 use crate::catalog::Catalog;
 use crate::sql::parser::parse_statement;
 use crate::sql::ast::{Statement, Expr};
@@ -108,23 +108,20 @@ fn main() -> io::Result<()> {
                             // Now the immutable borrow of `catalog` ends here,
                             // so we can borrow `catalog.pager` mutably below.
 
-                            if values.len() != columns.len() {
-                                warn!("Column count mismatch");
-                                continue;
-                            }
-                            let key: i32 = values[0]
-                                .parse()
-                                .map_err(|_| io::Error::new(io::ErrorKind::Other, "Key must be an integer"))?;
-                            let mut cols = Vec::new();
-                            for (v, (_, ty)) in values.iter().zip(columns.iter()) {
-                                let val = match ty {
-                                    ColumnType::Integer => ColumnValue::Integer(v.parse::<i32>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Expected int"))?),
-                                    ColumnType::Text => ColumnValue::Text(v.clone()),
-                                    ColumnType::Boolean => ColumnValue::Boolean(v.eq_ignore_ascii_case("true")),
-                                };
-                                cols.push(val);
-                            }
-                            let row_data = RowData(cols);
+                            let row_data = match build_row_data(&values, &columns) {
+                                Ok(d) => d,
+                                Err(msg) => {
+                                    warn!("{}", msg);
+                                    continue;
+                                }
+                            };
+                            let key = match row_data.0.get(0) {
+                                Some(ColumnValue::Integer(i)) => *i,
+                                _ => {
+                                    warn!("First column must be an INTEGER key");
+                                    continue;
+                                }
+                            };
                             {
                                 let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
                                 if let Err(e) = table_btree.insert(key, row_data) {
@@ -713,5 +710,17 @@ mod tests {
         let rows = btree.scan_rows_desc_with_bounds(0, None);
         let keys: Vec<_> = rows.into_iter().map(|r| r.key).collect();
         assert_eq!(keys, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn build_row_data_type_mismatch() {
+        use crate::storage::row::build_row_data;
+        let columns = vec![
+            ("id".into(), ColumnType::Integer),
+            ("name".into(), ColumnType::Text),
+        ];
+        let values = vec!["abc".to_string(), "bob".to_string()];
+        let result = build_row_data(&values, &columns);
+        assert!(result.is_err());
     }
 }

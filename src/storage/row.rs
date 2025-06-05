@@ -126,6 +126,35 @@ impl RowData {
     }
 }
 
+/// Build a `RowData` from raw string values according to the declared column
+/// types. Returns an error if any value cannot be converted or the counts do
+/// not match.
+pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Result<RowData, String> {
+    if values.len() != columns.len() {
+        return Err(format!("Expected {} values, got {}", columns.len(), values.len()));
+    }
+    let mut cols = Vec::with_capacity(columns.len());
+    for (v, (name, ty)) in values.iter().zip(columns.iter()) {
+        match ty {
+            ColumnType::Integer => match v.parse::<i32>() {
+                Ok(i) => cols.push(ColumnValue::Integer(i)),
+                Err(_) => {
+                    return Err(format!("Value '{}' for column '{}' is not a valid INTEGER", v, name));
+                }
+            },
+            ColumnType::Text => cols.push(ColumnValue::Text(v.clone())),
+            ColumnType::Boolean => match v.to_ascii_lowercase().as_str() {
+                "true" => cols.push(ColumnValue::Boolean(true)),
+                "false" => cols.push(ColumnValue::Boolean(false)),
+                _ => {
+                    return Err(format!("Value '{}' for column '{}' is not a valid BOOLEAN", v, name));
+                }
+            },
+        }
+    }
+    Ok(RowData(cols))
+}
+
 #[derive(Debug, Clone)]
 pub struct Row {
     pub key: i32,
