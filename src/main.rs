@@ -11,10 +11,60 @@ use crate::storage::pager::Pager;
 use crate::storage::btree::BTree;
 use crate::catalog::Catalog;
 use crate::sql::parser::parse_statement;
-use crate::sql::ast::Statement;
+use crate::sql::ast::{Statement, Expr};
 
 // const DATABASE_FILE: &str = "data.aerodb";
 const DATABASE_FILE: &str = "data.aerodb";
+
+fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> io::Result<()> {
+    if let Ok(table_info) = catalog.get_table(table_name) {
+        let root_page = table_info.root_page;
+        let columns = table_info.columns.clone();
+        let keys = {
+            let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
+            let mut cursor = scan_tree.scan_all_rows();
+            let mut collected = Vec::new();
+            while let Some(row) = cursor.next() {
+                if let Some(ref expr) = selection {
+                    let bytes = &row.payload[..];
+                    let mut offset = 0;
+                    let num_cols = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
+                    offset += 2;
+                    let mut values = std::collections::HashMap::new();
+                    for col in columns.iter().take(num_cols) {
+                        let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                        offset += 4;
+                        let v = String::from_utf8_lossy(&bytes[offset..offset + len]).to_string();
+                        offset += len;
+                        values.insert(col.clone(), v);
+                    }
+                    if crate::sql::ast::evaluate_expression(expr, &values) {
+                        collected.push(row.key);
+                    }
+                } else {
+                    collected.push(row.key);
+                }
+            }
+            drop(cursor);
+            collected
+        };
+
+        if !keys.is_empty() {
+            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
+            for k in keys {
+                table_btree.delete(k)?;
+            }
+            let new_root = table_btree.root_page();
+            drop(table_btree);
+            if new_root != root_page {
+                if let Ok(t) = catalog.get_table_mut(table_name) {
+                    t.root_page = new_root;
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 fn main() -> io::Result<()> {
     env_logger::init();
@@ -144,42 +194,8 @@ fn main() -> io::Result<()> {
                 }
                 Statement::Delete { table_name, selection } => {
                     debug!("DELETE FROM {}", table_name);
-                    match catalog.get_table(&table_name) {
-                        Ok(table_info) => {
-                            let root_page = table_info.root_page;
-                            let columns = table_info.columns.clone();
-                            let keys = {
-                                let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
-                                let mut cursor = scan_tree.scan_all_rows();
-                                let mut collected = Vec::new();
-                                while let Some(row) = cursor.next() {
-                                    let bytes = &row.payload[..];
-                                    let mut offset = 0;
-                                    let num_cols = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
-                                    offset += 2;
-                                    let mut values = std::collections::HashMap::new();
-                                    for col in columns.iter().take(num_cols) {
-                                        let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-                                        offset += 4;
-                                        let v = String::from_utf8_lossy(&bytes[offset..offset + len]).to_string();
-                                        offset += len;
-                                        values.insert(col.clone(), v);
-                                    }
-                                    if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &values) {
-                                        collected.push(row.key);
-                                    }
-                                }
-                                drop(cursor);
-                                collected
-                            };
-                            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
-                            for k in keys {
-                                table_btree.delete(k)?;
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Table '{}' not found: {}", table_name, e);
-                        }
+                    if let Err(e) = execute_delete(&mut catalog, &table_name, selection) {
+                        warn!("Error deleting from {}: {}", table_name, e);
                     }
                 }
                 Statement::Exit => break,
@@ -361,46 +377,61 @@ mod tests {
             Statement::Delete { table_name, selection } => {
                 assert_eq!(table_name, "users");
                 assert!(selection.is_some());
-                let table_info = catalog.get_table(&table_name).unwrap().clone();
-                let root_page = table_info.root_page;
-                let columns = table_info.columns;
-                let keys_to_delete = {
-                    let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-                    let mut cursor = scan_tree.scan_all_rows();
-                    let mut collected = Vec::new();
-                    while let Some(row) = cursor.next() {
-                        // Deserialize row to map
-                        let bytes = &row.payload[..];
-                        let mut offset = 0;
-                        let num_cols = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
-                        offset += 2;
-                        let mut values = std::collections::HashMap::new();
-                        for col in columns.iter().take(num_cols) {
-                            let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-                            offset += 4;
-                            let v = String::from_utf8_lossy(&bytes[offset..offset + len]).to_string();
-                            offset += len;
-                            values.insert(col.clone(), v);
-                        }
-                        if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &values) {
-                            collected.push(row.key);
-                        }
-                    }
-                    drop(cursor);
-                    collected
-                };
-
+                execute_delete(&mut catalog, &table_name, selection).unwrap();
+                let root_page = catalog.get_table("users").unwrap().root_page;
                 let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-                for k in keys_to_delete {
-                    table_btree.delete(k).unwrap();
-                }
-
                 let remaining: Vec<_> = table_btree.scan_all_rows().collect();
                 assert_eq!(remaining.len(), 2);
                 assert!(remaining.iter().all(|r| r.key != 2));
             }
             _ => panic!("Expected delete statement"),
         }
+    }
+
+    #[test]
+    fn delete_persists_after_reopen() {
+        let filename = "test_delete_reopen.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table("users", vec!["id".into(), "name".into()])
+            .unwrap();
+        for i in 1..=3 {
+            let values = vec![i.to_string(), format!("user{}", i)];
+            let mut buf = Vec::new();
+            let col_count = (values.len() as u16).to_le_bytes();
+            buf.extend(&col_count);
+            for v in &values {
+                let vb = v.as_bytes();
+                let len = (vb.len() as u32).to_le_bytes();
+                buf.extend(&len);
+                buf.extend(vb);
+            }
+            let root_page = catalog.get_table("users").unwrap().root_page;
+            let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            btree.insert(i as i32, &buf[..]).unwrap();
+            let new_root = btree.root_page();
+            if new_root != root_page {
+                catalog.get_table_mut("users").unwrap().root_page = new_root;
+            }
+        }
+
+        execute_delete(
+            &mut catalog,
+            "users",
+            Some(Expr::Equals {
+                left: "id".into(),
+                right: "1".into(),
+            }),
+        )
+        .unwrap();
+
+        let root_page = catalog.get_table("users").unwrap().root_page;
+        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        assert!(btree.find(1).unwrap().is_none());
+        let remaining: Vec<_> = btree.scan_all_rows().collect();
+        assert_eq!(remaining.len(), 2);
     }
 
     #[test]
