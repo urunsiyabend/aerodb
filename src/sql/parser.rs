@@ -100,20 +100,52 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
         }
         "SELECT" => {
             if tokens.len() < 4 || tokens[1] != "*" || !tokens[2].eq_ignore_ascii_case("FROM") {
-                return Err("Usage: SELECT * FROM <table> [WHERE <expr>]".to_string());
+                return Err("Usage: SELECT * FROM <table> ...".to_string());
             }
-            let mut table = tokens[3].trim_end_matches(';').to_string();
+            let table = tokens[3].trim_end_matches(';').to_string();
             let mut selection = None;
-            if tokens.len() > 4 {
-                if !tokens[4].eq_ignore_ascii_case("WHERE") {
-                    return Err("Usage: SELECT * FROM <table> WHERE <expr>".to_string());
+            let mut limit = None;
+            let mut offset = None;
+            let mut order_by = false;
+
+            let mut idx = 4;
+            while idx < tokens.len() {
+                let token = tokens[idx].trim_end_matches(';');
+                match token.to_uppercase().as_str() {
+                    "WHERE" => {
+                        let (expr, consumed) = parse_expression(&tokens[idx + 1..])?;
+                        selection = Some(expr);
+                        idx += consumed + 1;
+                    }
+                    "LIMIT" => {
+                        if idx + 1 >= tokens.len() {
+                            return Err("Expected number after LIMIT".into());
+                        }
+                        limit = Some(tokens[idx + 1].trim_end_matches(';').parse::<usize>().map_err(|_| "Invalid LIMIT value")?);
+                        idx += 2;
+                    }
+                    "OFFSET" => {
+                        if idx + 1 >= tokens.len() {
+                            return Err("Expected number after OFFSET".into());
+                        }
+                        offset = Some(tokens[idx + 1].trim_end_matches(';').parse::<usize>().map_err(|_| "Invalid OFFSET value")?);
+                        idx += 2;
+                    }
+                    "ORDER" => {
+                        if idx + 1 < tokens.len() && tokens[idx + 1].eq_ignore_ascii_case("BY") {
+                            order_by = true;
+                            idx += 2;
+                        } else {
+                            return Err("Expected BY after ORDER".into());
+                        }
+                    }
+                    _ => {
+                        idx += 1;
+                    }
                 }
-                let (expr, _) = parse_expression(&tokens[5..])?;
-                selection = Some(expr);
-                // remove trailing semicolon from table if not already
-                table = table.trim_end_matches(';').to_string();
             }
-            Ok(Statement::Select { table_name: table, selection })
+
+            Ok(Statement::Select { table_name: table, selection, limit, offset, order_by })
         }
         "DELETE" => {
             if tokens.len() < 5 || !tokens[1].eq_ignore_ascii_case("FROM") || !tokens[3].eq_ignore_ascii_case("WHERE") {

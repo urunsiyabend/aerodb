@@ -877,6 +877,14 @@ impl<'a> BTree<'a> {
     }
 
     pub fn scan_all_rows(&'a mut self) -> RowCursor<'a> {
+        self.scan_rows_with_bounds(0, None)
+    }
+
+    pub fn scan_rows_with_bounds(
+        &'a mut self,
+        skip: usize,
+        limit: Option<usize>,
+    ) -> RowCursor<'a> {
         // 1) Find leftmost leaf
         let mut page_num = self.root_page;
         loop {
@@ -884,7 +892,8 @@ impl<'a> BTree<'a> {
             if get_node_type(&page.data) == NODE_LEAF {
                 break;
             }
-            let left_child = u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
+            let left_child =
+                u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
             page_num = left_child;
         }
         RowCursor {
@@ -892,6 +901,9 @@ impl<'a> BTree<'a> {
             current_page: page_num,
             offset: HEADER_SIZE,
             rows_in_page: 0,
+            skip,
+            limit,
+            returned: 0,
         }
     }
 
@@ -909,6 +921,9 @@ pub struct RowCursor<'b> {
     current_page: u32,
     offset: usize,
     rows_in_page: usize,
+    skip: usize,
+    limit: Option<usize>,
+    returned: usize,
 }
 
 impl<'b> Iterator for RowCursor<'b> {
@@ -921,8 +936,13 @@ impl<'b> Iterator for RowCursor<'b> {
 
             if self.rows_in_page < cell_count {
                 // Deserialize one row from this page
-                let key = i32::from_le_bytes(page.data[self.offset..self.offset + 4].try_into().unwrap());
-                let payload_len = u32::from_le_bytes(page.data[self.offset + 4..self.offset + 8].try_into().unwrap()) as usize;
+                let key =
+                    i32::from_le_bytes(page.data[self.offset..self.offset + 4].try_into().unwrap());
+                let payload_len = u32::from_le_bytes(
+                    page.data[self.offset + 4..self.offset + 8]
+                        .try_into()
+                        .unwrap(),
+                ) as usize;
                 let start = self.offset + 8;
                 let end = start + payload_len;
                 if end > PAGE_SIZE {
@@ -934,6 +954,17 @@ impl<'b> Iterator for RowCursor<'b> {
                 // Advance offsets
                 self.offset = end;
                 self.rows_in_page += 1;
+
+                if self.skip > 0 {
+                    self.skip -= 1;
+                    continue;
+                }
+                if let Some(lim) = self.limit {
+                    if self.returned >= lim {
+                        return None;
+                    }
+                }
+                self.returned += 1;
                 return Some(row);
             }
 

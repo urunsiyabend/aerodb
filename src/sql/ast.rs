@@ -21,6 +21,9 @@ pub enum Statement {
     Select {
         table_name: String,
         selection: Option<Expr>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        order_by: bool,
     },
     Delete {
         table_name: String,

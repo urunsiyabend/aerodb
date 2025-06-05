@@ -141,7 +141,7 @@ fn main() -> io::Result<()> {
                         }
                     }
                 }
-                Statement::Select { table_name, selection } => {
+                Statement::Select { table_name, selection, limit, offset, order_by: _ } => {
                     debug!("SELECT * FROM {}", table_name);
 
                     // First, get the table metadata (immutable borrow)
@@ -157,7 +157,7 @@ fn main() -> io::Result<()> {
                                     &mut catalog.pager,
                                     root_page,
                                 )?;
-                                let mut cursor = table_btree.scan_all_rows();
+                                let mut cursor = table_btree.scan_rows_with_bounds(offset.unwrap_or(0), limit);
 
                                 println!("-- Contents of table '{}':", table_name);
                                 while let Some(row) = cursor.next() {
@@ -305,7 +305,7 @@ mod tests {
         // Parse select with WHERE
         let stmt = parse_statement("SELECT * FROM users WHERE name = user2").unwrap();
         match stmt {
-            Statement::Select { table_name, selection } => {
+            Statement::Select { table_name, selection, .. } => {
                 assert_eq!(table_name, "users");
                 assert!(selection.is_some());
                 // Execute simple evaluation of WHERE on all rows
@@ -526,5 +526,58 @@ mod tests {
         let root_page = catalog.get_table("nums").unwrap().root_page;
         let page = catalog.pager.get_page(root_page).unwrap();
         assert_eq!(crate::storage::page::get_node_type(&page.data), crate::storage::page::NODE_LEAF);
+    }
+
+    #[test]
+    fn scan_with_limit_and_offset() {
+        let filename = "test_limit_offset.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table("nums", vec!["id".into()])
+            .unwrap();
+
+        for i in 1..=300 {
+            let values = vec![i.to_string()];
+            let mut buf = Vec::new();
+            let col_count = (values.len() as u16).to_le_bytes();
+            buf.extend(&col_count);
+            for v in &values {
+                let vb = v.as_bytes();
+                let len = (vb.len() as u32).to_le_bytes();
+                buf.extend(&len);
+                buf.extend(vb);
+            }
+            let root_page = catalog.get_table("nums").unwrap().root_page;
+            let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            btree.insert(i as i32, &buf[..]).unwrap();
+            let new_root = btree.root_page();
+            drop(btree);
+            if new_root != root_page {
+                catalog.get_table_mut("nums").unwrap().root_page = new_root;
+            }
+        }
+
+        let root_page = catalog.get_table("nums").unwrap().root_page;
+        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let cursor = btree.scan_rows_with_bounds(10, Some(5));
+        let keys: Vec<_> = cursor.map(|r| r.key).collect();
+        assert_eq!(keys, vec![11, 12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn parse_select_limit_offset_order() {
+        let stmt = parse_statement("SELECT * FROM nums LIMIT 5 OFFSET 2 ORDER BY").unwrap();
+        match stmt {
+            Statement::Select { table_name, selection, limit, offset, order_by } => {
+                assert_eq!(table_name, "nums");
+                assert!(selection.is_none());
+                assert_eq!(limit, Some(5));
+                assert_eq!(offset, Some(2));
+                assert!(order_by);
+            }
+            _ => panic!("Expected select statement"),
+        }
     }
 }
