@@ -9,6 +9,12 @@ pub enum Expr {
 }
 
 #[derive(Debug)]
+pub struct OrderBy {
+    pub column: String,
+    pub descending: bool,
+}
+
+#[derive(Debug)]
 pub enum Statement {
     CreateTable {
         table_name: String,
@@ -21,6 +27,9 @@ pub enum Statement {
     Select {
         table_name: String,
         selection: Option<Expr>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        order_by: Option<OrderBy>,
     },
     Delete {
         table_name: String,
