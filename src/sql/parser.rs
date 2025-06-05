@@ -1,4 +1,46 @@
-use crate::sql::ast::Statement;
+use crate::sql::ast::{Expr, Statement};
+
+/// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
+/// Returns the expression and the number of tokens consumed.
+fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
+    if tokens.len() < 3 {
+        return Err("Incomplete expression".into());
+    }
+    let left = tokens[0].to_string();
+    let op = tokens[1];
+    let right = tokens[2].trim_end_matches(';').to_string();
+    let mut expr = match op {
+        "=" => Expr::Equals { left, right },
+        "!=" => Expr::NotEquals { left, right },
+        _ => return Err(format!("Unknown operator '{}', expected = or !=", op)),
+    };
+    let mut consumed = 3;
+    while tokens.len() > consumed {
+        let logic = tokens[consumed].to_uppercase();
+        if logic != "AND" && logic != "OR" {
+            break;
+        }
+        consumed += 1;
+        if tokens.len() < consumed + 3 {
+            return Err("Incomplete expression after AND/OR".into());
+        }
+        let l = tokens[consumed].to_string();
+        let op = tokens[consumed + 1];
+        let r = tokens[consumed + 2].trim_end_matches(';').to_string();
+        let next = match op {
+            "=" => Expr::Equals { left: l, right: r },
+            "!=" => Expr::NotEquals { left: l, right: r },
+            _ => return Err(format!("Unknown operator '{}', expected = or !=", op)),
+        };
+        expr = if logic == "AND" {
+            Expr::And(Box::new(expr), Box::new(next))
+        } else {
+            Expr::Or(Box::new(expr), Box::new(next))
+        };
+        consumed += 3;
+    }
+    Ok((expr, consumed))
+}
 
 pub fn parse_statement(input: &str) -> Result<Statement, String> {
     let tokens: Vec<&str> = input.split_whitespace().collect();
@@ -57,12 +99,21 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             })
         }
         "SELECT" => {
-            // Only support: SELECT * FROM table_name
-            if tokens.len() != 4 || tokens[1] != "*" || !tokens[2].eq_ignore_ascii_case("FROM") {
-                return Err("Usage: SELECT * FROM <table>".to_string());
+            if tokens.len() < 4 || tokens[1] != "*" || !tokens[2].eq_ignore_ascii_case("FROM") {
+                return Err("Usage: SELECT * FROM <table> [WHERE <expr>]".to_string());
             }
-            let table = tokens[3].trim_end_matches(';').to_string();
-            Ok(Statement::Select { table_name: table })
+            let mut table = tokens[3].trim_end_matches(';').to_string();
+            let mut selection = None;
+            if tokens.len() > 4 {
+                if !tokens[4].eq_ignore_ascii_case("WHERE") {
+                    return Err("Usage: SELECT * FROM <table> WHERE <expr>".to_string());
+                }
+                let (expr, _) = parse_expression(&tokens[5..])?;
+                selection = Some(expr);
+                // remove trailing semicolon from table if not already
+                table = table.trim_end_matches(';').to_string();
+            }
+            Ok(Statement::Select { table_name: table, selection })
         }
         "EXIT" | ".EXIT" | ".exit" => Ok(Statement::Exit),
         _ => Err(format!("Unrecognized command: {}", tokens[0])),

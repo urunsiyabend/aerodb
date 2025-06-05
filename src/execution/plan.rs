@@ -1,4 +1,4 @@
-use crate::sql::ast::Statement;
+use crate::sql::ast::{Expr, Statement};
 
 #[derive(Debug)]
 pub enum PlanNode {
@@ -12,6 +12,7 @@ pub enum PlanNode {
     },
     Select {
         table_name: String,
+        selection: Option<Expr>,
     },
     Exit,
 }
@@ -24,7 +25,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         Statement::Insert { table_name, values } => {
             PlanNode::Insert { table_name, values }
         }
-        Statement::Select { table_name } => PlanNode::Select { table_name },
+        Statement::Select { table_name, selection } => PlanNode::Select { table_name, selection },
         Statement::Exit => PlanNode::Exit,
     }
 }
