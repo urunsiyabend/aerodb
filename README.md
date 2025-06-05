@@ -2,7 +2,7 @@
 <img src="images/logo.png" width="200px" height="200px" alt="AeroDB">
 </p>
 
-AeroDB is a lightweight experimental database implemented in Rust. It serves as a playground for learning how B-Tree based storage engines and simple SQL parsers work.
+AeroDB is a lightweight, portable relational database engine designed for efficiency and simplicity. It utilizes a B-tree-based architecture to manage and organize data, ensuring fast and reliable access. All data— including tables, indexes, and metadata— is stored compactly within a single file, making AeroDB highly suitable for embedded applications, standalone deployments, and scenarios where minimal configuration and footprint are critical. Its streamlined design supports easy integration while maintaining the core functionalities expected from a relational database management system.
 
 ## Building
 
