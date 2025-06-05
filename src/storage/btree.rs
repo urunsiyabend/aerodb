@@ -907,6 +907,21 @@ impl<'a> BTree<'a> {
         }
     }
 
+    pub fn scan_rows_desc_with_bounds(
+        &'a mut self,
+        skip: usize,
+        limit: Option<usize>,
+    ) -> Vec<Row> {
+        let mut rows: Vec<Row> = self.scan_rows_with_bounds(0, None).collect();
+        rows.reverse();
+        let start = skip.min(rows.len());
+        let end = match limit {
+            Some(l) => start + l.min(rows.len() - start),
+            None => rows.len(),
+        };
+        rows[start..end].to_vec()
+    }
+
     /// Flush all cached pages to disk (for final cleanup).
     pub fn flush_all(&mut self) -> io::Result<()> {
         for i in 0..self.pager.num_pages() {

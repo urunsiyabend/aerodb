@@ -1,4 +1,4 @@
-use crate::sql::ast::{Expr, Statement};
+use crate::sql::ast::{Expr, Statement, OrderBy};
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
 /// Returns the expression and the number of tokens consumed.
@@ -106,7 +106,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             let mut selection = None;
             let mut limit = None;
             let mut offset = None;
-            let mut order_by = false;
+            let mut order_by: Option<OrderBy> = None;
 
             let mut idx = 4;
             while idx < tokens.len() {
@@ -132,11 +132,23 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                         idx += 2;
                     }
                     "ORDER" => {
-                        if idx + 1 < tokens.len() && tokens[idx + 1].eq_ignore_ascii_case("BY") {
-                            order_by = true;
-                            idx += 2;
+                        if idx + 2 < tokens.len() && tokens[idx + 1].eq_ignore_ascii_case("BY") {
+                            let column = tokens[idx + 2].trim_end_matches(';').to_string();
+                            idx += 3;
+                            let mut descending = false;
+                            if idx < tokens.len() {
+                                let dir = tokens[idx].trim_end_matches(';').to_uppercase();
+                                if dir == "ASC" {
+                                    descending = false;
+                                    idx += 1;
+                                } else if dir == "DESC" {
+                                    descending = true;
+                                    idx += 1;
+                                }
+                            }
+                            order_by = Some(OrderBy { column, descending });
                         } else {
-                            return Err("Expected BY after ORDER".into());
+                            return Err("Expected BY <column> after ORDER".into());
                         }
                     }
                     _ => {

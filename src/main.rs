@@ -141,7 +141,7 @@ fn main() -> io::Result<()> {
                         }
                     }
                 }
-                Statement::Select { table_name, selection, limit, offset, order_by: _ } => {
+                Statement::Select { table_name, selection, limit, offset, order_by } => {
                     debug!("SELECT * FROM {}", table_name);
 
                     // First, get the table metadata (immutable borrow)
@@ -157,31 +157,92 @@ fn main() -> io::Result<()> {
                                     &mut catalog.pager,
                                     root_page,
                                 )?;
-                                let mut cursor = table_btree.scan_rows_with_bounds(offset.unwrap_or(0), limit);
 
                                 println!("-- Contents of table '{}':", table_name);
-                                while let Some(row) = cursor.next() {
-                                    let bytes = &row.payload[..];
-                                    let mut offset = 0;
-                                    let num_cols = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
-                                    offset += 2;
-                                    let mut vals = Vec::with_capacity(num_cols);
-                                    for _ in 0..num_cols {
-                                        let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-                                        offset += 4;
-                                        let v = String::from_utf8_lossy(&bytes[offset..offset + len]).to_string();
-                                        offset += len;
-                                        vals.push(v);
-                                    }
-                                    if selection.is_none() {
-                                        println!("{:?}", vals);
-                                    } else {
-                                        let mut map = std::collections::HashMap::new();
-                                        for (col, val) in columns.iter().zip(vals.iter()) {
-                                            map.insert(col.clone(), val.clone());
+
+                                if let Some(ob) = order_by {
+                                    if ob.descending {
+                                        let rows = table_btree
+                                            .scan_rows_desc_with_bounds(offset.unwrap_or(0), limit);
+                                        for row in rows {
+                                            let bytes = &row.payload[..];
+                                            let mut off = 0;
+                                            let num_cols = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
+                                            off += 2;
+                                            let mut vals = Vec::with_capacity(num_cols);
+                                            for _ in 0..num_cols {
+                                                let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+                                                off += 4;
+                                                let v = String::from_utf8_lossy(&bytes[off..off + len]).to_string();
+                                                off += len;
+                                                vals.push(v);
+                                            }
+                                            if selection.is_none() {
+                                                println!("{:?}", vals);
+                                            } else {
+                                                let mut map = std::collections::HashMap::new();
+                                                for (col, val) in columns.iter().zip(vals.iter()) {
+                                                    map.insert(col.clone(), val.clone());
+                                                }
+                                                if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
+                                                    println!("{:?}", vals);
+                                                }
+                                            }
                                         }
-                                        if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
+                                    } else {
+                                        let mut cursor = table_btree.scan_rows_with_bounds(offset.unwrap_or(0), limit);
+                                        while let Some(row) = cursor.next() {
+                                            let bytes = &row.payload[..];
+                                            let mut off = 0;
+                                            let num_cols = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
+                                            off += 2;
+                                            let mut vals = Vec::with_capacity(num_cols);
+                                            for _ in 0..num_cols {
+                                                let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+                                                off += 4;
+                                                let v = String::from_utf8_lossy(&bytes[off..off + len]).to_string();
+                                                off += len;
+                                                vals.push(v);
+                                            }
+                                            if selection.is_none() {
+                                                println!("{:?}", vals);
+                                            } else {
+                                                let mut map = std::collections::HashMap::new();
+                                                for (col, val) in columns.iter().zip(vals.iter()) {
+                                                    map.insert(col.clone(), val.clone());
+                                                }
+                                                if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
+                                                    println!("{:?}", vals);
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    let mut cursor = table_btree.scan_rows_with_bounds(offset.unwrap_or(0), limit);
+
+                                    while let Some(row) = cursor.next() {
+                                        let bytes = &row.payload[..];
+                                        let mut off = 0;
+                                        let num_cols = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
+                                        off += 2;
+                                        let mut vals = Vec::with_capacity(num_cols);
+                                        for _ in 0..num_cols {
+                                            let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+                                            off += 4;
+                                            let v = String::from_utf8_lossy(&bytes[off..off + len]).to_string();
+                                            off += len;
+                                            vals.push(v);
+                                        }
+                                        if selection.is_none() {
                                             println!("{:?}", vals);
+                                        } else {
+                                            let mut map = std::collections::HashMap::new();
+                                            for (col, val) in columns.iter().zip(vals.iter()) {
+                                                map.insert(col.clone(), val.clone());
+                                            }
+                                            if crate::sql::ast::evaluate_expression(selection.as_ref().unwrap(), &map) {
+                                                println!("{:?}", vals);
+                                            }
                                         }
                                     }
                                 }
@@ -568,16 +629,92 @@ mod tests {
 
     #[test]
     fn parse_select_limit_offset_order() {
-        let stmt = parse_statement("SELECT * FROM nums LIMIT 5 OFFSET 2 ORDER BY").unwrap();
+        let stmt =
+            parse_statement("SELECT * FROM nums LIMIT 5 OFFSET 2 ORDER BY id DESC").unwrap();
         match stmt {
-            Statement::Select { table_name, selection, limit, offset, order_by } => {
+            Statement::Select {
+                table_name,
+                selection,
+                limit,
+                offset,
+                order_by: Some(ob),
+            } => {
                 assert_eq!(table_name, "nums");
                 assert!(selection.is_none());
                 assert_eq!(limit, Some(5));
                 assert_eq!(offset, Some(2));
-                assert!(order_by);
+                assert_eq!(ob.column, "id");
+                assert!(ob.descending);
             }
             _ => panic!("Expected select statement"),
         }
+    }
+
+    #[test]
+    fn parse_order_by_variants() {
+        let stmt = parse_statement("SELECT * FROM users ORDER BY id").unwrap();
+        match stmt {
+            Statement::Select { order_by: Some(ob), .. } => {
+                assert_eq!(ob.column, "id");
+                assert!(!ob.descending);
+            }
+            _ => panic!("Expected select"),
+        }
+
+        let stmt = parse_statement("SELECT * FROM users ORDER BY id ASC").unwrap();
+        match stmt {
+            Statement::Select { order_by: Some(ob), .. } => {
+                assert_eq!(ob.column, "id");
+                assert!(!ob.descending);
+            }
+            _ => panic!("Expected select"),
+        }
+
+        let stmt = parse_statement("SELECT * FROM users ORDER BY id DESC").unwrap();
+        match stmt {
+            Statement::Select { order_by: Some(ob), .. } => {
+                assert_eq!(ob.column, "id");
+                assert!(ob.descending);
+            }
+            _ => panic!("Expected select"),
+        }
+    }
+
+    #[test]
+    fn scan_descending_order() {
+        let filename = "test_order_desc.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table("nums", vec!["id".into()])
+            .unwrap();
+
+        for i in 1..=3 {
+            let values = vec![i.to_string()];
+            let mut buf = Vec::new();
+            let col_count = (values.len() as u16).to_le_bytes();
+            buf.extend(&col_count);
+            for v in &values {
+                let vb = v.as_bytes();
+                let len = (vb.len() as u32).to_le_bytes();
+                buf.extend(&len);
+                buf.extend(vb);
+            }
+            let root_page = catalog.get_table("nums").unwrap().root_page;
+            let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            btree.insert(i as i32, &buf[..]).unwrap();
+            let new_root = btree.root_page();
+            drop(btree);
+            if new_root != root_page {
+                catalog.get_table_mut("nums").unwrap().root_page = new_root;
+            }
+        }
+
+        let root_page = catalog.get_table("nums").unwrap().root_page;
+        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let rows = btree.scan_rows_desc_with_bounds(0, None);
+        let keys: Vec<_> = rows.into_iter().map(|r| r.key).collect();
+        assert_eq!(keys, vec![3, 2, 1]);
     }
 }
