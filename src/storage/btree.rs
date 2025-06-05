@@ -175,6 +175,80 @@ impl<'a> BTree<'a> {
         res
     }
 
+    /// Delete a key from the tree. Rebuilds the tree to maintain balance.
+    pub fn delete(&mut self, key: i32) -> io::Result<bool> {
+        // Collect all rows first
+        // Traverse leaves to gather all rows
+        let mut all_rows = Vec::new();
+        // Find leftmost leaf
+        let mut page_num = self.root_page;
+        loop {
+            let page = self.pager.get_page(page_num)?;
+            if get_node_type(&page.data) == NODE_LEAF {
+                break;
+            }
+            let left_child = u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
+            page_num = left_child;
+        }
+        loop {
+            all_rows.extend(self.read_all_rows_from_leaf(page_num)?);
+            let next = get_next_leaf(&self.pager.get_page(page_num)?.data);
+            if next == 0 { break; }
+            page_num = next;
+        }
+        let original = all_rows.len();
+        all_rows.retain(|r| r.key != key);
+        if all_rows.len() == original {
+            return Ok(false);
+        }
+
+        // Allocate a fresh root page
+        let new_root = self.pager.allocate_page()?;
+        {
+            let page = self.pager.get_page(new_root)?;
+            set_node_type(&mut page.data, NODE_LEAF);
+            set_is_root(&mut page.data, true);
+            set_parent(&mut page.data, 0);
+            set_cell_count(&mut page.data, 0);
+            set_next_leaf(&mut page.data, 0);
+            self.pager.flush_page(new_root)?;
+        }
+
+        // Replace root and insert rows back
+        self.root_page = new_root;
+        for row in all_rows {
+            self.insert(row.key, &row.payload)?;
+        }
+        Ok(true)
+    }
+
+    fn find_leaf_page(&mut self, page_num: u32, key: i32) -> io::Result<u32> {
+        let page = self.pager.get_page(page_num)?;
+        let node_type = get_node_type(&page.data);
+        if node_type == NODE_LEAF {
+            return Ok(page_num);
+        }
+        let cell_count = get_cell_count(&page.data) as usize;
+        let mut offset = HEADER_SIZE;
+        let leftmost_child_bytes = &page.data[offset..offset + 4];
+        let mut child_page = u32::from_le_bytes(leftmost_child_bytes.try_into().unwrap());
+        offset += 4;
+        for _ in 0..cell_count {
+            let key_i_bytes = &page.data[offset..offset + 4];
+            let key_i = i32::from_le_bytes(key_i_bytes.try_into().unwrap());
+            offset += 4;
+            let child_i_bytes = &page.data[offset..offset + 4];
+            let right_child = u32::from_le_bytes(child_i_bytes.try_into().unwrap());
+            offset += 4;
+            if key < key_i {
+                return self.find_leaf_page(child_page, key);
+            } else {
+                child_page = right_child;
+            }
+        }
+        self.find_leaf_page(child_page, key)
+    }
+
     /// Recursive helper to insert into page `page_num`. May split leaf or internal pages.
     fn insert_into_page(&mut self, page_num: u32, key: i32, payload: &[u8]) -> io::Result<()> {
         let page = self.pager.get_page(page_num)?;

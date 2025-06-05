@@ -115,6 +115,14 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             }
             Ok(Statement::Select { table_name: table, selection })
         }
+        "DELETE" => {
+            if tokens.len() < 5 || !tokens[1].eq_ignore_ascii_case("FROM") || !tokens[3].eq_ignore_ascii_case("WHERE") {
+                return Err("Usage: DELETE FROM <table> WHERE <expr>".to_string());
+            }
+            let table = tokens[2].trim_end_matches(';').to_string();
+            let (expr, _) = parse_expression(&tokens[4..])?;
+            Ok(Statement::Delete { table_name: table, selection: Some(expr) })
+        }
         "EXIT" | ".EXIT" | ".exit" => Ok(Statement::Exit),
         _ => Err(format!("Unrecognized command: {}", tokens[0])),
     }

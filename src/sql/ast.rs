@@ -22,6 +22,10 @@ pub enum Statement {
         table_name: String,
         selection: Option<Expr>,
     },
+    Delete {
+        table_name: String,
+        selection: Option<Expr>,
+    },
     Exit,
 }
 

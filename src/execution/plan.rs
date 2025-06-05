@@ -14,6 +14,10 @@ pub enum PlanNode {
         table_name: String,
         selection: Option<Expr>,
     },
+    Delete {
+        table_name: String,
+        selection: Option<Expr>,
+    },
     Exit,
 }
 
@@ -26,6 +30,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
             PlanNode::Insert { table_name, values }
         }
         Statement::Select { table_name, selection } => PlanNode::Select { table_name, selection },
+        Statement::Delete { table_name, selection } => PlanNode::Delete { table_name, selection },
         Statement::Exit => PlanNode::Exit,
     }
 }
