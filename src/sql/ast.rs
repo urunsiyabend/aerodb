@@ -20,6 +20,11 @@ pub enum Statement {
     CreateTable {
         table_name: String,
         columns: Vec<(String, ColumnType)>,
+        if_not_exists: bool,
+    },
+    DropTable {
+        table_name: String,
+        if_exists: bool,
     },
     Insert {
         table_name: String,

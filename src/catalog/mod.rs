@@ -4,6 +4,7 @@ use std::io;
 use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType};
 use crate::storage::pager::Pager;
+use crate::storage::page::PAGE_SIZE;
 
 /// In‐memory representation of a table’s metadata.
 #[derive(Debug, Clone)]
@@ -103,6 +104,51 @@ impl Catalog {
         self.tables.get_mut(name).ok_or_else(|| {
             io::Error::new(io::ErrorKind::Other, format!("No such table: {}", name))
         })
+    }
+
+    /// Drop a table if it exists. Returns true if the table was removed.
+    pub fn drop_table(&mut self, name: &str) -> io::Result<bool> {
+        if !self.tables.contains_key(name) {
+            return Ok(false);
+        }
+
+        // Find catalog row key corresponding to this table
+        let key_opt = {
+            let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
+            let mut cursor = catalog_btree.scan_all_rows();
+            let mut found = None;
+            while let Some(row) = cursor.next() {
+                let (table_name, _rp, _cols) = Self::deserialize_catalog_row(&row)?;
+                if table_name == name {
+                    found = Some(row.key);
+                    break;
+                }
+            }
+            found
+        };
+
+        if let Some(key) = key_opt {
+            let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
+            catalog_btree.delete(key)?;
+            let new_root = catalog_btree.root_page();
+            if new_root != 1 {
+                let src_buf = {
+                    let src = self.pager.get_page(new_root)?;
+                    let mut buf = [0u8; PAGE_SIZE];
+                    buf.copy_from_slice(&src.data);
+                    buf
+                };
+                {
+                    let dst = self.pager.get_page(1)?;
+                    dst.data.copy_from_slice(&src_buf);
+                }
+                self.pager.flush_page(1)?;
+            }
+            self.tables.remove(name);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Serialize a catalog row into a UTF-8 string:
