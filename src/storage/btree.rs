@@ -1,7 +1,7 @@
 use std::io;
 use log::debug;
 use crate::storage::pager::Pager;
-use crate::storage::page::{get_cell_count, get_node_type, set_cell_count, set_node_type, set_parent, set_is_root, NODE_LEAF, HEADER_SIZE, PAGE_SIZE, NODE_INTERNAL, get_parent};
+use crate::storage::page::{get_cell_count, get_node_type, set_cell_count, set_node_type, set_parent, set_is_root, NODE_LEAF, HEADER_SIZE, PAGE_SIZE, NODE_INTERNAL, get_parent, get_next_leaf, set_next_leaf};
 
 /// A single row in our leaf: (key, payload).
 #[derive(Debug, Clone)]
@@ -70,28 +70,23 @@ pub struct BTree<'a> {
 impl<'a> BTree<'a> {
     /// Open or create a B-Tree. If the file is empty, initialize page 0 as a leaf root.
     /// Otherwise, simply reuse page 0 as the existing root (leaf or internal).
-    pub fn new(pager: &'a mut Pager) -> io::Result<BTree<'a>> {
+    pub fn new(pager: &'a mut Pager) -> io::Result<Self> {
         let root_page: u32;
-
         if pager.file_length_pages() == 0 {
-            debug!("Initializing new database: allocating page 0 as leaf root.");
-
-            // File empty: allocate page 0 and make it an empty leaf.
+            debug!("Initializing new database: allocating page 0 as a leaf root.");
             let new_root = pager.allocate_page()?;
             let page = pager.get_page(new_root)?;
             set_node_type(&mut page.data, NODE_LEAF);
             set_is_root(&mut page.data, true);
             set_parent(&mut page.data, 0);
             set_cell_count(&mut page.data, 0);
+            set_next_leaf(&mut page.data, 0);
             pager.flush_page(new_root)?;
             root_page = new_root;
         } else {
             debug!("Opening existing database: using page 0 as root.");
-
-            // File already has ≥1 page: reuse page 0 as root.
             root_page = 0;
         }
-
         Ok(BTree { root_page, pager })
     }
 
@@ -171,15 +166,12 @@ impl<'a> BTree<'a> {
     /// Public insert: adds (key, payload) into the tree.
     pub fn insert(&mut self, key: i32, payload: &[u8]) -> io::Result<()> {
         debug!(
-            "============================================\n\
-             insert() → starting at root {} for key={}",
+            "insert() → starting at root {} for key={}",
             self.root_page, key
         );
 
-
-        // Start at root
         let res = self.insert_into_page(self.root_page, key, payload);
-        debug!("insert() complete for key={}\n============================================", key);
+        debug!("insert() complete for key={}", key);
         res
     }
 
@@ -273,58 +265,77 @@ impl<'a> BTree<'a> {
     /// - Let `separator_key` = first key of right half.
     /// - Call `insert_in_parent(leaf_page_num, separator_key, new_leaf_page)`.
     fn split_leaf(&mut self, leaf_page_num: u32, all_rows: Vec<Row>) -> io::Result<()> {
-        debug!(
-            "split_leaf: splitting leaf {} with {} total rows.",
-            leaf_page_num,
-            all_rows.len()
-        );
-
         let total = all_rows.len();
         let split_index = total / 2;
-
         let left_rows = &all_rows[..split_index];
         let right_rows = &all_rows[split_index..];
 
-        debug!(
-            "  → Left half size: {}, Right half size: {}.",
-            left_rows.len(),
-            right_rows.len()
-        );
+        // —————————————————————————
+        // 1) Read the old next_leaf *after* the left page has been rewritten.
+        //    (This ensures we fetch the correct successor in the chain.)
+        // —————————————————————————
+        let old_next = {
+            let left_page = self.pager.get_page(leaf_page_num)?;
+            get_next_leaf(&left_page.data)
+        };
 
-        // Rewrite left_rows into original leaf
-        self.write_all_rows_to_leaf(leaf_page_num, left_rows)?;
 
-        debug!(
-            "  → Wrote {} rows back to leaf {}.",
-            left_rows.len(),
-            leaf_page_num
-        );
 
-        // Allocate new leaf for the right half
+        // —————————————————————————
+        // 2) Allocate a new leaf page. Initialize its header properly:
+        //    NODE_TYPE = LEAF, IS_ROOT = false, PARENT = 0 (temporarily),
+        //    CELL_COUNT = 0 (will set shortly), next_leaf = 0.
+        // —————————————————————————
         let new_leaf = self.pager.allocate_page()?;
         {
-            let p = self.pager.get_page(new_leaf)?;
+            let mut p = self.pager.get_page(new_leaf)?;
             set_node_type(&mut p.data, NODE_LEAF);
             set_is_root(&mut p.data, false);
-            set_parent(&mut p.data, 0); // will set properly below
+            set_parent(&mut p.data, 0);
             set_cell_count(&mut p.data, 0);
+            // __Ensure next_leaf starts out at 0 so we know we have a blank slate__
+            set_next_leaf(&mut p.data, 0);
+            self.pager.flush_page(new_leaf)?;
         }
+
+
+        // —————————————————————————
+        // 3) Rewrite left half back into leaf_page_num
+        // —————————————————————————
+        self.write_all_rows_to_leaf(leaf_page_num, left_rows)?;
+
+        // —————————————————————————
+        // 4) Write the right half into new_leaf, then flush.
+        //    This preserves new_leaf.next_leaf == 0 (for now).
+        // —————————————————————————
         self.write_all_rows_to_leaf(new_leaf, right_rows)?;
 
-        debug!(
-            "  → Allocated new leaf {} and wrote {} rows.",
-            new_leaf,
-            right_rows.len()
-        );
+        // —————————————————————————
+        // 5) Now fix up the leaf chain in exactly this order:
+        //    (a) left_page.next_leaf = new_leaf
+        //    (b) new_leaf.next_leaf = old_next
+        //    and flush each change immediately, so there’s never a broken chain.
+        // —————————————————————————
+        {
+            // Link original leaf to new leaf
+            let mut left_page = self.pager.get_page(leaf_page_num)?;
+            set_next_leaf(&mut left_page.data, new_leaf);
+            self.pager.flush_page(leaf_page_num)?;
+        }
+        {
+            // Link new leaf to the old successor
+            let mut new_page = self.pager.get_page(new_leaf)?;
+            set_next_leaf(&mut new_page.data, old_next);
+            self.pager.flush_page(new_leaf)?;
+        }
 
-        // Get separator key = first key of right half
+        // —————————————————————————
+        // 6) Finally, take the first key of “right_rows” and insert it into the parent:
+        // —————————————————————————
         let separator_key = right_rows[0].key;
-
-        debug!("  → Separator key for parent: {}.", separator_key);
-
-        // Insert into parent (could be root or deeper)
         self.insert_in_parent(leaf_page_num, separator_key, new_leaf)
     }
+
 
     /// Insert a new (separator_key, new_child_page) entry into the parent of `old_page`.
     ///
@@ -588,11 +599,10 @@ impl<'a> BTree<'a> {
         self.insert_in_parent(page_num, separator_key, new_internal)
     }
 
-    /// Read all rows from a leaf page into a Vec<Row>.
+    /// Read back every row from a leaf page.  We assume `HEADER_SIZE=12`.
     fn read_all_rows_from_leaf(&mut self, page_num: u32) -> io::Result<Vec<Row>> {
         let page = self.pager.get_page(page_num)?;
-        let node_type = get_node_type(&page.data);
-        if node_type != NODE_LEAF {
+        if get_node_type(&page.data) != NODE_LEAF {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "read_all_rows_from_leaf: not a leaf",
@@ -601,18 +611,22 @@ impl<'a> BTree<'a> {
 
         let cell_count = get_cell_count(&page.data) as usize;
         let mut rows = Vec::with_capacity(cell_count);
-        let mut offset = HEADER_SIZE;
+        let mut offset = HEADER_SIZE; // 12
 
         for _ in 0..cell_count {
-            // 4B key
-            let key_bytes = &page.data[offset..offset + 4];
-            let key = i32::from_le_bytes(key_bytes.try_into().unwrap());
-
-            // 4B payload length
-            let len_bytes = &page.data[offset + 4..offset + 8];
-            let payload_len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
-
-            // payload bytes
+            // 1) 4 bytes key
+            let key = i32::from_le_bytes(
+                page.data[offset..offset + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+            // 2) 4 bytes payload length
+            let payload_len = u32::from_le_bytes(
+                page.data[offset + 4..offset + 8]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            // 3) payload bytes
             let start = offset + 8;
             let end = start + payload_len;
             if end > PAGE_SIZE {
@@ -621,28 +635,29 @@ impl<'a> BTree<'a> {
                     "read_all_rows_from_leaf: corrupt payload length",
                 ));
             }
-            let payload_bytes = &page.data[start..end];
-            // Copy into a Vec<u8>
-            let payload = payload_bytes.to_vec();
+            let payload = page.data[start..end].to_vec();
 
             rows.push(Row { key, payload });
             offset = end;
         }
+
         Ok(rows)
     }
+
 
     /// Write a complete sorted list of rows into a leaf page.
     fn write_all_rows_to_leaf(&mut self, page_num: u32, rows: &[Row]) -> io::Result<()> {
         let page = self.pager.get_page(page_num)?;
 
-        // Compute total size of all (key + length + payload_bytes)
-        let mut total_size = 0;
+        // 1) Compute total size of all row‐bodies (4B key + 4B length + payload.len())
+        let mut total_size: usize = 0;
         for row in rows {
-            total_size += 4;                // 4 bytes for key
-            total_size += 4;                // 4 bytes for payload_len
-            total_size += row.payload.len(); // payload_bytes.len()
+            total_size += 4;                 // key
+            total_size += 4;                 // length
+            total_size += row.payload.len(); // actual bytes
         }
 
+        // 2) Check overflow: if HEADER_SIZE + total_size > PAGE_SIZE, it truly won't fit
         if HEADER_SIZE + total_size > PAGE_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -650,24 +665,23 @@ impl<'a> BTree<'a> {
             ));
         }
 
-        // Zero out page body
+        // 3) Zero‐out everything AFTER the 12B header (we do NOT touch offsets [0..12))
         for idx in HEADER_SIZE..PAGE_SIZE {
             page.data[idx] = 0;
         }
 
-        // Write each [ key (4B) | payload_len (4B) | payload_bytes ]
+        // 4) Pack each row at offset = HEADER_SIZE
         let mut offset = HEADER_SIZE;
         for row in rows {
-            // 4B key (little‐endian)
+            // 4A: 4 bytes for key
             let key_bytes = row.key.to_le_bytes();
             page.data[offset..offset + 4].copy_from_slice(&key_bytes);
 
-            // 4B payload length
-            let payload_len = row.payload.len() as u32;
-            let len_bytes = payload_len.to_le_bytes();
-            page.data[offset + 4..offset + 8].copy_from_slice(&len_bytes);
+            // 4B: 4 bytes for payload length
+            let plen = (row.payload.len() as u32).to_le_bytes();
+            page.data[offset + 4..offset + 8].copy_from_slice(&plen);
 
-            // payload bytes themselves
+            // 4C: payload bytes
             let start = offset + 8;
             let end = start + row.payload.len();
             page.data[start..end].copy_from_slice(&row.payload);
@@ -675,8 +689,10 @@ impl<'a> BTree<'a> {
             offset = end;
         }
 
-        // Update cell count
+        // 5) Update the cell_count (u16) at offsets 6..8
         set_cell_count(&mut page.data, rows.len() as u16);
+
+        // 6) Flush so that the “next_leaf” field (bytes 8..12) is preserved
         self.pager.flush_page(page_num)?;
         Ok(())
     }
@@ -776,22 +792,20 @@ impl<'a> BTree<'a> {
         Ok(())
     }
 
-    pub fn open_root(pager: &'a mut Pager, root_page: u32) -> io::Result<BTree<'a>> {
+    pub fn open_root(pager: &'a mut Pager, root_page: u32) -> io::Result<Self> {
         Ok(BTree { root_page, pager })
     }
 
     pub fn scan_all_rows(&'a mut self) -> RowCursor<'a> {
-        // Find the leftmost leaf: start at root, follow leftmost child until a leaf.
+        // 1) Find leftmost leaf
         let mut page_num = self.root_page;
         loop {
             let page = self.pager.get_page(page_num).unwrap();
-            let node_type = get_node_type(&page.data);
-            if node_type == NODE_LEAF {
+            if get_node_type(&page.data) == NODE_LEAF {
                 break;
             }
-            // internal: read leftmost child pointer
-            let left_child_bytes = &page.data[HEADER_SIZE..HEADER_SIZE + 4];
-            page_num = u32::from_le_bytes(left_child_bytes.try_into().unwrap());
+            let left_child = u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
+            page_num = left_child;
         }
         RowCursor {
             btree: self,
@@ -817,7 +831,7 @@ pub struct RowCursor<'b> {
     rows_in_page: usize,
 }
 
-impl<'a> Iterator for RowCursor<'a> {
+impl<'b> Iterator for RowCursor<'b> {
     type Item = Row;
 
     fn next(&mut self) -> Option<Row> {
@@ -826,32 +840,33 @@ impl<'a> Iterator for RowCursor<'a> {
             let cell_count = get_cell_count(&page.data) as usize;
 
             if self.rows_in_page < cell_count {
-                // Deserialize the next row at `offset`
-                let key_bytes = &page.data[self.offset..self.offset + 4];
-                let key = i32::from_le_bytes(key_bytes.try_into().unwrap());
-                let len_bytes = &page.data[self.offset + 4..self.offset + 8];
-                let payload_len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+                // Deserialize one row from this page
+                let key = i32::from_le_bytes(page.data[self.offset..self.offset + 4].try_into().unwrap());
+                let payload_len = u32::from_le_bytes(page.data[self.offset + 4..self.offset + 8].try_into().unwrap()) as usize;
                 let start = self.offset + 8;
                 let end = start + payload_len;
                 if end > PAGE_SIZE {
                     return None;
                 }
-                let payload_bytes = &page.data[start..end];
-                let payload = payload_bytes.to_vec(); // Vec<u8>
+                let payload = page.data[start..end].to_vec();
                 let row = Row { key, payload };
 
-                // Advance cursor
+                // Advance offsets
                 self.offset = end;
                 self.rows_in_page += 1;
                 return Some(row);
             }
 
-            // If we’ve yielded all rows in this page, move to the “next” leaf.
-            // We assume a simple linked‐list: the rightmost 4 bytes of header at offset (PAGE_SIZE-4)
-            // store the “next_leaf_page” (u32), or 0 if none. We didn’t set that earlier, so for now
-            // we’ll just stop here. (Implementing sibling pointers is the next step.)
-            // For simplicity, let’s assume no sibling pointers; just stop iteration.
-            return None;
+            // If we’re here, this leaf is exhausted. Jump to the next leaf page.
+            let next_leaf = get_next_leaf(&page.data);
+            if next_leaf == 0 {
+                // No more leaves
+                return None;
+            }
+            // Move into the next leaf
+            self.current_page = next_leaf;
+            self.offset = HEADER_SIZE;
+            self.rows_in_page = 0;
         }
     }
 }
