@@ -274,6 +274,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
         Statement::Select { table_name, selection, limit: _, offset: _, order_by: _ } => {
             let mut results = Vec::new();
             execute_select_with_indexes(catalog, &table_name, selection, &mut results)?;
+            for row in results {
+                println!("{}", format_row(&row));
+            }
         }
         Statement::DropTable { table_name, .. } => {
             catalog.drop_table(&table_name)?;
@@ -287,4 +290,30 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
         Statement::Exit => {}
     }
     Ok(())
+}
+
+pub fn format_row(row: &Row) -> String {
+    row.data.0
+        .iter()
+        .map(|v| match v {
+            ColumnValue::Integer(i) => i.to_string(),
+            ColumnValue::Text(s) => s.clone(),
+            ColumnValue::Boolean(b) => b.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_row_simple() {
+        let row = Row {
+            key: 1,
+            data: RowData(vec![ColumnValue::Integer(1), ColumnValue::Text("bob".into())]),
+        };
+        assert_eq!(format_row(&row), "1 | bob");
+    }
 }
