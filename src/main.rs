@@ -219,7 +219,8 @@ mod tests {
             Statement::Delete { table_name, selection } => {
                 assert_eq!(table_name, "users");
                 assert!(selection.is_some());
-                crate::execution::execute_delete(&mut catalog, &table_name, selection).unwrap();
+                let deleted = crate::execution::execute_delete(&mut catalog, &table_name, selection).unwrap();
+                assert_eq!(deleted, 1);
                 let root_page = catalog.get_table("users").unwrap().root_page;
                 let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
                 let remaining: Vec<_> = table_btree.scan_all_rows().collect();
@@ -258,7 +259,7 @@ mod tests {
             }
         }
 
-        crate::execution::execute_delete(
+        let deleted = crate::execution::execute_delete(
             &mut catalog,
             "users",
             Some(Expr::Equals {
@@ -267,6 +268,7 @@ mod tests {
             }),
         )
         .unwrap();
+        assert_eq!(deleted, 1);
 
         let root_page = catalog.get_table("users").unwrap().root_page;
         let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
@@ -656,7 +658,8 @@ mod tests {
 
         // Delete the row with name = user2
         let expr = Expr::Equals { left: "name".into(), right: "user2".into() };
-        crate::execution::execute_delete(&mut catalog, "users", Some(expr)).unwrap();
+        let deleted = crate::execution::execute_delete(&mut catalog, "users", Some(expr)).unwrap();
+        assert_eq!(deleted, 1);
 
         let stmt = parse_statement("SELECT * FROM users WHERE name = user2").unwrap();
         match stmt {
@@ -894,13 +897,14 @@ mod tests {
                 assignments,
                 selection,
             } => {
-                crate::execution::execute_update(
+                let updated = crate::execution::execute_update(
                     &mut catalog,
                     &table_name,
                     assignments,
                     selection,
                 )
                 .unwrap();
+                assert_eq!(updated, 1);
             }
             _ => panic!("Expected update statement"),
         }

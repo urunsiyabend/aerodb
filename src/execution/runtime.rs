@@ -6,7 +6,7 @@ use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
 use std::collections::HashMap;
 
-pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> io::Result<()> {
+pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> io::Result<usize> {
     if let Ok(table_info) = catalog.get_table(table_name) {
         let root_page = table_info.root_page;
         let columns = table_info.columns.clone();
@@ -37,6 +37,7 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
         };
 
         if !rows_to_delete.is_empty() {
+            let count = rows_to_delete.len();
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
             for r in &rows_to_delete {
                 table_btree.delete(r.key)?;
@@ -52,9 +53,10 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
             for r in rows_to_delete {
                 catalog.remove_from_indexes(table_name, &r.data, r.key)?;
             }
+            return Ok(count);
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 pub fn execute_update(
@@ -62,7 +64,7 @@ pub fn execute_update(
     table_name: &str,
     assignments: Vec<(String, String)>,
     selection: Option<Expr>,
-) -> io::Result<()> {
+) -> io::Result<usize> {
     if let Ok(table_info) = catalog.get_table(table_name) {
         let root_page = table_info.root_page;
         let columns = table_info.columns.clone();
@@ -123,6 +125,7 @@ pub fn execute_update(
         };
 
         if !rows_to_update.is_empty() {
+            let count = rows_to_update.len();
             struct UpdateOp {
                 old_key: i32,
                 new_key: i32,
@@ -164,9 +167,10 @@ pub fn execute_update(
                 catalog.remove_from_indexes(table_name, &op.old_data, op.old_key)?;
                 catalog.insert_into_indexes(table_name, &op.new_data)?;
             }
+            return Ok(count);
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 pub fn execute_select_with_indexes(
@@ -239,9 +243,11 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
     match stmt {
         Statement::CreateTable { table_name, columns, if_not_exists } => {
             match catalog.create_table(&table_name, columns) {
-                Ok(()) => {}
+                Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
-                    if !(if_not_exists && e.to_string().contains("already exists")) {
+                    if if_not_exists && e.to_string().contains("already exists") {
+                        println!("Table {} already exists", table_name);
+                    } else {
                         return Err(e);
                     }
                 }
@@ -249,6 +255,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
         }
         Statement::CreateIndex { index_name, table_name, column_name } => {
             catalog.create_index(&index_name, &table_name, &column_name)?;
+            println!("Index {} created", index_name);
         }
         Statement::Insert { table_name, values } => {
             let table_info = catalog.get_table(&table_name)?;
@@ -270,8 +277,11 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                 catalog.get_table_mut(&table_name)?.root_page = new_root;
             }
             catalog.insert_into_indexes(&table_name, &row_data)?;
+            println!("1 row inserted");
         }
         Statement::Select { table_name, selection, limit: _, offset: _, order_by: _ } => {
+            let table_info = catalog.get_table(&table_name)?;
+            println!("{}", format_header(&table_info.columns));
             let mut results = Vec::new();
             execute_select_with_indexes(catalog, &table_name, selection, &mut results)?;
             for row in results {
@@ -279,13 +289,17 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             }
         }
         Statement::DropTable { table_name, .. } => {
-            catalog.drop_table(&table_name)?;
+            if catalog.drop_table(&table_name)? {
+                println!("Table {} dropped", table_name);
+            }
         }
         Statement::Delete { table_name, selection } => {
-            execute_delete(catalog, &table_name, selection)?;
+            let count = execute_delete(catalog, &table_name, selection)?;
+            println!("{} row(s) deleted", count);
         }
         Statement::Update { table_name, assignments, selection } => {
-            execute_update(catalog, &table_name, assignments, selection)?;
+            let count = execute_update(catalog, &table_name, assignments, selection)?;
+            println!("{} row(s) updated", count);
         }
         Statement::Exit => {}
     }
@@ -304,6 +318,14 @@ pub fn format_row(row: &Row) -> String {
         .join(" | ")
 }
 
+pub fn format_header(columns: &[(String, ColumnType)]) -> String {
+    columns
+        .iter()
+        .map(|(name, ty)| format!("{} {}", name, ty.as_str()))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +337,14 @@ mod tests {
             data: RowData(vec![ColumnValue::Integer(1), ColumnValue::Text("bob".into())]),
         };
         assert_eq!(format_row(&row), "1 | bob");
+    }
+
+    #[test]
+    fn format_header_simple() {
+        let cols = vec![
+            ("id".into(), ColumnType::Integer),
+            ("name".into(), ColumnType::Text),
+        ];
+        assert_eq!(format_header(&cols), "id INTEGER | name TEXT");
     }
 }
