@@ -227,6 +227,41 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             let (expr, _) = parse_expression(&tokens[4..])?;
             Ok(Statement::Delete { table_name: table, selection: Some(expr) })
         }
+        "UPDATE" => {
+            if tokens.len() < 4 || !tokens[2].eq_ignore_ascii_case("SET") {
+                return Err("Usage: UPDATE <table> SET col = val [, ...] [WHERE <expr>]".to_string());
+            }
+            let table = tokens[1].to_string();
+            let mut idx = 3;
+            let mut assignments = Vec::new();
+            while idx < tokens.len() {
+                if tokens[idx].eq_ignore_ascii_case("WHERE") {
+                    break;
+                }
+                let col = tokens[idx].trim_end_matches(',').to_string();
+                idx += 1;
+                if idx >= tokens.len() || tokens[idx] != "=" {
+                    return Err("Expected '=' in assignment".into());
+                }
+                idx += 1;
+                if idx >= tokens.len() {
+                    return Err("Expected value after '='".into());
+                }
+                let mut val = tokens[idx].trim_end_matches(',').trim_end_matches(';').to_string();
+                if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+                    val = val[1..val.len() - 1].to_string();
+                }
+                assignments.push((col, val));
+                idx += 1;
+            }
+            let selection = if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("WHERE") {
+                let (expr, _) = parse_expression(&tokens[idx + 1..])?;
+                Some(expr)
+            } else {
+                None
+            };
+            Ok(Statement::Update { table_name: table, assignments, selection })
+        }
         "EXIT" | ".EXIT" | ".exit" => Ok(Statement::Exit),
         _ => Err(format!("Unrecognized command: {}", tokens[0])),
     }

@@ -46,6 +46,11 @@ pub enum Statement {
         table_name: String,
         selection: Option<Expr>,
     },
+    Update {
+        table_name: String,
+        assignments: Vec<(String, String)>,
+        selection: Option<Expr>,
+    },
     Exit,
 }
 

@@ -837,4 +837,80 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].key, 1);
     }
+
+    #[test]
+    fn parse_update_simple() {
+        let stmt =
+            parse_statement("UPDATE users SET name = bob WHERE id = 1").unwrap();
+        match stmt {
+            Statement::Update {
+                table_name,
+                assignments,
+                selection,
+            } => {
+                assert_eq!(table_name, "users");
+                assert_eq!(assignments, vec![("name".into(), "bob".into())]);
+                match selection.unwrap() {
+                    Expr::Equals { left, right } => {
+                        assert_eq!(left, "id");
+                        assert_eq!(right, "1");
+                    }
+                    _ => panic!("Expected equals expression"),
+                }
+            }
+            _ => panic!("Expected update statement"),
+        }
+    }
+
+    #[test]
+    fn execute_update_simple() {
+        let filename = "test_update.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "users",
+                vec![
+                    ("id".into(), ColumnType::Integer),
+                    ("name".into(), ColumnType::Text),
+                ],
+            )
+            .unwrap();
+
+        for i in 1..=2 {
+            let insert = Statement::Insert {
+                table_name: "users".into(),
+                values: vec![i.to_string(), format!("user{}", i)],
+            };
+            handle_statement(&mut catalog, insert).unwrap();
+        }
+
+        let stmt =
+            parse_statement("UPDATE users SET name = bob WHERE id = 1").unwrap();
+        match stmt {
+            Statement::Update {
+                table_name,
+                assignments,
+                selection,
+            } => {
+                crate::execution::execute_update(
+                    &mut catalog,
+                    &table_name,
+                    assignments,
+                    selection,
+                )
+                .unwrap();
+            }
+            _ => panic!("Expected update statement"),
+        }
+
+        let root_page = catalog.get_table("users").unwrap().root_page;
+        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let row = btree.find(1).unwrap().unwrap();
+        match &row.data.0[1] {
+            ColumnValue::Text(s) => assert_eq!(s, "bob"),
+            _ => panic!("Expected text"),
+        }
+    }
 }
