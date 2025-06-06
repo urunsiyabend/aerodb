@@ -1,7 +1,7 @@
-use std::fs::OpenOptions;
-use std::fs::File;
+use std::collections::HashMap;
+use std::fs::{OpenOptions, File};
 use std::io::{self, Read, Write, Seek, SeekFrom};
-use crate::storage::btree::BTree;
+use crate::transaction::wal::Wal;
 use crate::storage::page::PAGE_SIZE;
 
 /// A single 4 KiB page of data.
@@ -20,6 +20,7 @@ impl Page {
 /// from pages newly allocated in memory.
 pub struct Pager {
     file: File,
+    wal: Wal,
 
     /// The number of pages that already existed on disk when we opened this file.
     file_length_pages: u32,
@@ -30,6 +31,9 @@ pub struct Pager {
 
     /// A very basic cache: `cache[page_num] = Some(Box<Page>)` if that page is loaded.
     cache: Vec<Option<Box<Page>>>,
+
+    transaction_active: bool,
+    dirty_pages: HashMap<u32, [u8; PAGE_SIZE]>,
 }
 
 impl Pager {
@@ -45,11 +49,17 @@ impl Pager {
         let file_len = file.metadata()?.len();
         let file_length_pages = (file_len as usize / PAGE_SIZE) as u32;
 
+        let wal_path = format!("{}.wal", filename);
+        let wal = Wal::open(&wal_path, &mut file)?;
+
         Ok(Pager {
             file,
+            wal,
             file_length_pages,
             num_pages: file_length_pages,
             cache: Vec::new(),
+            transaction_active: false,
+            dirty_pages: HashMap::new(),
         })
     }
 
@@ -103,15 +113,24 @@ impl Pager {
     /// we update `file_length_pages` so subsequent reads know it’s on disk.
     pub fn flush_page(&mut self, page_num: u32) -> io::Result<()> {
         if let Some(page_box) = &self.cache[page_num as usize] {
-            let offset = (page_num as u64) * (PAGE_SIZE as u64);
-            self.file.seek(SeekFrom::Start(offset))?;
-            self.file.write_all(&page_box.data)?;
-            self.file.flush()?;
-
-            // If this page was not yet on disk, bump file_length_pages
-            if page_num >= self.file_length_pages {
-                self.file_length_pages = page_num + 1;
+            let data = page_box.data;
+            if self.transaction_active {
+                self.dirty_pages.insert(page_num, data);
+            } else {
+                self.wal.append_page(page_num, &data)?;
+                self.write_page_raw(page_num, &data)?;
             }
+        }
+        Ok(())
+    }
+
+    fn write_page_raw(&mut self, page_num: u32, data: &[u8; PAGE_SIZE]) -> io::Result<()> {
+        let offset = (page_num as u64) * (PAGE_SIZE as u64);
+        self.file.seek(SeekFrom::Start(offset))?;
+        self.file.write_all(data)?;
+        self.file.flush()?;
+        if page_num >= self.file_length_pages {
+            self.file_length_pages = page_num + 1;
         }
         Ok(())
     }
@@ -124,6 +143,45 @@ impl Pager {
     /// How many pages does the pager know about right now (on-disk + newly allocated)?
     pub fn num_pages(&self) -> u32 {
         self.num_pages
+    }
+
+    pub fn begin_transaction(&mut self, _name: Option<String>) -> io::Result<()> {
+        self.transaction_active = true;
+        self.dirty_pages.clear();
+        Ok(())
+    }
+
+    pub fn commit_transaction(&mut self) -> io::Result<()> {
+        if self.transaction_active {
+            let pages = self.dirty_pages.clone();
+            for (page_num, data) in pages {
+                self.wal.append_page(page_num, &data)?;
+                self.write_page_raw(page_num, &data)?;
+            }
+            self.wal.append_checkpoint()?;
+            self.wal.truncate()?;
+            self.dirty_pages.clear();
+            self.transaction_active = false;
+        }
+        Ok(())
+    }
+
+    pub fn rollback_transaction(&mut self) -> io::Result<()> {
+        if self.transaction_active {
+            for page_num in self.dirty_pages.keys().cloned().collect::<Vec<_>>() {
+                let mut buf = [0u8; PAGE_SIZE];
+                let offset = (page_num as u64) * (PAGE_SIZE as u64);
+                self.file.seek(SeekFrom::Start(offset))?;
+                self.file.read_exact(&mut buf)?;
+                if let Some(page_box) = &mut self.cache[page_num as usize] {
+                    page_box.data = buf;
+                }
+            }
+            self.wal.truncate()?;
+            self.dirty_pages.clear();
+            self.transaction_active = false;
+        }
+        Ok(())
     }
 }
 

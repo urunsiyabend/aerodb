@@ -301,6 +301,15 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             let count = execute_update(catalog, &table_name, assignments, selection)?;
             println!("{} row(s) updated", count);
         }
+        Statement::BeginTransaction { name } => {
+            catalog.begin_transaction(name)?;
+        }
+        Statement::Commit => {
+            catalog.commit_transaction()?;
+        }
+        Statement::Rollback => {
+            catalog.rollback_transaction()?;
+        }
         Statement::Exit => {}
     }
     Ok(())

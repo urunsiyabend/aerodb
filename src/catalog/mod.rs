@@ -62,6 +62,18 @@ impl Catalog {
         Ok(Catalog { tables, indexes: HashMap::new(), pager })
     }
 
+    pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
+        self.pager.begin_transaction(name)
+    }
+
+    pub fn commit_transaction(&mut self) -> io::Result<()> {
+        self.pager.commit_transaction()
+    }
+
+    pub fn rollback_transaction(&mut self) -> io::Result<()> {
+        self.pager.rollback_transaction()
+    }
+
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
     pub fn create_table(&mut self, name: &str, columns: Vec<(String, ColumnType)>) -> io::Result<()> {

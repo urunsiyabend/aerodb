@@ -4,6 +4,7 @@ mod storage;
 mod sql;
 mod catalog;
 mod execution;
+mod transaction;
 
 use std::io::{self, Write};
 use log::{debug, info, warn};
@@ -916,5 +917,70 @@ mod tests {
             ColumnValue::Text(s) => assert_eq!(s, "bob"),
             _ => panic!("Expected text"),
         }
+    }
+
+    #[test]
+    fn parse_transaction_statements() {
+        let stmt = parse_statement("BEGIN TRANSACTION tx1").unwrap();
+        match stmt {
+            Statement::BeginTransaction { name } => assert_eq!(name, Some("tx1".into())),
+            _ => panic!("Expected begin transaction"),
+        }
+
+        let stmt = parse_statement("COMMIT").unwrap();
+        matches!(stmt, Statement::Commit);
+
+        let stmt = parse_statement("ROLLBACK").unwrap();
+        matches!(stmt, Statement::Rollback);
+    }
+
+    #[test]
+    fn transaction_commit_persists() {
+        let filename = "test_tx_commit.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "items",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+
+        catalog.begin_transaction(Some("t1".into())).unwrap();
+        let insert = Statement::Insert { table_name: "items".into(), values: vec!["1".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+        catalog.commit_transaction().unwrap();
+
+        drop(catalog);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+        let root_page = catalog.get_table("items").unwrap().root_page;
+        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        assert!(bt.find(1).unwrap().is_some());
+    }
+
+    #[test]
+    fn transaction_rollback_discards() {
+        let filename = "test_tx_rollback.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "items",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+
+        catalog.begin_transaction(Some("t1".into())).unwrap();
+        let insert = Statement::Insert { table_name: "items".into(), values: vec!["1".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+        catalog.rollback_transaction().unwrap();
+
+        drop(catalog);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+        let root_page = catalog.get_table("items").unwrap().root_page;
+        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        assert!(bt.find(1).unwrap().is_none());
     }
 }

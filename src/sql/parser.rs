@@ -49,6 +49,15 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
         return Err("Empty input".to_string());
     }
     match tokens[0].to_uppercase().as_str() {
+        "BEGIN" => {
+            if tokens.len() < 2 || !tokens[1].eq_ignore_ascii_case("TRANSACTION") {
+                return Err("Usage: BEGIN TRANSACTION <name>".into());
+            }
+            let name = tokens.get(2).map(|s| s.trim_end_matches(';').to_string());
+            Ok(Statement::BeginTransaction { name })
+        }
+        "COMMIT" => Ok(Statement::Commit),
+        "ROLLBACK" => Ok(Statement::Rollback),
         "CREATE" => {
             if tokens.len() >= 3 && tokens[1].eq_ignore_ascii_case("INDEX") {
                 if tokens.len() < 6 || !tokens[3].eq_ignore_ascii_case("ON") {
