@@ -3,7 +3,7 @@ use std::io;
 use crate::catalog::Catalog;
 use crate::sql::ast::{Statement, Expr};
 use crate::storage::btree::BTree;
-use crate::storage::row::{Row, RowData, ColumnValue, build_row_data};
+use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
 use std::collections::HashMap;
 
 pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> io::Result<()> {
@@ -51,6 +51,118 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
 
             for r in rows_to_delete {
                 catalog.remove_from_indexes(table_name, &r.data, r.key)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn execute_update(
+    catalog: &mut Catalog,
+    table_name: &str,
+    assignments: Vec<(String, String)>,
+    selection: Option<Expr>,
+) -> io::Result<()> {
+    if let Ok(table_info) = catalog.get_table(table_name) {
+        let root_page = table_info.root_page;
+        let columns = table_info.columns.clone();
+        let mut col_pos = HashMap::new();
+        for (i, (c, _)) in columns.iter().enumerate() {
+            col_pos.insert(c.clone(), i);
+        }
+        let mut parsed = Vec::new();
+        for (col, val) in assignments {
+            let idx = *col_pos
+                .get(&col)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Column not found"))?;
+            let ty = columns[idx].1;
+            let cv = match ty {
+                ColumnType::Integer => ColumnValue::Integer(
+                    val.parse::<i32>()
+                        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid INTEGER"))?,
+                ),
+                ColumnType::Text => ColumnValue::Text(val.clone()),
+                ColumnType::Boolean => match val.to_ascii_lowercase().as_str() {
+                    "true" => ColumnValue::Boolean(true),
+                    "false" => ColumnValue::Boolean(false),
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "Invalid BOOLEAN",
+                        ))
+                    }
+                },
+            };
+            parsed.push((idx, cv));
+        }
+
+        let rows_to_update = {
+            let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
+            let mut cursor = scan_tree.scan_all_rows();
+            let mut collected = Vec::new();
+            while let Some(row) = cursor.next() {
+                if let Some(ref expr) = selection {
+                    let mut values = HashMap::new();
+                    for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
+                        let v = match val {
+                            ColumnValue::Integer(i) => i.to_string(),
+                            ColumnValue::Text(s) => s.clone(),
+                            ColumnValue::Boolean(b) => b.to_string(),
+                        };
+                        values.insert(col.clone(), v);
+                    }
+                    if crate::sql::ast::evaluate_expression(expr, &values) {
+                        collected.push(row);
+                    }
+                } else {
+                    collected.push(row);
+                }
+            }
+            drop(cursor);
+            collected
+        };
+
+        if !rows_to_update.is_empty() {
+            struct UpdateOp {
+                old_key: i32,
+                new_key: i32,
+                old_data: RowData,
+                new_data: RowData,
+            }
+            let mut ops = Vec::new();
+            for row in rows_to_update {
+                let mut new_data = row.data.clone();
+                for (idx, val) in &parsed {
+                    new_data.0[*idx] = val.clone();
+                }
+                let new_key = match new_data.0[0] {
+                    ColumnValue::Integer(i) => i,
+                    _ => row.key,
+                };
+                ops.push(UpdateOp {
+                    old_key: row.key,
+                    new_key,
+                    old_data: row.data,
+                    new_data,
+                });
+            }
+
+            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
+            for op in &ops {
+                table_btree.delete(op.old_key)?;
+                table_btree.insert(op.new_key, op.new_data.clone())?;
+            }
+            let new_root = table_btree.root_page();
+            drop(table_btree);
+            if new_root != root_page {
+                if let Ok(t) = catalog.get_table_mut(table_name) {
+                    t.root_page = new_root;
+                }
+            }
+
+            for op in ops {
+                catalog.remove_from_indexes(table_name, &op.old_data, op.old_key)?;
+                catalog.insert_into_indexes(table_name, &op.new_data)?;
             }
         }
     }
@@ -168,6 +280,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
         }
         Statement::Delete { table_name, selection } => {
             execute_delete(catalog, &table_name, selection)?;
+        }
+        Statement::Update { table_name, assignments, selection } => {
+            execute_update(catalog, &table_name, assignments, selection)?;
         }
         Statement::Exit => {}
     }

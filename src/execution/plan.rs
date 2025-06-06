@@ -32,6 +32,11 @@ pub enum PlanNode {
         table_name: String,
         selection: Option<Expr>,
     },
+    Update {
+        table_name: String,
+        assignments: Vec<(String, String)>,
+        selection: Option<Expr>,
+    },
     Exit,
 }
 
@@ -57,6 +62,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         }
         Statement::DropTable { table_name, if_exists } => PlanNode::DropTable { table_name, if_exists },
         Statement::Delete { table_name, selection } => PlanNode::Delete { table_name, selection },
+        Statement::Update { table_name, assignments, selection } => PlanNode::Update { table_name, assignments, selection },
         Statement::Exit => PlanNode::Exit,
     }
 }
