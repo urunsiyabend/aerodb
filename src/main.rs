@@ -995,4 +995,30 @@ mod tests {
         let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
         assert!(bt.find(1).unwrap().is_none());
     }
+
+    #[test]
+    fn transaction_rollback_new_pages() {
+        let filename = "test_tx_newpage.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "items",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+
+        catalog.begin_transaction(None).unwrap();
+        // insert many rows so new pages are allocated during the transaction
+        for i in 0..150 {
+            let insert = Statement::Insert {
+                table_name: "items".into(),
+                values: vec![i.to_string()],
+            };
+            handle_statement(&mut catalog, insert).unwrap();
+        }
+        // Should not error even though new pages were allocated
+        assert!(catalog.rollback_transaction().is_ok());
+    }
 }

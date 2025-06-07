@@ -160,6 +160,7 @@ impl Pager {
             }
             self.wal.append_checkpoint()?;
             self.wal.truncate()?;
+            self.file.sync_all()?;
             self.dirty_pages.clear();
             self.transaction_active = false;
         }
@@ -170,9 +171,11 @@ impl Pager {
         if self.transaction_active {
             for page_num in self.dirty_pages.keys().cloned().collect::<Vec<_>>() {
                 let mut buf = [0u8; PAGE_SIZE];
-                let offset = (page_num as u64) * (PAGE_SIZE as u64);
-                self.file.seek(SeekFrom::Start(offset))?;
-                self.file.read_exact(&mut buf)?;
+                if page_num < self.file_length_pages {
+                    let offset = (page_num as u64) * (PAGE_SIZE as u64);
+                    self.file.seek(SeekFrom::Start(offset))?;
+                    self.file.read_exact(&mut buf)?;
+                }
                 if let Some(page_box) = &mut self.cache[page_num as usize] {
                     page_box.data = buf;
                 }
