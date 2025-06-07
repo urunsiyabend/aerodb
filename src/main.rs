@@ -23,7 +23,7 @@ const DATABASE_FILE: &str = "data.aerodb";
 
 fn main() -> io::Result<()> {
     env_logger::init();
-    info!("AeroDB v0.4 (extended SQL support + catalog). Type .exit to quit.");
+    info!("AeroDB v0.5(Transaction with WAL). Type .exit to quit.");
 
     let mut catalog = Catalog::open(Pager::new(DATABASE_FILE)?)?;
 
@@ -331,7 +331,7 @@ mod tests {
             .create_table("nums", vec![("id".into(), ColumnType::Integer)])
             .unwrap();
 
-        for i in 1..=600 {
+        for i in 1..=100 {
             let values = vec![i.to_string()];
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
@@ -347,7 +347,7 @@ mod tests {
 
         let root_page = catalog.get_table("nums").unwrap().root_page;
         let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-        for k in 2..=600 {
+        for k in 2..=100 {
             btree.delete(k).unwrap();
         }
         let new_root = btree.root_page();

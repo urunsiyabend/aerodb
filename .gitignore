@@ -24,3 +24,5 @@ Cargo.lock
 # AeroDB specific files (*.aerodb files)
 *.aerodb
 *.db
+*.db.wal
+*.aerodb.wal

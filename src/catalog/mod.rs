@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io;
-
+use log::debug;
 use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType};
 use crate::storage::pager::Pager;
@@ -116,10 +116,12 @@ impl Catalog {
     }
 
     pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
+        debug!("Transaction started with name: {:?}", name);
         self.pager.begin_transaction(name)
     }
 
     pub fn commit_transaction(&mut self) -> io::Result<()> {
+        debug!("Transaction committed");
         self.pager.commit_transaction()
     }
 
