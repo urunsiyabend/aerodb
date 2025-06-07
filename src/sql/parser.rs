@@ -1,4 +1,4 @@
-use crate::sql::ast::{Expr, Statement, OrderBy};
+use crate::sql::ast::{Expr, Statement, OrderBy, ForeignKey, Action};
 use crate::storage::row::ColumnType;
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
@@ -97,28 +97,93 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 return Err("Columns must be in parentheses".to_string());
             }
             let inner = &rest[1..rest.len() - 1];
-            let cols: Vec<(String, ColumnType)> = inner
-                .split(',')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(|chunk| {
+
+            fn split_top_level(s: &str) -> Vec<String> {
+                let mut parts = Vec::new();
+                let mut current = String::new();
+                let mut depth = 0;
+                for ch in s.chars() {
+                    match ch {
+                        '(' => { depth += 1; current.push(ch); }
+                        ')' => { depth -= 1; current.push(ch); }
+                        ',' if depth == 0 => {
+                            parts.push(current.trim().to_string());
+                            current.clear();
+                        }
+                        _ => current.push(ch),
+                    }
+                }
+                if !current.trim().is_empty() {
+                    parts.push(current.trim().to_string());
+                }
+                parts
+            }
+
+            let mut columns = Vec::new();
+            let mut fks = Vec::new();
+            for chunk in split_top_level(inner) {
+                if chunk.to_uppercase().starts_with("FOREIGN KEY") {
+                    let mut rest = chunk[11..].trim();
+                    if !rest.starts_with('(') {
+                        return Err("Expected ( after FOREIGN KEY".into());
+                    }
+                    let end = rest.find(')').ok_or("Missing ) in FOREIGN KEY")?;
+                    let cols_part = &rest[1..end];
+                    let cols: Vec<String> = cols_part.split(',').map(|s| s.trim().to_string()).collect();
+                    rest = rest[end + 1..].trim();
+                    if !rest.to_uppercase().starts_with("REFERENCES") {
+                        return Err("Expected REFERENCES".into());
+                    }
+                    rest = rest[10..].trim();
+                    let mut parts = rest.splitn(2, '(');
+                    let parent_table = parts.next().ok_or("Missing parent table")?.trim().to_string();
+                    let remainder = parts.next().ok_or("Missing ( after parent table")?;
+                    let end2 = remainder.find(')').ok_or("Missing ) after parent columns")?;
+                    let pcols_part = &remainder[..end2];
+                    let parent_columns: Vec<String> = pcols_part.split(',').map(|s| s.trim().to_string()).collect();
+                    let mut rest2 = remainder[end2 + 1..].trim();
+                    let mut on_delete = None;
+                    let mut on_update = None;
+                    while !rest2.is_empty() {
+                        if rest2.to_uppercase().starts_with("ON DELETE") {
+                            rest2 = rest2[9..].trim();
+                            if rest2.to_uppercase().starts_with("CASCADE") {
+                                on_delete = Some(Action::Cascade);
+                                rest2 = rest2[7..].trim();
+                            } else {
+                                on_delete = Some(Action::NoAction);
+                                rest2 = rest2.trim_start_matches("NO ACTION").trim();
+                            }
+                        } else if rest2.to_uppercase().starts_with("ON UPDATE") {
+                            rest2 = rest2[9..].trim();
+                            if rest2.to_uppercase().starts_with("CASCADE") {
+                                on_update = Some(Action::Cascade);
+                                rest2 = rest2[7..].trim();
+                            } else {
+                                on_update = Some(Action::NoAction);
+                                rest2 = rest2.trim_start_matches("NO ACTION").trim();
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    fks.push(ForeignKey { columns: cols, parent_table, parent_columns, on_delete, on_update });
+                } else {
                     let parts: Vec<&str> = chunk.split_whitespace().collect();
                     if parts.len() != 2 {
                         return Err("Column definitions must be <name> <type>".to_string());
                     }
                     let ctype = ColumnType::from_str(parts[1])
                         .ok_or_else(|| format!("Unknown type {}", parts[1]))?;
-                    Ok((parts[0].to_string(), ctype))
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            if cols.is_empty() {
+                    columns.push((parts[0].to_string(), ctype));
+                }
+            }
+
+            if columns.is_empty() {
                 return Err("At least one column required".to_string());
             }
-            Ok(Statement::CreateTable {
-                table_name: name,
-                columns: cols,
-                if_not_exists,
-            })
+
+            Ok(Statement::CreateTable { table_name: name, columns, fks, if_not_exists })
         }
         "INSERT" => {
             // Expect: INSERT INTO table_name VALUES (v1, v2, v3)

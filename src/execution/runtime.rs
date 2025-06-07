@@ -37,6 +37,67 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
         };
 
         if !rows_to_delete.is_empty() {
+            // enforce foreign key constraints from child tables
+            let child_tables: Vec<_> = catalog.all_tables();
+            for row in &rows_to_delete {
+                for child in &child_tables {
+                    for fk in &child.fks {
+                        if fk.parent_table == table_name {
+                            let parent_idx = columns
+                                .iter()
+                                .position(|(c, _)| c == &fk.parent_columns[0])
+                                .unwrap();
+                            let parent_val = match row.data.0[parent_idx] {
+                                ColumnValue::Integer(i) => i,
+                                _ => continue,
+                            };
+                            let child_idx = child
+                                .columns
+                                .iter()
+                                .position(|(c, _)| c == &fk.columns[0])
+                                .unwrap();
+                            let mut matches: Vec<(i32, RowData)> = Vec::new();
+                            {
+                                let mut scan_tree = BTree::open_root(&mut catalog.pager, child.root_page)?;
+                                let mut cursor = scan_tree.scan_all_rows();
+                                while let Some(crow) = cursor.next() {
+                                    if let ColumnValue::Integer(v) = crow.data.0[child_idx] {
+                                        if v == parent_val {
+                                            matches.push((crow.key, crow.data.clone()));
+                                        }
+                                    }
+                                }
+                            }
+                            if !matches.is_empty() {
+                                if fk.on_delete == Some(crate::sql::ast::Action::Cascade) {
+                                    let mut del_tree = BTree::open_root(&mut catalog.pager, child.root_page)?;
+                                    for (k, _) in &matches {
+                                        del_tree.delete(*k)?;
+                                    }
+                                    let new_root_c = del_tree.root_page();
+                                    drop(del_tree);
+                                    for (k, data) in &matches {
+                                        catalog.remove_from_indexes(&child.name, data, *k)?;
+                                    }
+                                    if new_root_c != child.root_page {
+                                        catalog.get_table_mut(&child.name)?.root_page = new_root_c;
+                                        catalog.update_catalog_root(&child.name, new_root_c)?;
+                                    }
+                                } else {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::Other,
+                                        format!(
+                                            "Cannot delete {}: referenced by {}.{}",
+                                            table_name, child.name, fk.columns[0]
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let count = rows_to_delete.len();
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
             for r in &rows_to_delete {
@@ -243,8 +304,8 @@ pub fn execute_select_with_indexes(
 
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()> {
     match stmt {
-        Statement::CreateTable { table_name, columns, if_not_exists } => {
-            match catalog.create_table(&table_name, columns) {
+        Statement::CreateTable { table_name, columns, fks, if_not_exists } => {
+            match catalog.create_table_with_fks(&table_name, columns, fks) {
                 Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {
@@ -260,11 +321,40 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             println!("Index {} created", index_name);
         }
         Statement::Insert { table_name, values } => {
-            let table_info = catalog.get_table(&table_name)?;
+            let table_info = catalog.get_table(&table_name)?.clone();
             let root_page = table_info.root_page;
             let columns = table_info.columns.clone();
+            let fks = table_info.fks.clone();
             let row_data = build_row_data(&values, &columns)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            for fk in &fks {
+                if fk.columns.is_empty() || fk.parent_columns.is_empty() {
+                    continue;
+                }
+                let col_idx = table_info
+                    .columns
+                    .iter()
+                    .position(|(c, _)| c == &fk.columns[0])
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "FK column not found"))?;
+                let child_val = match row_data.0[col_idx] {
+                    ColumnValue::Integer(i) => i,
+                    _ => {
+                        return Err(io::Error::new(io::ErrorKind::Other, "FK column must be INTEGER"));
+                    }
+                };
+                let parent_root = catalog.get_table(&fk.parent_table)?.root_page;
+                let mut parent_btree = BTree::open_root(&mut catalog.pager, parent_root)?;
+                if parent_btree.find(child_val)?.is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "FK violation: no {}.{} = {}",
+                            fk.parent_table, fk.parent_columns[0], child_val
+                        ),
+                    ));
+                }
+            }
             let key = match row_data.0.get(0) {
                 Some(ColumnValue::Integer(i)) => *i,
                 _ => {

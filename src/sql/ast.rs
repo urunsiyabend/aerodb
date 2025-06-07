@@ -15,11 +15,27 @@ pub struct OrderBy {
     pub descending: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    NoAction,
+    Cascade,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForeignKey {
+    pub columns: Vec<String>,
+    pub parent_table: String,
+    pub parent_columns: Vec<String>,
+    pub on_delete: Option<Action>,
+    pub on_update: Option<Action>,
+}
+
 #[derive(Debug)]
 pub enum Statement {
     CreateTable {
         table_name: String,
         columns: Vec<(String, ColumnType)>,
+        fks: Vec<ForeignKey>,
         if_not_exists: bool,
     },
     CreateIndex {

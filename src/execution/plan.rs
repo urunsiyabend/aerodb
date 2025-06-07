@@ -42,7 +42,7 @@ pub enum PlanNode {
 
 pub fn plan_statement(stmt: Statement) -> PlanNode {
     match stmt {
-        Statement::CreateTable { table_name, columns, if_not_exists } => {
+        Statement::CreateTable { table_name, columns, if_not_exists, .. } => {
             PlanNode::CreateTable { table_name, columns, if_not_exists }
         }
         Statement::CreateIndex { index_name, table_name, column_name } => {
