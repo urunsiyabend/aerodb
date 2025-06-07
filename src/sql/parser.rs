@@ -234,11 +234,12 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     fks.push(ForeignKey { columns: cols, parent_table, parent_columns, on_delete, on_update });
                 } else {
                     let parts: Vec<&str> = chunk.split_whitespace().collect();
-                    if parts.len() != 2 {
+                    if parts.len() < 2 {
                         return Err("Column definitions must be <name> <type>".to_string());
                     }
-                    let ctype = ColumnType::from_str(parts[1])
-                        .ok_or_else(|| format!("Unknown type {}", parts[1]))?;
+                    let type_str = parts[1..].join(" ");
+                    let ctype = ColumnType::from_str(&type_str)
+                        .ok_or_else(|| format!("Unknown type {}", type_str))?;
                     columns.push((parts[0].to_string(), ctype));
                 }
             }

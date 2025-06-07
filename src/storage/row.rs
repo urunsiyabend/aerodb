@@ -6,6 +6,10 @@ pub enum ColumnType {
     Text,
     Boolean,
     Char(usize),
+    SmallInt { width: usize, unsigned: bool },
+    MediumInt { width: usize, unsigned: bool },
+    Double { precision: usize, scale: usize, unsigned: bool },
+    Date,
 }
 
 impl ColumnType {
@@ -21,6 +25,70 @@ impl ColumnType {
             }
             return Some(ColumnType::Char(1));
         }
+        // handle SMALLINT, MEDIUMINT, DOUBLE with optional size/precision and UNSIGNED
+        let mut base = upper.as_str();
+        let mut unsigned = false;
+        if base.ends_with(" UNSIGNED") {
+            unsigned = true;
+            base = &base[..base.len() - 9];
+        }
+        if base.starts_with("SMALLINT") {
+            let mut width = 0usize;
+            if let Some(start) = base.find('(') {
+                if let Some(end) = base.find(')') {
+                    if let Ok(w) = base[start + 1..end].parse::<usize>() {
+                        if w <= 255 {
+                            width = w;
+                        } else {
+                            return None;
+                        }
+                    }
+                }
+                base = &base[..start];
+            }
+            return Some(ColumnType::SmallInt { width, unsigned });
+        }
+        if base.starts_with("MEDIUMINT") {
+            let mut width = 0usize;
+            if let Some(start) = base.find('(') {
+                if let Some(end) = base.find(')') {
+                    if let Ok(w) = base[start + 1..end].parse::<usize>() {
+                        if w <= 255 {
+                            width = w;
+                        } else {
+                            return None;
+                        }
+                    }
+                }
+                base = &base[..start];
+            }
+            return Some(ColumnType::MediumInt { width, unsigned });
+        }
+        if base.starts_with("DOUBLE") {
+            let mut precision = 10usize;
+            let mut scale = 0usize;
+            if let Some(start) = base.find('(') {
+                if let Some(end) = base.find(')') {
+                    let args = &base[start + 1..end];
+                    let parts: Vec<&str> = args.split(',').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(p), Ok(s)) = (parts[0].trim().parse::<usize>(), parts[1].trim().parse::<usize>()) {
+                            if p <= 255 && s <= 255 && p >= s {
+                                precision = p;
+                                scale = s;
+                            } else {
+                                return None;
+                            }
+                        }
+                    }
+                }
+                base = &base[..start];
+            }
+            return Some(ColumnType::Double { precision, scale, unsigned });
+        }
+        if base == "DATE" {
+            return Some(ColumnType::Date);
+        }
         match upper.as_str() {
             "INTEGER" | "INT" => Some(ColumnType::Integer),
             "TEXT" => Some(ColumnType::Text),
@@ -35,6 +103,24 @@ impl ColumnType {
             ColumnType::Text => "TEXT".into(),
             ColumnType::Boolean => "BOOLEAN".into(),
             ColumnType::Char(size) => format!("CHAR({})", size),
+            ColumnType::SmallInt { width, unsigned } => {
+                let mut s = String::from("SMALLINT");
+                if *width > 0 { s.push_str(&format!("({})", width)); }
+                if *unsigned { s.push_str(" UNSIGNED"); }
+                s
+            }
+            ColumnType::MediumInt { width, unsigned } => {
+                let mut s = String::from("MEDIUMINT");
+                if *width > 0 { s.push_str(&format!("({})", width)); }
+                if *unsigned { s.push_str(" UNSIGNED"); }
+                s
+            }
+            ColumnType::Double { precision, scale, unsigned } => {
+                let mut s = format!("DOUBLE({},{})", precision, scale);
+                if *unsigned { s.push_str(" UNSIGNED"); }
+                s
+            }
+            ColumnType::Date => "DATE".into(),
         }
     }
 
@@ -44,6 +130,10 @@ impl ColumnType {
             2 => Some(ColumnType::Text),
             3 => Some(ColumnType::Boolean),
             4 => Some(ColumnType::Char(0)),
+            5 => Some(ColumnType::SmallInt { width: 0, unsigned: false }),
+            6 => Some(ColumnType::MediumInt { width: 0, unsigned: false }),
+            7 => Some(ColumnType::Double { precision: 10, scale: 0, unsigned: false }),
+            8 => Some(ColumnType::Date),
             _ => None,
         }
     }
@@ -54,6 +144,10 @@ impl ColumnType {
             ColumnType::Text => 2,
             ColumnType::Boolean => 3,
             ColumnType::Char(_) => 4,
+            ColumnType::SmallInt { .. } => 5,
+            ColumnType::MediumInt { .. } => 6,
+            ColumnType::Double { .. } => 7,
+            ColumnType::Date => 8,
         }
     }
 }
@@ -64,6 +158,7 @@ pub enum ColumnValue {
     Text(String),
     Boolean(bool),
     Char(String),
+    Double(f64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +187,10 @@ impl RowData {
                     buf.push(0x04);
                     buf.extend(&(s.len() as u32).to_le_bytes());
                     buf.extend(s.as_bytes());
+                }
+                ColumnValue::Double(f) => {
+                    buf.push(0x05);
+                    buf.extend(&f.to_le_bytes());
                 }
             }
         }
@@ -155,6 +254,14 @@ impl RowData {
                     offset += len;
                     cols.push(ColumnValue::Char(val));
                 }
+                0x05 => {
+                    if offset + 8 > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let val = f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+                    offset += 8;
+                    cols.push(ColumnValue::Double(val));
+                }
                 _ => {
                     return Err(io::Error::new(io::ErrorKind::Other, "Unknown type tag"));
                 }
@@ -200,6 +307,44 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
                     s.push_str(&" ".repeat(*len - s.len()));
                 }
                 cols.push(ColumnValue::Char(s));
+            }
+            ColumnType::SmallInt { unsigned, .. } => {
+                let val = v.parse::<i32>().map_err(|_| {
+                    format!("Value '{}' for column '{}' is not a valid SMALLINT", v, name)
+                })?;
+                if *unsigned {
+                    if !(0..=65535).contains(&val) {
+                        return Err(format!("Value '{}' for column '{}' out of range", v, name));
+                    }
+                } else if !(-32768..=32767).contains(&val) {
+                    return Err(format!("Value '{}' for column '{}' out of range", v, name));
+                }
+                cols.push(ColumnValue::Integer(val));
+            }
+            ColumnType::MediumInt { unsigned, .. } => {
+                let val = v.parse::<i32>().map_err(|_| {
+                    format!("Value '{}' for column '{}' is not a valid MEDIUMINT", v, name)
+                })?;
+                if *unsigned {
+                    if !(0..=16_777_215).contains(&val) {
+                        return Err(format!("Value '{}' for column '{}' out of range", v, name));
+                    }
+                } else if !(-8_388_608..=8_388_607).contains(&val) {
+                    return Err(format!("Value '{}' for column '{}' out of range", v, name));
+                }
+                cols.push(ColumnValue::Integer(val));
+            }
+            ColumnType::Double { unsigned, .. } => {
+                let val = v.parse::<f64>().map_err(|_| {
+                    format!("Value '{}' for column '{}' is not a valid DOUBLE", v, name)
+                })?;
+                if *unsigned && val < 0.0 {
+                    return Err(format!("Value '{}' for column '{}' out of range", v, name));
+                }
+                cols.push(ColumnValue::Double(val));
+            }
+            ColumnType::Date => {
+                cols.push(ColumnValue::Text(v.clone()));
             }
         }
     }

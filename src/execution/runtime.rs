@@ -23,6 +23,7 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
                             ColumnValue::Text(s) => s.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
                             ColumnValue::Char(s) => s.clone(),
+                            ColumnValue::Double(f) => f.to_string(),
                         };
                         values.insert(col.clone(), v);
                     }
@@ -173,6 +174,36 @@ pub fn execute_update(
                     }
                     ColumnValue::Char(s)
                 }
+                ColumnType::SmallInt { unsigned, .. } => {
+                    let i = val.parse::<i32>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid SMALLINT"))?;
+                    if unsigned {
+                        if !(0..=65535).contains(&i) {
+                            return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                        }
+                    } else if !(-32768..=32767).contains(&i) {
+                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                    }
+                    ColumnValue::Integer(i)
+                }
+                ColumnType::MediumInt { unsigned, .. } => {
+                    let i = val.parse::<i32>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid MEDIUMINT"))?;
+                    if unsigned {
+                        if !(0..=16_777_215).contains(&i) {
+                            return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                        }
+                    } else if !(-8_388_608..=8_388_607).contains(&i) {
+                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                    }
+                    ColumnValue::Integer(i)
+                }
+                ColumnType::Double { unsigned, .. } => {
+                    let f = val.parse::<f64>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid DOUBLE"))?;
+                    if unsigned && f < 0.0 {
+                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                    }
+                    ColumnValue::Double(f)
+                }
+                ColumnType::Date => ColumnValue::Text(val.clone()),
             };
             parsed.push((idx, cv));
         }
@@ -190,6 +221,7 @@ pub fn execute_update(
                             ColumnValue::Text(s) => s.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
                             ColumnValue::Char(s) => s.clone(),
+                            ColumnValue::Double(f) => f.to_string(),
                         };
                         values.insert(col.clone(), v);
                     }
@@ -308,6 +340,7 @@ pub fn execute_select_with_indexes(
                     ColumnValue::Text(s) => s.clone(),
                     ColumnValue::Boolean(b) => b.to_string(),
                     ColumnValue::Char(s) => s.clone(),
+                    ColumnValue::Double(f) => f.to_string(),
                 };
                 values.insert(col.clone(), v);
             }
@@ -389,6 +422,7 @@ pub fn execute_multi_join(
                 ColumnValue::Text(t) => t.clone(),
                 ColumnValue::Boolean(b) => b.to_string(),
                 ColumnValue::Char(t) => t.clone(),
+                ColumnValue::Double(f) => f.to_string(),
             };
             str_map.insert(k.clone(), s);
         }
@@ -440,6 +474,7 @@ pub fn execute_group_query(
                 ColumnValue::Text(t) => t.clone(),
                 ColumnValue::Boolean(b) => b.to_string(),
                 ColumnValue::Char(t) => t.clone(),
+                ColumnValue::Double(f) => f.to_string(),
             };
             values.insert(c.clone(), s.clone());
             let qual = format!("{}.{}", table_name, c);
@@ -459,6 +494,7 @@ pub fn execute_group_query(
                         ColumnValue::Text(s) => s.clone(),
                         ColumnValue::Boolean(b) => b.to_string(),
                         ColumnValue::Char(s) => s.clone(),
+                        ColumnValue::Double(f) => f.to_string(),
                     }
                 })
                 .collect()
@@ -506,6 +542,7 @@ pub fn execute_group_query(
                         ColumnValue::Text(t) => t.clone(),
                         ColumnValue::Boolean(b) => b.to_string(),
                         ColumnValue::Char(t) => t.clone(),
+                        ColumnValue::Double(f) => f.to_string(),
                     };
                     value_map.insert(c.clone(), s.clone());
                     result_row.push(s);
@@ -568,6 +605,7 @@ pub fn execute_group_query(
                             ColumnValue::Text(t) => t.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
                             ColumnValue::Char(t) => t.clone(),
+                            ColumnValue::Double(f) => f.to_string(),
                         };
                         value_map.insert(i.clone(), s.clone());
                         result_row.push(s);
@@ -582,6 +620,7 @@ pub fn execute_group_query(
                             ColumnValue::Text(t) => t.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
                             ColumnValue::Char(t) => t.clone(),
+                            ColumnValue::Double(f) => f.to_string(),
                         };
                         ctx.insert(c.clone(), val);
                     }
@@ -775,6 +814,7 @@ pub fn row_to_strings(row: &Row) -> Vec<String> {
             ColumnValue::Text(s) => s.clone(),
             ColumnValue::Boolean(b) => b.to_string(),
             ColumnValue::Char(s) => s.clone(),
+            ColumnValue::Double(f) => f.to_string(),
         })
         .collect()
 }
@@ -1092,6 +1132,7 @@ pub fn format_row(row: &Row) -> String {
             ColumnValue::Text(s) => s.clone(),
             ColumnValue::Boolean(b) => b.to_string(),
             ColumnValue::Char(s) => s.clone(),
+            ColumnValue::Double(f) => f.to_string(),
         })
         .collect::<Vec<_>>()
         .join(" | ")
