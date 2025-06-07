@@ -529,7 +529,7 @@ pub(crate) fn parse_datetime(s: &str) -> Option<i64> {
     use chrono::NaiveDateTime;
     NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .ok()
-        .map(|dt| dt.timestamp())
+        .map(|dt| dt.and_utc().timestamp())
 }
 
 pub(crate) fn parse_time(s: &str) -> Option<i32> {
