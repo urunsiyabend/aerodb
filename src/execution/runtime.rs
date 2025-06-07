@@ -18,11 +18,7 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
                 if let Some(ref expr) = selection {
                     let mut values = HashMap::new();
                     for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
-                        let v = match val {
-                            ColumnValue::Integer(i) => i.to_string(),
-                            ColumnValue::Text(s) => s.clone(),
-                            ColumnValue::Boolean(b) => b.to_string(),
-                        };
+                        let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
                     if crate::sql::ast::evaluate_expression(expr, &values) {
@@ -156,6 +152,83 @@ pub fn execute_update(
                         ))
                     }
                 },
+                ColumnType::Char(len) => {
+                    if val.len() > len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!(
+                                "Value '{}' for column '{}' exceeds length {}",
+                                val, col, len
+                            ),
+                        ));
+                    }
+                    let mut s = val.clone();
+                    if s.len() < len {
+                        s.push_str(&" ".repeat(len - s.len()));
+                    }
+                    ColumnValue::Char(s)
+                }
+                ColumnType::SmallInt { unsigned, .. } => {
+                    let i = val.parse::<i32>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid SMALLINT"))?;
+                    if unsigned {
+                        if !(0..=65535).contains(&i) {
+                            return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                        }
+                    } else if !(-32768..=32767).contains(&i) {
+                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                    }
+                    ColumnValue::Integer(i)
+                }
+                ColumnType::MediumInt { unsigned, .. } => {
+                    let i = val.parse::<i32>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid MEDIUMINT"))?;
+                    if unsigned {
+                        if !(0..=16_777_215).contains(&i) {
+                            return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                        }
+                    } else if !(-8_388_608..=8_388_607).contains(&i) {
+                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                    }
+                    ColumnValue::Integer(i)
+                }
+                ColumnType::Double { unsigned, .. } => {
+                    let f = val.parse::<f64>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid DOUBLE"))?;
+                    if unsigned && f < 0.0 {
+                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                    }
+                    ColumnValue::Double(f)
+                }
+                ColumnType::Date => {
+                    match crate::storage::row::parse_date(&val) {
+                        Some(d) => ColumnValue::Date(d),
+                        None => {
+                            return Err(io::Error::new(io::ErrorKind::Other, "Invalid DATE"));
+                        }
+                    }
+                }
+                ColumnType::DateTime => {
+                    match crate::storage::row::parse_datetime(&val) {
+                        Some(ts) => ColumnValue::DateTime(ts),
+                        None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid DATETIME")),
+                    }
+                }
+                ColumnType::Timestamp => {
+                    match crate::storage::row::parse_datetime(&val) {
+                        Some(ts) => ColumnValue::Timestamp(ts),
+                        None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid TIMESTAMP")),
+                    }
+                }
+                ColumnType::Time => {
+                    match crate::storage::row::parse_time(&val) {
+                        Some(t) => ColumnValue::Time(t),
+                        None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid TIME")),
+                    }
+                }
+                ColumnType::Year => {
+                    match crate::storage::row::parse_year(&val) {
+                        Some(y) => ColumnValue::Year(y),
+                        None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid YEAR")),
+                    }
+                }
             };
             parsed.push((idx, cv));
         }
@@ -168,11 +241,7 @@ pub fn execute_update(
                 if let Some(ref expr) = selection {
                     let mut values = HashMap::new();
                     for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
-                        let v = match val {
-                            ColumnValue::Integer(i) => i.to_string(),
-                            ColumnValue::Text(s) => s.clone(),
-                            ColumnValue::Boolean(b) => b.to_string(),
-                        };
+                        let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
                     if crate::sql::ast::evaluate_expression(expr, &values) {
@@ -285,11 +354,7 @@ pub fn execute_select_with_indexes(
         if let Some(ref expr) = selection {
             let mut values = HashMap::new();
             for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
-                let v = match val {
-                    ColumnValue::Integer(i) => i.to_string(),
-                    ColumnValue::Text(s) => s.clone(),
-                    ColumnValue::Boolean(b) => b.to_string(),
-                };
+                let v = val.to_string_value();
                 values.insert(col.clone(), v);
             }
             if crate::sql::ast::evaluate_expression(expr, &values) {
@@ -365,11 +430,7 @@ pub fn execute_multi_join(
     for row in result_rows {
         let mut str_map = std::collections::HashMap::new();
         for (k, v) in &row {
-            let s = match v {
-                ColumnValue::Integer(i) => i.to_string(),
-                ColumnValue::Text(t) => t.clone(),
-                ColumnValue::Boolean(b) => b.to_string(),
-            };
+            let s = v.to_string_value();
             str_map.insert(k.clone(), s);
         }
         if let Some(ref pred) = plan.where_predicate {
@@ -415,11 +476,7 @@ pub fn execute_group_query(
             }
         }
         for ((c, _), val) in table_info.columns.iter().zip(row.data.0.iter()) {
-            let s = match val {
-                ColumnValue::Integer(i) => i.to_string(),
-                ColumnValue::Text(t) => t.clone(),
-                ColumnValue::Boolean(b) => b.to_string(),
-            };
+            let s = val.to_string_value();
             values.insert(c.clone(), s.clone());
             let qual = format!("{}.{}", table_name, c);
             values.insert(qual, s);
@@ -433,11 +490,7 @@ pub fn execute_group_query(
             gb.iter()
                 .map(|c| {
                     let idx = col_pos[c];
-                    match &row.data.0[idx] {
-                        ColumnValue::Integer(i) => i.to_string(),
-                        ColumnValue::Text(s) => s.clone(),
-                        ColumnValue::Boolean(b) => b.to_string(),
-                    }
+                    row.data.0[idx].to_string_value()
                 })
                 .collect()
         } else {
@@ -479,11 +532,7 @@ pub fn execute_group_query(
                 crate::sql::ast::SelectExpr::Column(c) => {
                     let idx = col_pos[c];
                     let val = &grows[0].data.0[idx];
-                    let s = match val {
-                        ColumnValue::Integer(i) => i.to_string(),
-                        ColumnValue::Text(t) => t.clone(),
-                        ColumnValue::Boolean(b) => b.to_string(),
-                    };
+                    let s = val.to_string_value();
                     value_map.insert(c.clone(), s.clone());
                     result_row.push(s);
                 }
@@ -540,11 +589,7 @@ pub fn execute_group_query(
                     for (i, _) in &table_info.columns {
                         let idx = col_pos[i];
                         let v = &grows[0].data.0[idx];
-                        let s = match v {
-                            ColumnValue::Integer(i) => i.to_string(),
-                            ColumnValue::Text(t) => t.clone(),
-                            ColumnValue::Boolean(b) => b.to_string(),
-                        };
+                        let s = v.to_string_value();
                         value_map.insert(i.clone(), s.clone());
                         result_row.push(s);
                     }
@@ -553,11 +598,7 @@ pub fn execute_group_query(
                     let mut inner_rows = Vec::new();
                     let mut ctx = std::collections::HashMap::new();
                     for ((c, _), v) in table_info.columns.iter().zip(grows[0].data.0.iter()) {
-                        let val = match v {
-                            ColumnValue::Integer(i) => i.to_string(),
-                            ColumnValue::Text(t) => t.clone(),
-                            ColumnValue::Boolean(b) => b.to_string(),
-                        };
+                        let val = v.to_string_value();
                         ctx.insert(c.clone(), val);
                     }
                     execute_select_statement(catalog, sub, &mut inner_rows, Some(&ctx))?;
@@ -745,11 +786,7 @@ pub fn row_to_strings(row: &Row) -> Vec<String> {
         .data
         .0
         .iter()
-        .map(|v| match v {
-            ColumnValue::Integer(i) => i.to_string(),
-            ColumnValue::Text(s) => s.clone(),
-            ColumnValue::Boolean(b) => b.to_string(),
-        })
+        .map(|v| v.to_string_value())
         .collect()
 }
 
@@ -1059,13 +1096,10 @@ pub fn format_values(vals: &[String]) -> String {
 
 
 pub fn format_row(row: &Row) -> String {
-    row.data.0
+    row.data
+        .0
         .iter()
-        .map(|v| match v {
-            ColumnValue::Integer(i) => i.to_string(),
-            ColumnValue::Text(s) => s.clone(),
-            ColumnValue::Boolean(b) => b.to_string(),
-        })
+        .map(|v| v.to_string_value())
         .collect::<Vec<_>>()
         .join(" | ")
 }

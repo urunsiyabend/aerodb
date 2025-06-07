@@ -253,6 +253,13 @@ impl Catalog {
             ColumnValue::Integer(i) => i.to_string(),
             ColumnValue::Text(s) => s.clone(),
             ColumnValue::Boolean(b) => b.to_string(),
+            ColumnValue::Char(s) => s.clone(),
+            ColumnValue::Double(f) => f.to_string(),
+            ColumnValue::Date(d) => ColumnValue::Date(*d).to_string_value(),
+            ColumnValue::DateTime(ts) => ColumnValue::DateTime(*ts).to_string_value(),
+            ColumnValue::Timestamp(ts) => ColumnValue::Timestamp(*ts).to_string_value(),
+            ColumnValue::Time(t) => ColumnValue::Time(*t).to_string_value(),
+            ColumnValue::Year(y) => ColumnValue::Year(*y).to_string_value(),
         }
     }
 
@@ -266,6 +273,18 @@ impl Catalog {
                 (h.finish() as i64 & 0x7FFF_FFFF) as i32
             }
             ColumnValue::Boolean(b) => if *b { 1 } else { 0 },
+            ColumnValue::Char(s) => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                s.hash(&mut h);
+                (h.finish() as i64 & 0x7FFF_FFFF) as i32
+            }
+            ColumnValue::Double(f) => *f as i32,
+            ColumnValue::Date(d) => *d,
+            ColumnValue::DateTime(ts) => (*ts % i32::MAX as i64) as i32,
+            ColumnValue::Timestamp(ts) => (*ts % i32::MAX as i64) as i32,
+            ColumnValue::Time(t) => *t,
+            ColumnValue::Year(y) => *y as i32,
         }
     }
 
@@ -422,6 +441,23 @@ impl Catalog {
         for (name, ty) in columns {
             vals.push(ColumnValue::Text(name.clone()));
             vals.push(ColumnValue::Integer(ty.to_code()));
+            match ty {
+                ColumnType::Char(size) => vals.push(ColumnValue::Integer(*size as i32)),
+                ColumnType::SmallInt { width, unsigned } => {
+                    vals.push(ColumnValue::Integer(*width as i32));
+                    vals.push(ColumnValue::Integer(if *unsigned { 1 } else { 0 }));
+                }
+                ColumnType::MediumInt { width, unsigned } => {
+                    vals.push(ColumnValue::Integer(*width as i32));
+                    vals.push(ColumnValue::Integer(if *unsigned { 1 } else { 0 }));
+                }
+                ColumnType::Double { precision, scale, unsigned } => {
+                    vals.push(ColumnValue::Integer(*precision as i32));
+                    vals.push(ColumnValue::Integer(*scale as i32));
+                    vals.push(ColumnValue::Integer(if *unsigned { 1 } else { 0 }));
+                }
+                _ => {}
+            }
         }
         vals.push(ColumnValue::Integer(fks.len() as i32));
         for fk in fks {
@@ -470,11 +506,47 @@ impl Catalog {
                 _ => return Err(io::Error::new(io::ErrorKind::Other, "column name not text")),
             };
             idx += 1;
-            let ty = match values.get(idx) {
-                Some(ColumnValue::Integer(code)) => ColumnType::from_code(*code).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "bad type"))?,
+            let ty_code = match values.get(idx) {
+                Some(ColumnValue::Integer(code)) => *code,
                 _ => return Err(io::Error::new(io::ErrorKind::Other, "column type missing")),
             };
             idx += 1;
+            let ty = match ColumnType::from_code(ty_code) {
+                Some(ColumnType::Char(_)) => {
+                    let size = match values.get(idx) {
+                        Some(ColumnValue::Integer(sz)) => *sz as usize,
+                        _ => return Err(io::Error::new(io::ErrorKind::Other, "char size")),
+                    };
+                    idx += 1;
+                    ColumnType::Char(size)
+                }
+                Some(ColumnType::SmallInt { .. }) => {
+                    let width = match values.get(idx) { Some(ColumnValue::Integer(w)) => *w as usize, _ => 0 };
+                    idx += 1;
+                    let unsigned = match values.get(idx) { Some(ColumnValue::Integer(u)) => *u == 1, _ => false };
+                    idx += 1;
+                    ColumnType::SmallInt { width, unsigned }
+                }
+                Some(ColumnType::MediumInt { .. }) => {
+                    let width = match values.get(idx) { Some(ColumnValue::Integer(w)) => *w as usize, _ => 0 };
+                    idx += 1;
+                    let unsigned = match values.get(idx) { Some(ColumnValue::Integer(u)) => *u == 1, _ => false };
+                    idx += 1;
+                    ColumnType::MediumInt { width, unsigned }
+                }
+                Some(ColumnType::Double { .. }) => {
+                    let precision = match values.get(idx) { Some(ColumnValue::Integer(p)) => *p as usize, _ => 10 };
+                    idx += 1;
+                    let scale = match values.get(idx) { Some(ColumnValue::Integer(s)) => *s as usize, _ => 0 };
+                    idx += 1;
+                    let unsigned = match values.get(idx) { Some(ColumnValue::Integer(u)) => *u == 1, _ => false };
+                    idx += 1;
+                    ColumnType::Double { precision, scale, unsigned }
+                }
+                Some(ColumnType::Date) => ColumnType::Date,
+                Some(other) => other,
+                None => return Err(io::Error::new(io::ErrorKind::Other, "bad type")),
+            };
             columns.push((name, ty));
         }
         let num_fks = match values.get(idx) {
