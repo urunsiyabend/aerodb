@@ -778,6 +778,79 @@ pub fn join_header(
     Ok(out)
 }
 
+pub fn execute_select_statement(
+    catalog: &mut Catalog,
+    stmt: &crate::sql::ast::Statement,
+    out: &mut Vec<Vec<String>>,
+) -> io::Result<Vec<(String, ColumnType)>> {
+    use crate::sql::ast::{SelectExpr, TableRef};
+    match stmt {
+        crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by } => {
+            if !joins.is_empty() || group_by.is_some() {
+                return Err(io::Error::new(io::ErrorKind::Other, "Unsupported query"));
+            }
+            let source = from.first().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Missing FROM"))?;
+            match source {
+                TableRef::Named(t) => {
+                    let info = catalog.get_table(t)?;
+                    let (idxs, header) = select_projection_indices(&info.columns, columns)?;
+                    let mut rows = Vec::new();
+                    execute_select_with_indexes(catalog, t, where_predicate.clone(), &mut rows)?;
+                    for row in rows {
+                        let vals = row_to_strings(&row);
+                        let projected: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
+                        out.push(projected);
+                    }
+                    Ok(header)
+                }
+                TableRef::Subquery { query, .. } => {
+                    let mut inner_rows = Vec::new();
+                    let inner_header = execute_select_statement(catalog, query, &mut inner_rows)?;
+                    let mut filtered = Vec::new();
+                    for row in inner_rows {
+                        let mut values = std::collections::HashMap::new();
+                        for ((col, _), val) in inner_header.iter().zip(row.iter()) {
+                            values.insert(col.clone(), val.clone());
+                        }
+                        if let Some(pred) = where_predicate {
+                            if !crate::sql::ast::evaluate_expression(pred, &values) {
+                                continue;
+                            }
+                        }
+                        filtered.push(row);
+                    }
+                    if columns.len() == 1 && matches!(columns[0], SelectExpr::All) {
+                        out.extend(filtered.clone());
+                        Ok(inner_header)
+                    } else {
+                        let mut header = Vec::new();
+                        let mut idxs = Vec::new();
+                        for expr in columns {
+                            match expr {
+                                SelectExpr::Column(c) => {
+                                    if let Some((i, (_, ty))) = inner_header.iter().enumerate().find(|(_, (n, _))| n == c) {
+                                        idxs.push(i);
+                                        header.push((c.clone(), *ty));
+                                    } else {
+                                        return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {c}")));
+                                    }
+                                }
+                                _ => return Err(io::Error::new(io::ErrorKind::Other, "Unsupported projection")),
+                            }
+                        }
+                        for row in filtered {
+                            let projected: Vec<_> = idxs.iter().map(|&i| row[i].clone()).collect();
+                            out.push(projected);
+                        }
+                        Ok(header)
+                    }
+                }
+            }
+        }
+        _ => Err(io::Error::new(io::ErrorKind::Other, "Not a SELECT")),
+    }
+}
+
 pub fn format_values(vals: &[String]) -> String {
     vals.join(" | ")
 }
