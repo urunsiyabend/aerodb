@@ -438,6 +438,9 @@ pub fn execute_group_query(
                     header.push((c.clone(), *ty));
                 }
             }
+            crate::sql::ast::SelectExpr::Subquery(_) => {
+                header.push(("SUBQUERY".into(), ColumnType::Text));
+            }
         }
     }
 
@@ -513,6 +516,9 @@ pub fn execute_group_query(
                         };
                         result_row.push(s);
                     }
+                }
+                crate::sql::ast::SelectExpr::Subquery(_) => {
+                    result_row.push(String::new());
                 }
             }
         }
@@ -590,7 +596,14 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             catalog.insert_into_indexes(&table_name, &row_data)?;
             println!("1 row inserted");
         }
-        Statement::Select { columns, from_table, joins, where_predicate, group_by } => {
+        Statement::Select { columns, from, joins, where_predicate, group_by } => {
+            let from_table = match from.first().unwrap() {
+                crate::sql::ast::TableRef::Named(t) => t.clone(),
+                _ => {
+                    println!("Subqueries in FROM not supported in CLI");
+                    return Ok(());
+                }
+            };
             if joins.is_empty() {
                 if group_by.is_some() || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Aggregate { .. })) {
                     let mut results = Vec::new();
@@ -695,6 +708,9 @@ pub fn select_projection_indices(
                         idxs.push(i);
                         meta.push((n.clone(), *ty));
                     }
+                }
+                crate::sql::ast::SelectExpr::Subquery(_) => {
+                    meta.push(("SUBQUERY".into(), ColumnType::Text));
                 }
             }
         }

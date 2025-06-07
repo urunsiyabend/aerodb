@@ -18,12 +18,13 @@ fn select_single_column() {
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "bob".into()] }).unwrap();
     let stmt = parse_statement("SELECT name FROM users").unwrap();
-    if let Statement::Select { columns, from_table, .. } = stmt {
-        let info = catalog.get_table(&from_table).unwrap();
+    if let Statement::Select { columns, from, .. } = stmt {
+        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named(t) => t, _ => panic!("expected table") };
+        let info = catalog.get_table(table).unwrap();
         let (idxs, meta) = select_projection_indices(&info.columns, &columns).unwrap();
         assert_eq!(format_header(&meta), "name TEXT");
         let mut rows = Vec::new();
-        aerodb::execution::execute_select_with_indexes(&mut catalog, &from_table, None, &mut rows).unwrap();
+        aerodb::execution::execute_select_with_indexes(&mut catalog, table, None, &mut rows).unwrap();
         let vals = row_to_strings(&rows[0]);
         let proj: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
         assert_eq!(proj, vec!["bob"]);
@@ -42,12 +43,13 @@ fn select_two_columns() {
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "bob".into()] }).unwrap();
     let stmt = parse_statement("SELECT id, name FROM users").unwrap();
-    if let Statement::Select { columns, from_table, .. } = stmt {
-        let info = catalog.get_table(&from_table).unwrap();
+    if let Statement::Select { columns, from, .. } = stmt {
+        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named(t) => t, _ => panic!("expected table") };
+        let info = catalog.get_table(table).unwrap();
         let (idxs, meta) = select_projection_indices(&info.columns, &columns).unwrap();
         assert_eq!(format_header(&meta), "id INTEGER | name TEXT");
         let mut rows = Vec::new();
-        aerodb::execution::execute_select_with_indexes(&mut catalog, &from_table, None, &mut rows).unwrap();
+        aerodb::execution::execute_select_with_indexes(&mut catalog, table, None, &mut rows).unwrap();
         let vals = row_to_strings(&rows[0]);
         let proj: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
         assert_eq!(proj, vec!["1", "bob"]);

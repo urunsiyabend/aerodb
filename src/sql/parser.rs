@@ -1,6 +1,27 @@
 use crate::sql::ast::{Expr, Statement, OrderBy, ForeignKey, Action};
 use crate::storage::row::ColumnType;
 
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    for ch in s.chars() {
+        match ch {
+            '(' => { depth += 1; current.push(ch); }
+            ')' => { depth -= 1; current.push(ch); }
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
 /// Returns the expression and the number of tokens consumed.
 fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
@@ -98,26 +119,6 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             }
             let inner = &rest[1..rest.len() - 1];
 
-            fn split_top_level(s: &str) -> Vec<String> {
-                let mut parts = Vec::new();
-                let mut current = String::new();
-                let mut depth = 0;
-                for ch in s.chars() {
-                    match ch {
-                        '(' => { depth += 1; current.push(ch); }
-                        ')' => { depth -= 1; current.push(ch); }
-                        ',' if depth == 0 => {
-                            parts.push(current.trim().to_string());
-                            current.clear();
-                        }
-                        _ => current.push(ch),
-                    }
-                }
-                if !current.trim().is_empty() {
-                    parts.push(current.trim().to_string());
-                }
-                parts
-            }
 
             let mut columns = Vec::new();
             let mut fks = Vec::new();
@@ -223,14 +224,23 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
 
             let mut idx = 1;
             let mut columns = Vec::new();
+            let mut col_tokens = Vec::new();
             while idx < tokens.len() {
                 if tokens[idx].eq_ignore_ascii_case("FROM") {
                     break;
                 }
-                let token = tokens[idx].trim_end_matches(',');
+                col_tokens.push(tokens[idx]);
+                idx += 1;
+            }
+            let col_str = col_tokens.join(" ");
+            for part in split_top_level(&col_str) {
+                let token = part.trim().trim_end_matches(',');
                 let upper = token.to_uppercase();
                 if token == "*" {
                     columns.push(crate::sql::ast::SelectExpr::All);
+                } else if upper.starts_with("SELECT") {
+                    let sub = parse_statement(token)?;
+                    columns.push(crate::sql::ast::SelectExpr::Subquery(Box::new(sub)));
                 } else if upper.starts_with("COUNT(") {
                     let inner = token[6..token.len() - 1].trim();
                     let col = if inner == "*" { None } else { Some(inner.to_string()) };
@@ -250,7 +260,6 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 } else {
                     columns.push(crate::sql::ast::SelectExpr::Column(token.to_string()));
                 }
-                idx += 1;
             }
             if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("FROM") {
                 return Err("Expected FROM".into());
@@ -259,8 +268,30 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             if idx >= tokens.len() {
                 return Err("Missing table after FROM".into());
             }
-            let from_table = tokens[idx].trim_end_matches(';').to_string();
-            idx += 1;
+            let mut from = Vec::new();
+            if tokens[idx].starts_with('(') {
+                let mut depth = tokens[idx].matches('(').count() as i32 - tokens[idx].matches(')').count() as i32;
+                let mut end = idx;
+                while depth > 0 {
+                    end += 1;
+                    if end >= tokens.len() { return Err("Unclosed subquery".into()); }
+                    depth += tokens[end].matches('(').count() as i32 - tokens[end].matches(')').count() as i32;
+                }
+                let sub_tokens = tokens[idx..=end].join(" ");
+                let inner = sub_tokens.trim_start_matches('(').trim_end_matches(')');
+                let substmt = parse_statement(inner)?;
+                idx = end + 1;
+                if idx + 1 >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("AS") {
+                    return Err("Subquery in FROM requires AS <alias>".into());
+                }
+                let alias = tokens[idx + 1].trim_end_matches(';').to_string();
+                idx += 2;
+                from.push(crate::sql::ast::TableRef::Subquery { query: Box::new(substmt), alias });
+            } else {
+                let table = tokens[idx].trim_end_matches(';').to_string();
+                from.push(crate::sql::ast::TableRef::Named(table));
+                idx += 1;
+            }
             let mut joins = Vec::new();
             while idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("JOIN") {
                 idx += 1;
@@ -322,7 +353,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 group_by = Some(cols);
             }
 
-            Ok(Statement::Select { columns, from_table, joins, where_predicate, group_by })
+            Ok(Statement::Select { columns, from, joins, where_predicate, group_by })
         }
         "DROP" => {
             if tokens.len() < 3 || !tokens[1].eq_ignore_ascii_case("TABLE") {
