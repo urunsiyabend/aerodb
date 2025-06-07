@@ -253,6 +253,7 @@ impl Catalog {
             ColumnValue::Integer(i) => i.to_string(),
             ColumnValue::Text(s) => s.clone(),
             ColumnValue::Boolean(b) => b.to_string(),
+            ColumnValue::Char(s) => s.clone(),
         }
     }
 
@@ -266,6 +267,12 @@ impl Catalog {
                 (h.finish() as i64 & 0x7FFF_FFFF) as i32
             }
             ColumnValue::Boolean(b) => if *b { 1 } else { 0 },
+            ColumnValue::Char(s) => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                s.hash(&mut h);
+                (h.finish() as i64 & 0x7FFF_FFFF) as i32
+            }
         }
     }
 
@@ -422,6 +429,9 @@ impl Catalog {
         for (name, ty) in columns {
             vals.push(ColumnValue::Text(name.clone()));
             vals.push(ColumnValue::Integer(ty.to_code()));
+            if let ColumnType::Char(size) = ty {
+                vals.push(ColumnValue::Integer(*size as i32));
+            }
         }
         vals.push(ColumnValue::Integer(fks.len() as i32));
         for fk in fks {
@@ -470,11 +480,23 @@ impl Catalog {
                 _ => return Err(io::Error::new(io::ErrorKind::Other, "column name not text")),
             };
             idx += 1;
-            let ty = match values.get(idx) {
-                Some(ColumnValue::Integer(code)) => ColumnType::from_code(*code).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "bad type"))?,
+            let ty_code = match values.get(idx) {
+                Some(ColumnValue::Integer(code)) => *code,
                 _ => return Err(io::Error::new(io::ErrorKind::Other, "column type missing")),
             };
             idx += 1;
+            let ty = match ColumnType::from_code(ty_code) {
+                Some(ColumnType::Char(_)) => {
+                    let size = match values.get(idx) {
+                        Some(ColumnValue::Integer(sz)) => *sz as usize,
+                        _ => return Err(io::Error::new(io::ErrorKind::Other, "char size")),
+                    };
+                    idx += 1;
+                    ColumnType::Char(size)
+                }
+                Some(other) => other,
+                None => return Err(io::Error::new(io::ErrorKind::Other, "bad type")),
+            };
             columns.push((name, ty));
         }
         let num_fks = match values.get(idx) {

@@ -174,6 +174,7 @@ mod tests {
                             ColumnValue::Integer(i) => i.to_string(),
                             ColumnValue::Text(s) => s.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
+                            ColumnValue::Char(s) => s.clone(),
                         };
                         values.insert(col.clone(), v);
                     }

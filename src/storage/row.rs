@@ -2,14 +2,26 @@ use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ColumnType {
-    Integer = 1,
-    Text = 2,
-    Boolean = 3,
+    Integer,
+    Text,
+    Boolean,
+    Char(usize),
 }
 
 impl ColumnType {
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_uppercase().as_str() {
+        let upper = s.to_uppercase();
+        if upper.starts_with("CHAR") {
+            if let Some(start) = s.find('(') {
+                if let Some(end) = s.find(')') {
+                    if let Ok(sz) = s[start + 1..end].parse::<usize>() {
+                        return Some(ColumnType::Char(sz));
+                    }
+                }
+            }
+            return Some(ColumnType::Char(1));
+        }
+        match upper.as_str() {
             "INTEGER" | "INT" => Some(ColumnType::Integer),
             "TEXT" => Some(ColumnType::Text),
             "BOOLEAN" | "BOOL" => Some(ColumnType::Boolean),
@@ -17,11 +29,12 @@ impl ColumnType {
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> String {
         match self {
-            ColumnType::Integer => "INTEGER",
-            ColumnType::Text => "TEXT",
-            ColumnType::Boolean => "BOOLEAN",
+            ColumnType::Integer => "INTEGER".into(),
+            ColumnType::Text => "TEXT".into(),
+            ColumnType::Boolean => "BOOLEAN".into(),
+            ColumnType::Char(size) => format!("CHAR({})", size),
         }
     }
 
@@ -30,12 +43,18 @@ impl ColumnType {
             1 => Some(ColumnType::Integer),
             2 => Some(ColumnType::Text),
             3 => Some(ColumnType::Boolean),
+            4 => Some(ColumnType::Char(0)),
             _ => None,
         }
     }
 
     pub fn to_code(&self) -> i32 {
-        *self as i32
+        match self {
+            ColumnType::Integer => 1,
+            ColumnType::Text => 2,
+            ColumnType::Boolean => 3,
+            ColumnType::Char(_) => 4,
+        }
     }
 }
 
@@ -44,6 +63,7 @@ pub enum ColumnValue {
     Integer(i32),
     Text(String),
     Boolean(bool),
+    Char(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +87,11 @@ impl RowData {
                 ColumnValue::Boolean(b) => {
                     buf.push(0x03);
                     buf.push(if *b { 1 } else { 0 });
+                }
+                ColumnValue::Char(s) => {
+                    buf.push(0x04);
+                    buf.extend(&(s.len() as u32).to_le_bytes());
+                    buf.extend(s.as_bytes());
                 }
             }
         }
@@ -117,6 +142,19 @@ impl RowData {
                     offset += 1;
                     cols.push(ColumnValue::Boolean(b));
                 }
+                0x04 => {
+                    if offset + 4 > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                    offset += 4;
+                    if offset + len > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let val = String::from_utf8_lossy(&bytes[offset..offset + len]).to_string();
+                    offset += len;
+                    cols.push(ColumnValue::Char(val));
+                }
                 _ => {
                     return Err(io::Error::new(io::ErrorKind::Other, "Unknown type tag"));
                 }
@@ -150,6 +188,15 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
                     return Err(format!("Value '{}' for column '{}' is not a valid BOOLEAN", v, name));
                 }
             },
+            ColumnType::Char(len) => {
+                let mut s = v.clone();
+                if s.len() > *len {
+                    s.truncate(*len);
+                } else if s.len() < *len {
+                    s.push_str(&" ".repeat(*len - s.len()));
+                }
+                cols.push(ColumnValue::Char(s));
+            }
         }
     }
     Ok(RowData(cols))

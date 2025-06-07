@@ -22,6 +22,7 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
                             ColumnValue::Integer(i) => i.to_string(),
                             ColumnValue::Text(s) => s.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
+                            ColumnValue::Char(s) => s.clone(),
                         };
                         values.insert(col.clone(), v);
                     }
@@ -156,6 +157,15 @@ pub fn execute_update(
                         ))
                     }
                 },
+                ColumnType::Char(len) => {
+                    let mut s = val.clone();
+                    if s.len() > len {
+                        s.truncate(len);
+                    } else if s.len() < len {
+                        s.push_str(&" ".repeat(len - s.len()));
+                    }
+                    ColumnValue::Char(s)
+                }
             };
             parsed.push((idx, cv));
         }
@@ -172,6 +182,7 @@ pub fn execute_update(
                             ColumnValue::Integer(i) => i.to_string(),
                             ColumnValue::Text(s) => s.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
+                            ColumnValue::Char(s) => s.clone(),
                         };
                         values.insert(col.clone(), v);
                     }
@@ -289,6 +300,7 @@ pub fn execute_select_with_indexes(
                     ColumnValue::Integer(i) => i.to_string(),
                     ColumnValue::Text(s) => s.clone(),
                     ColumnValue::Boolean(b) => b.to_string(),
+                    ColumnValue::Char(s) => s.clone(),
                 };
                 values.insert(col.clone(), v);
             }
@@ -369,6 +381,7 @@ pub fn execute_multi_join(
                 ColumnValue::Integer(i) => i.to_string(),
                 ColumnValue::Text(t) => t.clone(),
                 ColumnValue::Boolean(b) => b.to_string(),
+                ColumnValue::Char(t) => t.clone(),
             };
             str_map.insert(k.clone(), s);
         }
@@ -419,6 +432,7 @@ pub fn execute_group_query(
                 ColumnValue::Integer(i) => i.to_string(),
                 ColumnValue::Text(t) => t.clone(),
                 ColumnValue::Boolean(b) => b.to_string(),
+                ColumnValue::Char(t) => t.clone(),
             };
             values.insert(c.clone(), s.clone());
             let qual = format!("{}.{}", table_name, c);
@@ -437,6 +451,7 @@ pub fn execute_group_query(
                         ColumnValue::Integer(i) => i.to_string(),
                         ColumnValue::Text(s) => s.clone(),
                         ColumnValue::Boolean(b) => b.to_string(),
+                        ColumnValue::Char(s) => s.clone(),
                     }
                 })
                 .collect()
@@ -483,6 +498,7 @@ pub fn execute_group_query(
                         ColumnValue::Integer(i) => i.to_string(),
                         ColumnValue::Text(t) => t.clone(),
                         ColumnValue::Boolean(b) => b.to_string(),
+                        ColumnValue::Char(t) => t.clone(),
                     };
                     value_map.insert(c.clone(), s.clone());
                     result_row.push(s);
@@ -544,6 +560,7 @@ pub fn execute_group_query(
                             ColumnValue::Integer(i) => i.to_string(),
                             ColumnValue::Text(t) => t.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
+                            ColumnValue::Char(t) => t.clone(),
                         };
                         value_map.insert(i.clone(), s.clone());
                         result_row.push(s);
@@ -557,6 +574,7 @@ pub fn execute_group_query(
                             ColumnValue::Integer(i) => i.to_string(),
                             ColumnValue::Text(t) => t.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
+                            ColumnValue::Char(t) => t.clone(),
                         };
                         ctx.insert(c.clone(), val);
                     }
@@ -749,6 +767,7 @@ pub fn row_to_strings(row: &Row) -> Vec<String> {
             ColumnValue::Integer(i) => i.to_string(),
             ColumnValue::Text(s) => s.clone(),
             ColumnValue::Boolean(b) => b.to_string(),
+            ColumnValue::Char(s) => s.clone(),
         })
         .collect()
 }
@@ -1065,6 +1084,7 @@ pub fn format_row(row: &Row) -> String {
             ColumnValue::Integer(i) => i.to_string(),
             ColumnValue::Text(s) => s.clone(),
             ColumnValue::Boolean(b) => b.to_string(),
+            ColumnValue::Char(s) => s.clone(),
         })
         .collect::<Vec<_>>()
         .join(" | ")
