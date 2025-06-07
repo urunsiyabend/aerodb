@@ -60,7 +60,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         Statement::Insert { table_name, values } => {
             PlanNode::Insert { table_name, values }
         }
-        Statement::Select { columns, from, joins, where_predicate, group_by: _ } => {
+        Statement::Select { columns, from, joins, where_predicate, group_by: _, having: _ } => {
             let table_name = match from.first().unwrap() {
                 crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                 _ => return PlanNode::Select { table_name: String::new(), selection: None, limit: None, offset: None, order_by: None },
