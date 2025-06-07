@@ -50,10 +50,12 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
     }
     match tokens[0].to_uppercase().as_str() {
         "BEGIN" => {
-            if tokens.len() < 2 || !tokens[1].eq_ignore_ascii_case("TRANSACTION") {
-                return Err("Usage: BEGIN TRANSACTION <name>".into());
+            // Support BEGIN [TRANSACTION] [name]
+            let mut idx = 1;
+            if tokens.get(idx).map(|s| s.eq_ignore_ascii_case("TRANSACTION")) == Some(true) {
+                idx += 1;
             }
-            let name = tokens.get(2).map(|s| s.trim_end_matches(';').to_string());
+            let name = tokens.get(idx).map(|s| s.trim_end_matches(';').to_string());
             Ok(Statement::BeginTransaction { name })
         }
         "COMMIT" => Ok(Statement::Commit),

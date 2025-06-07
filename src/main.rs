@@ -927,6 +927,18 @@ mod tests {
             _ => panic!("Expected begin transaction"),
         }
 
+        let stmt = parse_statement("BEGIN TRANSACTION").unwrap();
+        match stmt {
+            Statement::BeginTransaction { name } => assert_eq!(name, None),
+            _ => panic!("Expected begin transaction"),
+        }
+
+        let stmt = parse_statement("BEGIN").unwrap();
+        match stmt {
+            Statement::BeginTransaction { name } => assert_eq!(name, None),
+            _ => panic!("Expected begin transaction"),
+        }
+
         let stmt = parse_statement("COMMIT").unwrap();
         matches!(stmt, Statement::Commit);
 
