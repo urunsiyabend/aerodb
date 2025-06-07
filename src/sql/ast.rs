@@ -39,7 +39,33 @@ pub struct JoinClause {
     pub right_column: String,
 }
 
-pub type SelectExpr = String;
+#[derive(Debug, Clone)]
+pub enum AggFunc {
+    Min,
+    Max,
+    Count,
+    Sum,
+    Avg,
+}
+
+impl AggFunc {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AggFunc::Min => "MIN",
+            AggFunc::Max => "MAX",
+            AggFunc::Count => "COUNT",
+            AggFunc::Sum => "SUM",
+            AggFunc::Avg => "AVG",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SelectExpr {
+    All,
+    Column(String),
+    Aggregate { func: AggFunc, column: Option<String> },
+}
 pub type Predicate = Expr;
 
 #[derive(Debug)]
@@ -68,6 +94,7 @@ pub enum Statement {
         from_table: String,
         joins: Vec<JoinClause>,
         where_predicate: Option<Predicate>,
+        group_by: Option<Vec<String>>,
     },
     Delete {
         table_name: String,

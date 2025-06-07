@@ -60,7 +60,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         Statement::Insert { table_name, values } => {
             PlanNode::Insert { table_name, values }
         }
-        Statement::Select { columns, from_table, joins, where_predicate } => {
+        Statement::Select { columns, from_table, joins, where_predicate, group_by: _ } => {
             if joins.is_empty() {
                 PlanNode::Select {
                     table_name: from_table,
