@@ -441,6 +441,10 @@ pub fn execute_group_query(
             crate::sql::ast::SelectExpr::Subquery(_) => {
                 header.push(("SUBQUERY".into(), ColumnType::Text));
             }
+            crate::sql::ast::SelectExpr::Literal(val) => {
+                let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
+                header.push((val.clone(), ty));
+            }
         }
     }
 
@@ -519,6 +523,9 @@ pub fn execute_group_query(
                 }
                 crate::sql::ast::SelectExpr::Subquery(_) => {
                     result_row.push(String::new());
+                }
+                crate::sql::ast::SelectExpr::Literal(val) => {
+                    result_row.push(val.clone());
                 }
             }
         }
@@ -636,7 +643,13 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
                     for row in results {
                         let vals = row_to_strings(&row);
-                        let projected: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
+                        let projected: Vec<_> = idxs
+                            .iter()
+                            .map(|p| match p {
+                                Projection::Index(i) => vals[*i].clone(),
+                                Projection::Literal(s) => s.clone(),
+                            })
+                            .collect();
                         println!("{}", format_values(&projected));
                     }
                 }
@@ -692,16 +705,21 @@ pub fn row_to_strings(row: &Row) -> Vec<String> {
         .collect()
 }
 
+pub enum Projection {
+    Index(usize),
+    Literal(String),
+}
+
 pub fn select_projection_indices(
     columns: &[(String, ColumnType)],
     projections: &[crate::sql::ast::SelectExpr],
-) -> io::Result<(Vec<usize>, Vec<(String, ColumnType)>)> {
+) -> io::Result<(Vec<Projection>, Vec<(String, ColumnType)>)> {
     let use_all = projections.len() == 1 && matches!(projections[0], crate::sql::ast::SelectExpr::All);
     let mut idxs = Vec::new();
     let mut meta = Vec::new();
     if use_all {
         for (i, (n, ty)) in columns.iter().enumerate() {
-            idxs.push(i);
+            idxs.push(Projection::Index(i));
             meta.push((n.clone(), *ty));
         }
     } else {
@@ -710,7 +728,7 @@ pub fn select_projection_indices(
                 crate::sql::ast::SelectExpr::Column(col) => {
                     let c = col.split('.').last().unwrap_or(col).to_string();
                     if let Some((i, (_, ty))) = columns.iter().enumerate().find(|(_, (name, _))| name == &c) {
-                        idxs.push(i);
+                        idxs.push(Projection::Index(i));
                         meta.push((c, *ty));
                     } else {
                         return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {c}")));
@@ -721,12 +739,18 @@ pub fn select_projection_indices(
                 }
                 crate::sql::ast::SelectExpr::All => {
                     for (i, (n, ty)) in columns.iter().enumerate() {
-                        idxs.push(i);
+                        idxs.push(Projection::Index(i));
                         meta.push((n.clone(), *ty));
                     }
                 }
                 crate::sql::ast::SelectExpr::Subquery(_) => {
                     meta.push(("SUBQUERY".into(), ColumnType::Text));
+                    idxs.push(Projection::Literal(String::new()));
+                }
+                crate::sql::ast::SelectExpr::Literal(val) => {
+                    let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
+                    meta.push((val.clone(), ty));
+                    idxs.push(Projection::Literal(val.clone()));
                 }
             }
         }
@@ -886,7 +910,13 @@ pub fn execute_select_statement(
                                 continue;
                             }
                         }
-                        let projected: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
+                        let projected: Vec<_> = idxs
+                            .iter()
+                            .map(|p| match p {
+                                Projection::Index(i) => vals[*i].clone(),
+                                Projection::Literal(s) => s.clone(),
+                            })
+                            .collect();
                         out.push(projected);
                     }
                     Ok(header)

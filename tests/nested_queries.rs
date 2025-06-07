@@ -133,3 +133,37 @@ fn execute_exists_correlated() {
     }
 }
 
+#[test]
+fn execute_exists_constant() {
+    let filename = "test_exists_constant.db";
+    let mut catalog = setup_catalog(filename);
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "users".into(),
+        columns: vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "orders".into(),
+        columns: vec![("id".into(), ColumnType::Integer), ("user_id".into(), ColumnType::Integer), ("product".into(), ColumnType::Text)],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "Alice".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["2".into(), "Bob".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["3".into(), "Cason".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["10".into(), "1".into(), "Widget".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["11".into(), "2".into(), "Phone".into()] }).unwrap();
+
+    let stmt = parse_statement("SELECT name FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)").unwrap();
+    if let Statement::Select { .. } = stmt {
+        let mut out = Vec::new();
+        let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
+        assert_eq!(format_header(&header), "name TEXT");
+        out.sort();
+        assert_eq!(out, vec![vec!["Alice".to_string()], vec!["Bob".to_string()]]);
+    } else {
+        panic!("expected select");
+    }
+}
+

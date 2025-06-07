@@ -300,6 +300,10 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 } else if upper.starts_with("MAX(") {
                     let inner = token[4..token.len() - 1].trim().to_string();
                     columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Max, column: Some(inner) });
+                } else if token.starts_with("'") && token.ends_with("'") {
+                    columns.push(crate::sql::ast::SelectExpr::Literal(token[1..token.len()-1].to_string()));
+                } else if token.chars().all(|c| c.is_ascii_digit()) {
+                    columns.push(crate::sql::ast::SelectExpr::Literal(token.to_string()));
                 } else {
                     columns.push(crate::sql::ast::SelectExpr::Column(token.to_string()));
                 }

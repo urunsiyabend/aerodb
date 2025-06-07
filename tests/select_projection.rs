@@ -1,4 +1,4 @@
-use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::Statement}, execution::runtime::{select_projection_indices, row_to_strings, format_header}, storage::row::ColumnType};
+use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::Statement}, execution::runtime::{select_projection_indices, row_to_strings, format_header, Projection}, storage::row::ColumnType};
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -26,7 +26,13 @@ fn select_single_column() {
         let mut rows = Vec::new();
         aerodb::execution::execute_select_with_indexes(&mut catalog, table, None, &mut rows).unwrap();
         let vals = row_to_strings(&rows[0]);
-        let proj: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
+        let proj: Vec<_> = idxs
+            .iter()
+            .map(|p| match p {
+                aerodb::execution::runtime::Projection::Index(i) => vals[*i].clone(),
+                aerodb::execution::runtime::Projection::Literal(s) => s.clone(),
+            })
+            .collect();
         assert_eq!(proj, vec!["bob"]);
     } else { panic!("expected select"); }
 }
@@ -51,7 +57,13 @@ fn select_two_columns() {
         let mut rows = Vec::new();
         aerodb::execution::execute_select_with_indexes(&mut catalog, table, None, &mut rows).unwrap();
         let vals = row_to_strings(&rows[0]);
-        let proj: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
+        let proj: Vec<_> = idxs
+            .iter()
+            .map(|p| match p {
+                aerodb::execution::runtime::Projection::Index(i) => vals[*i].clone(),
+                aerodb::execution::runtime::Projection::Literal(s) => s.clone(),
+            })
+            .collect();
         assert_eq!(proj, vec!["1", "bob"]);
     } else { panic!("expected select"); }
 }

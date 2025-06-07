@@ -75,6 +75,7 @@ pub enum SelectExpr {
     Column(String),
     Aggregate { func: AggFunc, column: Option<String> },
     Subquery(Box<Statement>),
+    Literal(String),
 }
 pub type Predicate = Expr;
 
