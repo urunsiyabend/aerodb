@@ -158,10 +158,17 @@ pub fn execute_update(
                     }
                 },
                 ColumnType::Char(len) => {
+                    if val.len() > len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!(
+                                "Value '{}' for column '{}' exceeds length {}",
+                                val, col, len
+                            ),
+                        ));
+                    }
                     let mut s = val.clone();
-                    if s.len() > len {
-                        s.truncate(len);
-                    } else if s.len() < len {
+                    if s.len() < len {
                         s.push_str(&" ".repeat(len - s.len()));
                     }
                     ColumnValue::Char(s)

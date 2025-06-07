@@ -189,10 +189,14 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
                 }
             },
             ColumnType::Char(len) => {
+                if v.len() > *len {
+                    return Err(format!(
+                        "Value '{}' for column '{}' exceeds length {}",
+                        v, name, len
+                    ));
+                }
                 let mut s = v.clone();
-                if s.len() > *len {
-                    s.truncate(*len);
-                } else if s.len() < *len {
+                if s.len() < *len {
                     s.push_str(&" ".repeat(*len - s.len()));
                 }
                 cols.push(ColumnValue::Char(s));

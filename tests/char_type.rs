@@ -33,3 +33,26 @@ fn char_column_basic() {
         assert_eq!(proj, vec!["A  "]);
     } else { panic!("expected select"); }
 }
+
+#[test]
+fn char_column_validate_length() {
+    let filename = "test_char_len.db";
+    let mut catalog = setup_catalog(filename);
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "items".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer),
+            ("code".into(), ColumnType::Char(3)),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    let res = aerodb::execution::handle_statement(
+        &mut catalog,
+        Statement::Insert {
+            table_name: "items".into(),
+            values: vec!["2".into(), "SASASDADSA".into()],
+        },
+    );
+    assert!(res.is_err());
+}
