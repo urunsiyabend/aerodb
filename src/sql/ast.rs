@@ -51,6 +51,9 @@ pub enum Statement {
         assignments: Vec<(String, String)>,
         selection: Option<Expr>,
     },
+    BeginTransaction { name: Option<String> },
+    Commit,
+    Rollback,
     Exit,
 }
 

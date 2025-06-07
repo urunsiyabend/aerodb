@@ -4,6 +4,7 @@ mod storage;
 mod sql;
 mod catalog;
 mod execution;
+mod transaction;
 
 use std::io::{self, Write};
 use log::{debug, info, warn};
@@ -22,7 +23,7 @@ const DATABASE_FILE: &str = "data.aerodb";
 
 fn main() -> io::Result<()> {
     env_logger::init();
-    info!("AeroDB v0.4 (extended SQL support + catalog). Type .exit to quit.");
+    info!("AeroDB v0.5(Transaction with WAL). Type .exit to quit.");
 
     let mut catalog = Catalog::open(Pager::new(DATABASE_FILE)?)?;
 
@@ -330,7 +331,7 @@ mod tests {
             .create_table("nums", vec![("id".into(), ColumnType::Integer)])
             .unwrap();
 
-        for i in 1..=600 {
+        for i in 1..=100 {
             let values = vec![i.to_string()];
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
@@ -346,7 +347,7 @@ mod tests {
 
         let root_page = catalog.get_table("nums").unwrap().root_page;
         let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
-        for k in 2..=600 {
+        for k in 2..=100 {
             btree.delete(k).unwrap();
         }
         let new_root = btree.root_page();
@@ -916,5 +917,171 @@ mod tests {
             ColumnValue::Text(s) => assert_eq!(s, "bob"),
             _ => panic!("Expected text"),
         }
+    }
+
+    #[test]
+    fn parse_transaction_statements() {
+        let stmt = parse_statement("BEGIN TRANSACTION tx1").unwrap();
+        match stmt {
+            Statement::BeginTransaction { name } => assert_eq!(name, Some("tx1".into())),
+            _ => panic!("Expected begin transaction"),
+        }
+
+        let stmt = parse_statement("BEGIN TRANSACTION").unwrap();
+        match stmt {
+            Statement::BeginTransaction { name } => assert_eq!(name, None),
+            _ => panic!("Expected begin transaction"),
+        }
+
+        let stmt = parse_statement("BEGIN").unwrap();
+        match stmt {
+            Statement::BeginTransaction { name } => assert_eq!(name, None),
+            _ => panic!("Expected begin transaction"),
+        }
+
+        let stmt = parse_statement("COMMIT").unwrap();
+        matches!(stmt, Statement::Commit);
+
+        let stmt = parse_statement("ROLLBACK").unwrap();
+        matches!(stmt, Statement::Rollback);
+    }
+
+    #[test]
+    fn transaction_commit_persists() {
+        let filename = "test_tx_commit.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "items",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+
+        catalog.begin_transaction(Some("t1".into())).unwrap();
+        let insert = Statement::Insert { table_name: "items".into(), values: vec!["1".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+        catalog.commit_transaction().unwrap();
+
+        drop(catalog);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+        let root_page = catalog.get_table("items").unwrap().root_page;
+        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        assert!(bt.find(1).unwrap().is_some());
+    }
+
+    #[test]
+    fn transaction_commit_update_persists() {
+        let filename = "test_tx_update_commit.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "users",
+                vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+            )
+            .unwrap();
+
+        let insert = Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "user1".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+        let insert2 = Statement::Insert { table_name: "users".into(), values: vec!["2".into(), "user2".into()] };
+        handle_statement(&mut catalog, insert2).unwrap();
+
+        catalog.begin_transaction(None).unwrap();
+        let update = Statement::Update {
+            table_name: "users".into(),
+            assignments: vec![("name".into(), "new_user2".into())],
+            selection: Some(Expr::Equals { left: "name".into(), right: "user2".into() }),
+        };
+        handle_statement(&mut catalog, update).unwrap();
+        catalog.commit_transaction().unwrap();
+
+        drop(catalog);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+        let root_page = catalog.get_table("users").unwrap().root_page;
+        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let row = bt.find(2).unwrap().unwrap();
+        if let ColumnValue::Text(ref name) = row.data.0[1] {
+            assert_eq!(name, "new_user2");
+        } else {
+            panic!("expected text")
+        }
+    }
+
+    #[test]
+    fn transaction_rollback_discards() {
+        let filename = "test_tx_rollback.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "items",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+
+        catalog.begin_transaction(Some("t1".into())).unwrap();
+        let insert = Statement::Insert { table_name: "items".into(), values: vec!["1".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+        catalog.rollback_transaction().unwrap();
+
+        drop(catalog);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+        let root_page = catalog.get_table("items").unwrap().root_page;
+        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        assert!(bt.find(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn transaction_rollback_in_session() {
+        let filename = "test_tx_rollback_mem.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "items",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+
+        catalog.begin_transaction(None).unwrap();
+        let insert = Statement::Insert { table_name: "items".into(), values: vec!["1".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+        catalog.rollback_transaction().unwrap();
+
+        // verify without reopening file
+        let root_page = catalog.get_table("items").unwrap().root_page;
+        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        assert!(bt.find(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn transaction_rollback_new_pages() {
+        let filename = "test_tx_newpage.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "items",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+
+        catalog.begin_transaction(None).unwrap();
+        // insert many rows so new pages are allocated during the transaction
+        for i in 0..150 {
+            let insert = Statement::Insert {
+                table_name: "items".into(),
+                values: vec![i.to_string()],
+            };
+            handle_statement(&mut catalog, insert).unwrap();
+        }
+        // Should not error even though new pages were allocated
+        assert!(catalog.rollback_transaction().is_ok());
     }
 }

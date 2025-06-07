@@ -48,6 +48,7 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
                 if let Ok(t) = catalog.get_table_mut(table_name) {
                     t.root_page = new_root;
                 }
+                catalog.update_catalog_root(table_name, new_root)?;
             }
 
             for r in rows_to_delete {
@@ -161,6 +162,7 @@ pub fn execute_update(
                 if let Ok(t) = catalog.get_table_mut(table_name) {
                     t.root_page = new_root;
                 }
+                catalog.update_catalog_root(table_name, new_root)?;
             }
 
             for op in ops {
@@ -300,6 +302,15 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
         Statement::Update { table_name, assignments, selection } => {
             let count = execute_update(catalog, &table_name, assignments, selection)?;
             println!("{} row(s) updated", count);
+        }
+        Statement::BeginTransaction { name } => {
+            catalog.begin_transaction(name)?;
+        }
+        Statement::Commit => {
+            catalog.commit_transaction()?;
+        }
+        Statement::Rollback => {
+            catalog.rollback_transaction()?;
         }
         Statement::Exit => {}
     }
