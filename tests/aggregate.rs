@@ -26,7 +26,7 @@ fn basic_count() {
             _ => panic!("expected table"),
         };
         let mut out = Vec::new();
-        let header = aerodb::execution::runtime::execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), None, &mut out, None).unwrap();
+        let header = aerodb::execution::runtime::execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), None, None, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "COUNT(*) INTEGER");
         assert_eq!(out, vec![vec!["3".to_string()]]);
     } else { panic!("expected select"); }
@@ -57,7 +57,7 @@ fn simple_grouping() {
             _ => panic!("expected table"),
         };
         let mut out = Vec::new();
-        let header = aerodb::execution::runtime::execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), None, &mut out, None).unwrap();
+        let header = aerodb::execution::runtime::execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), None, None, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "department TEXT | COUNT(*) INTEGER");
         out.sort();
         assert_eq!(out, vec![vec!["d1".to_string(), "2".to_string()], vec!["d2".to_string(), "1".to_string()]]);

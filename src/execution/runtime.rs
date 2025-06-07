@@ -393,6 +393,7 @@ pub fn execute_group_query(
     table_name: &str,
     projections: &[crate::sql::ast::SelectExpr],
     group_by: Option<&[String]>,
+    having: Option<Expr>,
     selection: Option<Expr>,
     out: &mut Vec<Vec<String>>,
     context: Option<&std::collections::HashMap<String, String>>,
@@ -472,6 +473,7 @@ pub fn execute_group_query(
 
     for (_key, grows) in groups {
         let mut result_row = Vec::new();
+        let mut value_map = std::collections::HashMap::new();
         for expr in projections {
             match expr {
                 crate::sql::ast::SelectExpr::Column(c) => {
@@ -482,6 +484,7 @@ pub fn execute_group_query(
                         ColumnValue::Text(t) => t.clone(),
                         ColumnValue::Boolean(b) => b.to_string(),
                     };
+                    value_map.insert(c.clone(), s.clone());
                     result_row.push(s);
                 }
                 crate::sql::ast::SelectExpr::Aggregate { func, column } => {
@@ -529,6 +532,8 @@ pub fn execute_group_query(
                             avg.to_string()
                         }
                     };
+                    let name = format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into()));
+                    value_map.insert(name, val.clone());
                     result_row.push(val);
                 }
                 crate::sql::ast::SelectExpr::All => {
@@ -540,6 +545,7 @@ pub fn execute_group_query(
                             ColumnValue::Text(t) => t.clone(),
                             ColumnValue::Boolean(b) => b.to_string(),
                         };
+                        value_map.insert(i.clone(), s.clone());
                         result_row.push(s);
                     }
                 }
@@ -556,11 +562,17 @@ pub fn execute_group_query(
                     }
                     execute_select_statement(catalog, sub, &mut inner_rows, Some(&ctx))?;
                     let val = inner_rows.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
+                    // subqueries are not referenced by HAVING expressions
                     result_row.push(val);
                 }
                 crate::sql::ast::SelectExpr::Literal(val) => {
                     result_row.push(val.clone());
                 }
+            }
+        }
+        if let Some(ref pred) = having {
+            if !crate::sql::ast::evaluate_expression(pred, &value_map) {
+                continue;
             }
         }
         out.push(result_row);
@@ -637,7 +649,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             catalog.insert_into_indexes(&table_name, &row_data)?;
             println!("1 row inserted");
         }
-        Statement::Select { columns, from, joins, where_predicate, group_by } => {
+        Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
             let has_subquery = from.iter().any(|t| matches!(t, crate::sql::ast::TableRef::Subquery { .. }))
                 || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Subquery(_)))
                 || where_predicate.as_ref().map_or(false, |e| expr_has_subquery(e));
@@ -648,6 +660,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     joins: joins.clone(),
                     where_predicate: where_predicate.clone(),
                     group_by: group_by.clone(),
+                    having: having.clone(),
                 };
                 let mut results = Vec::new();
                 let header = execute_select_statement(catalog, &stmt, &mut results, None)?;
@@ -664,7 +677,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             if joins.is_empty() {
                 if group_by.is_some() || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Aggregate { .. })) {
                     let mut results = Vec::new();
-                    let header = execute_group_query(catalog, &from_table, &columns, group_by.as_deref(), where_predicate, &mut results, None)?;
+                    let header = execute_group_query(catalog, &from_table, &columns, group_by.as_deref(), having.clone(), where_predicate, &mut results, None)?;
                     println!("{}", format_header(&header));
                     for row in results {
                         println!("{}", format_values(&row));
@@ -869,6 +882,26 @@ fn evaluate_with_catalog(
             Ok(values.get(left).map(String::as_str).unwrap_or(left)
                 != values.get(right).map(String::as_str).unwrap_or(right))
         }
+        Expr::GreaterThan { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            Ok(l > r)
+        }
+        Expr::GreaterOrEquals { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            Ok(l >= r)
+        }
+        Expr::LessThan { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            Ok(l < r)
+        }
+        Expr::LessOrEquals { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            Ok(l <= r)
+        }
         Expr::And(a, b) => {
             Ok(evaluate_with_catalog(a, values, catalog)?
                 && evaluate_with_catalog(b, values, catalog)?)
@@ -917,7 +950,7 @@ pub fn execute_select_statement(
 ) -> io::Result<Vec<(String, ColumnType)>> {
     use crate::sql::ast::{SelectExpr, TableRef};
     match stmt {
-        crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by } => {
+        crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
             if !joins.is_empty() {
                 return Err(io::Error::new(io::ErrorKind::Other, "Unsupported query"));
             }
@@ -925,7 +958,7 @@ pub fn execute_select_statement(
             match source {
                 TableRef::Named { name, alias } => {
                     if group_by.is_some() || columns.iter().any(|c| matches!(c, SelectExpr::Aggregate { .. })) {
-                        return execute_group_query(catalog, name, columns, group_by.as_deref(), where_predicate.clone(), out, context);
+                        return execute_group_query(catalog, name, columns, group_by.as_deref(), having.clone(), where_predicate.clone(), out, context);
                     }
                     let info = catalog.get_table(name)?.clone();
                     let (idxs, header) = select_projection_indices(&info.columns, columns)?;

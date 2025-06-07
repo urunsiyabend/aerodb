@@ -88,6 +88,26 @@ fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
             consumed = 3;
             Expr::NotEquals { left, right }
         }
+        ">" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::GreaterThan { left, right }
+        }
+        ">=" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::GreaterOrEquals { left, right }
+        }
+        "<" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::LessThan { left, right }
+        }
+        "<=" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::LessOrEquals { left, right }
+        }
         _ => return Err(format!("Unknown operator '{}'", op)),
     };
     while tokens.len() > consumed {
@@ -350,6 +370,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     && !tokens[idx].eq_ignore_ascii_case("WHERE")
                     && !tokens[idx].eq_ignore_ascii_case("GROUP")
                     && !tokens[idx].eq_ignore_ascii_case("ORDER")
+                    && !tokens[idx].eq_ignore_ascii_case("HAVING")
                 {
                     alias = Some(tokens[idx].trim_end_matches(';').to_string());
                     idx += 1;
@@ -408,7 +429,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 let mut cols = Vec::new();
                 while idx < tokens.len() {
                     let token = tokens[idx].trim_end_matches(',').trim_end_matches(';');
-                    if token.eq_ignore_ascii_case("ORDER") || token.eq_ignore_ascii_case("WHERE") { break; }
+                    if token.eq_ignore_ascii_case("ORDER") || token.eq_ignore_ascii_case("WHERE") || token.eq_ignore_ascii_case("HAVING") { break; }
                     cols.push(token.to_string());
                     idx += 1;
                     if idx >= tokens.len() { break; }
@@ -417,7 +438,14 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 group_by = Some(cols);
             }
 
-            Ok(Statement::Select { columns, from, joins, where_predicate, group_by })
+            let mut having = None;
+            if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("HAVING") {
+                let (expr, consumed) = parse_expression(&tokens[idx + 1..])?;
+                having = Some(expr);
+                idx += consumed + 1;
+            }
+
+            Ok(Statement::Select { columns, from, joins, where_predicate, group_by, having })
         }
         "DROP" => {
             if tokens.len() < 3 || !tokens[1].eq_ignore_ascii_case("TABLE") {

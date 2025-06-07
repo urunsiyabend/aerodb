@@ -5,6 +5,10 @@ use crate::storage::row::ColumnType;
 pub enum Expr {
     Equals { left: String, right: String },
     NotEquals { left: String, right: String },
+    GreaterThan { left: String, right: String },
+    GreaterOrEquals { left: String, right: String },
+    LessThan { left: String, right: String },
+    LessOrEquals { left: String, right: String },
     InSubquery { left: String, query: Box<Statement> },
     ExistsSubquery { query: Box<Statement> },
     And(Box<Expr>, Box<Expr>),
@@ -106,6 +110,7 @@ pub enum Statement {
         joins: Vec<JoinClause>,
         where_predicate: Option<Predicate>,
         group_by: Option<Vec<String>>,
+        having: Option<Predicate>,
     },
     Delete {
         table_name: String,
@@ -135,6 +140,22 @@ pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> boo
     match expr {
         Expr::Equals { left, right } => get_value(left, values) == get_value(right, values),
         Expr::NotEquals { left, right } => get_value(left, values) != get_value(right, values),
+        Expr::GreaterThan { left, right } => {
+            get_value(left, values).parse::<f64>().unwrap_or(0.0)
+                > get_value(right, values).parse::<f64>().unwrap_or(0.0)
+        }
+        Expr::GreaterOrEquals { left, right } => {
+            get_value(left, values).parse::<f64>().unwrap_or(0.0)
+                >= get_value(right, values).parse::<f64>().unwrap_or(0.0)
+        }
+        Expr::LessThan { left, right } => {
+            get_value(left, values).parse::<f64>().unwrap_or(0.0)
+                < get_value(right, values).parse::<f64>().unwrap_or(0.0)
+        }
+        Expr::LessOrEquals { left, right } => {
+            get_value(left, values).parse::<f64>().unwrap_or(0.0)
+                <= get_value(right, values).parse::<f64>().unwrap_or(0.0)
+        }
         Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } => false,
         Expr::And(a, b) => evaluate_expression(a, values) && evaluate_expression(b, values),
         Expr::Or(a, b) => evaluate_expression(a, values) || evaluate_expression(b, values),
