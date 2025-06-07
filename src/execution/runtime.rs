@@ -388,6 +388,139 @@ pub fn execute_multi_join(
     Ok(())
 }
 
+pub fn execute_group_query(
+    catalog: &mut Catalog,
+    table_name: &str,
+    projections: &[crate::sql::ast::SelectExpr],
+    group_by: Option<&[String]>,
+    selection: Option<Expr>,
+    out: &mut Vec<Vec<String>>,
+) -> io::Result<Vec<(String, ColumnType)>> {
+    let mut rows = Vec::new();
+    execute_select_with_indexes(catalog, table_name, selection, &mut rows)?;
+    let table_info = catalog.get_table(table_name)?;
+
+    let mut groups: std::collections::HashMap<Vec<String>, Vec<crate::storage::row::Row>> = std::collections::HashMap::new();
+    let mut col_pos = std::collections::HashMap::new();
+    for (i, (c, _)) in table_info.columns.iter().enumerate() {
+        col_pos.insert(c.clone(), i);
+    }
+    for row in rows {
+        let key = if let Some(gb) = group_by {
+            gb.iter()
+                .map(|c| {
+                    let idx = col_pos[c];
+                    match &row.data.0[idx] {
+                        ColumnValue::Integer(i) => i.to_string(),
+                        ColumnValue::Text(s) => s.clone(),
+                        ColumnValue::Boolean(b) => b.to_string(),
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        groups.entry(key).or_default().push(row);
+    }
+
+    let mut header = Vec::new();
+    for expr in projections {
+        match expr {
+            crate::sql::ast::SelectExpr::Column(c) => {
+                let idx = col_pos[c];
+                header.push((c.clone(), table_info.columns[idx].1));
+            }
+            crate::sql::ast::SelectExpr::Aggregate { func, column } => {
+                header.push((format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into())), ColumnType::Integer));
+            }
+            crate::sql::ast::SelectExpr::All => {
+                for (c, ty) in &table_info.columns {
+                    header.push((c.clone(), *ty));
+                }
+            }
+        }
+    }
+
+    for (_key, grows) in groups {
+        let mut result_row = Vec::new();
+        for expr in projections {
+            match expr {
+                crate::sql::ast::SelectExpr::Column(c) => {
+                    let idx = col_pos[c];
+                    let val = &grows[0].data.0[idx];
+                    let s = match val {
+                        ColumnValue::Integer(i) => i.to_string(),
+                        ColumnValue::Text(t) => t.clone(),
+                        ColumnValue::Boolean(b) => b.to_string(),
+                    };
+                    result_row.push(s);
+                }
+                crate::sql::ast::SelectExpr::Aggregate { func, column } => {
+                    let val = match func {
+                        crate::sql::ast::AggFunc::Count => grows.len().to_string(),
+                        crate::sql::ast::AggFunc::Sum => {
+                            let idx = col_pos[column.as_ref().unwrap()];
+                            let mut sum = 0i64;
+                            for r in &grows {
+                                if let ColumnValue::Integer(i) = r.data.0[idx] {
+                                    sum += i as i64;
+                                }
+                            }
+                            sum.to_string()
+                        }
+                        crate::sql::ast::AggFunc::Min => {
+                            let idx = col_pos[column.as_ref().unwrap()];
+                            let mut min_val: Option<i32> = None;
+                            for r in &grows {
+                                if let ColumnValue::Integer(i) = r.data.0[idx] {
+                                    min_val = Some(min_val.map_or(i, |m| m.min(i)));
+                                }
+                            }
+                            min_val.unwrap_or(0).to_string()
+                        }
+                        crate::sql::ast::AggFunc::Max => {
+                            let idx = col_pos[column.as_ref().unwrap()];
+                            let mut max_val: Option<i32> = None;
+                            for r in &grows {
+                                if let ColumnValue::Integer(i) = r.data.0[idx] {
+                                    max_val = Some(max_val.map_or(i, |m| m.max(i)));
+                                }
+                            }
+                            max_val.unwrap_or(0).to_string()
+                        }
+                        crate::sql::ast::AggFunc::Avg => {
+                            let idx = col_pos[column.as_ref().unwrap()];
+                            let mut sum = 0i64;
+                            for r in &grows {
+                                if let ColumnValue::Integer(i) = r.data.0[idx] {
+                                    sum += i as i64;
+                                }
+                            }
+                            let avg = sum as f64 / grows.len() as f64;
+                            avg.to_string()
+                        }
+                    };
+                    result_row.push(val);
+                }
+                crate::sql::ast::SelectExpr::All => {
+                    for (i, _) in &table_info.columns {
+                        let idx = col_pos[i];
+                        let v = &grows[0].data.0[idx];
+                        let s = match v {
+                            ColumnValue::Integer(i) => i.to_string(),
+                            ColumnValue::Text(t) => t.clone(),
+                            ColumnValue::Boolean(b) => b.to_string(),
+                        };
+                        result_row.push(s);
+                    }
+                }
+            }
+        }
+        out.push(result_row);
+    }
+    Ok(header)
+}
+
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()> {
     match stmt {
         Statement::CreateTable { table_name, columns, fks, if_not_exists } => {
@@ -457,24 +590,32 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             catalog.insert_into_indexes(&table_name, &row_data)?;
             println!("1 row inserted");
         }
-        Statement::Select { columns, from_table, joins, where_predicate } => {
+        Statement::Select { columns, from_table, joins, where_predicate, group_by } => {
             if joins.is_empty() {
-                let table_info = catalog.get_table(&from_table)?;
-                let (idxs, meta) = select_projection_indices(&table_info.columns, &columns)?;
-                println!("{}", format_header(&meta));
-                let mut results = Vec::new();
-                execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
-                for row in results {
-                    let vals = row_to_strings(&row);
-                    let projected: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
-                    println!("{}", format_values(&projected));
+                if group_by.is_some() || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Aggregate { .. })) {
+                    let mut results = Vec::new();
+                    let header = execute_group_query(catalog, &from_table, &columns, group_by.as_deref(), where_predicate, &mut results)?;
+                    println!("{}", format_header(&header));
+                    for row in results {
+                        println!("{}", format_values(&row));
+                    }
+                } else {
+                    let table_info = catalog.get_table(&from_table)?;
+                    let (idxs, meta) = select_projection_indices(&table_info.columns, &columns)?;
+                    println!("{}", format_header(&meta));
+                    let mut results = Vec::new();
+                    execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
+                    for row in results {
+                        let vals = row_to_strings(&row);
+                        let projected: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
+                        println!("{}", format_values(&projected));
+                    }
                 }
             } else {
-                let mut plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, joins, projections: columns.clone(), where_predicate };
+                let plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, joins, projections: columns.clone(), where_predicate };
                 let projections = expand_join_projections(&plan, catalog)?;
                 let header_meta = join_header(&plan, catalog, &projections)?;
                 println!("{}", format_header(&header_meta));
-                plan.projections = projections.clone();
                 let mut results = Vec::new();
                 execute_multi_join(&plan, catalog, &mut results)?;
                 for row in results {
@@ -524,9 +665,9 @@ pub fn row_to_strings(row: &Row) -> Vec<String> {
 
 pub fn select_projection_indices(
     columns: &[(String, ColumnType)],
-    projections: &[String],
+    projections: &[crate::sql::ast::SelectExpr],
 ) -> io::Result<(Vec<usize>, Vec<(String, ColumnType)>)> {
-    let use_all = projections.len() == 1 && projections[0] == "*";
+    let use_all = projections.len() == 1 && matches!(projections[0], crate::sql::ast::SelectExpr::All);
     let mut idxs = Vec::new();
     let mut meta = Vec::new();
     if use_all {
@@ -536,12 +677,25 @@ pub fn select_projection_indices(
         }
     } else {
         for p in projections {
-            let col = p.split('.').last().unwrap_or(p).to_string();
-            if let Some((i, (_, ty))) = columns.iter().enumerate().find(|(_, (c, _))| c == &col) {
-                idxs.push(i);
-                meta.push((col, *ty));
-            } else {
-                return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {col}")));
+            match p {
+                crate::sql::ast::SelectExpr::Column(col) => {
+                    let c = col.split('.').last().unwrap_or(col).to_string();
+                    if let Some((i, (_, ty))) = columns.iter().enumerate().find(|(_, (name, _))| name == &c) {
+                        idxs.push(i);
+                        meta.push((c, *ty));
+                    } else {
+                        return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {c}")));
+                    }
+                }
+                crate::sql::ast::SelectExpr::Aggregate { func, column } => {
+                    meta.push((format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into())), ColumnType::Integer));
+                }
+                crate::sql::ast::SelectExpr::All => {
+                    for (i, (n, ty)) in columns.iter().enumerate() {
+                        idxs.push(i);
+                        meta.push((n.clone(), *ty));
+                    }
+                }
             }
         }
     }
@@ -552,7 +706,8 @@ pub fn expand_join_projections(
     plan: &crate::execution::plan::MultiJoinPlan,
     catalog: &Catalog,
 ) -> io::Result<Vec<String>> {
-    if plan.projections.len() == 1 && plan.projections[0] == "*" {
+    use crate::sql::ast::SelectExpr;
+    if plan.projections.len() == 1 && matches!(plan.projections[0], SelectExpr::All) {
         let mut list = Vec::new();
         let base_info = catalog.get_table(&plan.base_table)?;
         for (c, _) in &base_info.columns {
@@ -567,7 +722,13 @@ pub fn expand_join_projections(
         }
         Ok(list)
     } else {
-        Ok(plan.projections.clone())
+        let mut out = Vec::new();
+        for p in &plan.projections {
+            if let SelectExpr::Column(c) = p {
+                out.push(c.clone());
+            }
+        }
+        Ok(out)
     }
 }
 

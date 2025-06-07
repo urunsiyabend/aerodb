@@ -227,8 +227,29 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 if tokens[idx].eq_ignore_ascii_case("FROM") {
                     break;
                 }
-                let col = tokens[idx].trim_end_matches(',').to_string();
-                columns.push(col);
+                let token = tokens[idx].trim_end_matches(',');
+                let upper = token.to_uppercase();
+                if token == "*" {
+                    columns.push(crate::sql::ast::SelectExpr::All);
+                } else if upper.starts_with("COUNT(") {
+                    let inner = token[6..token.len() - 1].trim();
+                    let col = if inner == "*" { None } else { Some(inner.to_string()) };
+                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Count, column: col });
+                } else if upper.starts_with("SUM(") {
+                    let inner = token[4..token.len() - 1].trim().to_string();
+                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Sum, column: Some(inner) });
+                } else if upper.starts_with("AVG(") {
+                    let inner = token[4..token.len() - 1].trim().to_string();
+                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Avg, column: Some(inner) });
+                } else if upper.starts_with("MIN(") {
+                    let inner = token[4..token.len() - 1].trim().to_string();
+                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Min, column: Some(inner) });
+                } else if upper.starts_with("MAX(") {
+                    let inner = token[4..token.len() - 1].trim().to_string();
+                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Max, column: Some(inner) });
+                } else {
+                    columns.push(crate::sql::ast::SelectExpr::Column(token.to_string()));
+                }
                 idx += 1;
             }
             if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("FROM") {
@@ -286,7 +307,22 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 idx += consumed + 1;
             }
 
-            Ok(Statement::Select { columns, from_table, joins, where_predicate })
+            let mut group_by = None;
+            if idx + 1 < tokens.len() && tokens[idx].eq_ignore_ascii_case("GROUP") && tokens[idx + 1].eq_ignore_ascii_case("BY") {
+                idx += 2;
+                let mut cols = Vec::new();
+                while idx < tokens.len() {
+                    let token = tokens[idx].trim_end_matches(',').trim_end_matches(';');
+                    if token.eq_ignore_ascii_case("ORDER") || token.eq_ignore_ascii_case("WHERE") { break; }
+                    cols.push(token.to_string());
+                    idx += 1;
+                    if idx >= tokens.len() { break; }
+                    if tokens[idx - 1].ends_with(';') { break; }
+                }
+                group_by = Some(cols);
+            }
+
+            Ok(Statement::Select { columns, from_table, joins, where_predicate, group_by })
         }
         "DROP" => {
             if tokens.len() < 3 || !tokens[1].eq_ignore_ascii_case("TABLE") {
