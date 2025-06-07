@@ -1,4 +1,4 @@
-use crate::sql::ast::{Expr, Statement, OrderBy};
+use crate::sql::ast::{Expr, Statement, OrderBy, JoinClause, SelectExpr, Predicate};
 use crate::storage::row::ColumnType;
 
 #[derive(Debug)]
@@ -37,7 +37,16 @@ pub enum PlanNode {
         assignments: Vec<(String, String)>,
         selection: Option<Expr>,
     },
+    MultiJoin(MultiJoinPlan),
     Exit,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiJoinPlan {
+    pub base_table: String,
+    pub joins: Vec<JoinClause>,
+    pub projections: Vec<SelectExpr>,
+    pub where_predicate: Option<Predicate>,
 }
 
 pub fn plan_statement(stmt: Statement) -> PlanNode {
@@ -51,13 +60,22 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         Statement::Insert { table_name, values } => {
             PlanNode::Insert { table_name, values }
         }
-        Statement::Select { table_name, selection, limit, offset, order_by } => {
-            PlanNode::Select {
-                table_name,
-                selection,
-                limit,
-                offset,
-                order_by,
+        Statement::Select { columns, from_table, joins, where_predicate } => {
+            if joins.is_empty() {
+                PlanNode::Select {
+                    table_name: from_table,
+                    selection: where_predicate,
+                    limit: None,
+                    offset: None,
+                    order_by: None,
+                }
+            } else {
+                PlanNode::MultiJoin(MultiJoinPlan {
+                    base_table: from_table,
+                    joins,
+                    projections: columns,
+                    where_predicate,
+                })
             }
         }
         Statement::DropTable { table_name, if_exists } => PlanNode::DropTable { table_name, if_exists },

@@ -217,65 +217,76 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             })
         }
         "SELECT" => {
-            if tokens.len() < 4 || tokens[1] != "*" || !tokens[2].eq_ignore_ascii_case("FROM") {
-                return Err("Usage: SELECT * FROM <table> ...".to_string());
+            if tokens.len() < 4 {
+                return Err("Incomplete SELECT".into());
             }
-            let table = tokens[3].trim_end_matches(';').to_string();
-            let mut selection = None;
-            let mut limit = None;
-            let mut offset = None;
-            let mut order_by: Option<OrderBy> = None;
 
-            let mut idx = 4;
+            let mut idx = 1;
+            let mut columns = Vec::new();
             while idx < tokens.len() {
-                let token = tokens[idx].trim_end_matches(';');
-                match token.to_uppercase().as_str() {
-                    "WHERE" => {
-                        let (expr, consumed) = parse_expression(&tokens[idx + 1..])?;
-                        selection = Some(expr);
-                        idx += consumed + 1;
-                    }
-                    "LIMIT" => {
-                        if idx + 1 >= tokens.len() {
-                            return Err("Expected number after LIMIT".into());
-                        }
-                        limit = Some(tokens[idx + 1].trim_end_matches(';').parse::<usize>().map_err(|_| "Invalid LIMIT value")?);
-                        idx += 2;
-                    }
-                    "OFFSET" => {
-                        if idx + 1 >= tokens.len() {
-                            return Err("Expected number after OFFSET".into());
-                        }
-                        offset = Some(tokens[idx + 1].trim_end_matches(';').parse::<usize>().map_err(|_| "Invalid OFFSET value")?);
-                        idx += 2;
-                    }
-                    "ORDER" => {
-                        if idx + 2 < tokens.len() && tokens[idx + 1].eq_ignore_ascii_case("BY") {
-                            let column = tokens[idx + 2].trim_end_matches(';').to_string();
-                            idx += 3;
-                            let mut descending = false;
-                            if idx < tokens.len() {
-                                let dir = tokens[idx].trim_end_matches(';').to_uppercase();
-                                if dir == "ASC" {
-                                    descending = false;
-                                    idx += 1;
-                                } else if dir == "DESC" {
-                                    descending = true;
-                                    idx += 1;
-                                }
-                            }
-                            order_by = Some(OrderBy { column, descending });
-                        } else {
-                            return Err("Expected BY <column> after ORDER".into());
-                        }
-                    }
-                    _ => {
-                        idx += 1;
-                    }
+                if tokens[idx].eq_ignore_ascii_case("FROM") {
+                    break;
                 }
+                let col = tokens[idx].trim_end_matches(',').to_string();
+                columns.push(col);
+                idx += 1;
+            }
+            if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("FROM") {
+                return Err("Expected FROM".into());
+            }
+            idx += 1;
+            if idx >= tokens.len() {
+                return Err("Missing table after FROM".into());
+            }
+            let from_table = tokens[idx].trim_end_matches(';').to_string();
+            idx += 1;
+            let mut joins = Vec::new();
+            while idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("JOIN") {
+                idx += 1;
+                if idx >= tokens.len() {
+                    return Err("Expected table after JOIN".into());
+                }
+                let table = tokens[idx].trim_end_matches(';').to_string();
+                idx += 1;
+                let mut alias = None;
+                if idx + 1 < tokens.len() && tokens[idx].eq_ignore_ascii_case("AS") {
+                    alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
+                    idx += 2;
+                }
+                if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("ON") {
+                    return Err("Expected ON in JOIN".into());
+                }
+                idx += 1;
+                if idx + 2 >= tokens.len() {
+                    return Err("Incomplete JOIN condition".into());
+                }
+                let left = tokens[idx];
+                idx += 1;
+                if tokens[idx] != "=" {
+                    return Err("Expected '=' in JOIN".into());
+                }
+                idx += 1;
+                let right = tokens[idx].trim_end_matches(';');
+                idx += 1;
+
+                let mut lp = left.split('.');
+                let left_table = lp.next().ok_or("Invalid left side in JOIN")?.to_string();
+                let left_column = lp.next().ok_or("Invalid left side in JOIN")?.to_string();
+                let mut rp = right.split('.');
+                let _right_table = rp.next().ok_or("Invalid right side in JOIN")?;
+                let right_column = rp.next().ok_or("Invalid right side in JOIN")?.to_string();
+
+                joins.push(crate::sql::ast::JoinClause { table, alias, left_table, left_column, right_column });
             }
 
-            Ok(Statement::Select { table_name: table, selection, limit, offset, order_by })
+            let mut where_predicate = None;
+            if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("WHERE") {
+                let (expr, consumed) = parse_expression(&tokens[idx + 1..])?;
+                where_predicate = Some(expr);
+                idx += consumed + 1;
+            }
+
+            Ok(Statement::Select { columns, from_table, joins, where_predicate })
         }
         "DROP" => {
             if tokens.len() < 3 || !tokens[1].eq_ignore_ascii_case("TABLE") {

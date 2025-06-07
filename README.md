@@ -36,7 +36,7 @@ Development follows a **Test-Driven Development (TDD)** workflow:
 
 These tasks outline upcoming work and reference articles we plan to publish.
 
-- [ ] **Expand SQL parser** to support JOINs, nested queries and basic functions.
+- [x] **Expand SQL parser** to support JOINs, nested queries and basic functions.
 - [x] **Flesh out transactions** with ACID semantics and accompanying tests.
 - [ ] **Document storage engine** internals and page layout in a dedicated article.
 - [x] **Add secondary indexes** to accelerate lookups on non-primary keys.

@@ -30,6 +30,18 @@ pub struct ForeignKey {
     pub on_update: Option<Action>,
 }
 
+#[derive(Debug, Clone)]
+pub struct JoinClause {
+    pub table: String,
+    pub alias: Option<String>,
+    pub left_table: String,
+    pub left_column: String,
+    pub right_column: String,
+}
+
+pub type SelectExpr = String;
+pub type Predicate = Expr;
+
 #[derive(Debug)]
 pub enum Statement {
     CreateTable {
@@ -52,11 +64,10 @@ pub enum Statement {
         values: Vec<String>, // all literal values as strings
     },
     Select {
-        table_name: String,
-        selection: Option<Expr>,
-        limit: Option<usize>,
-        offset: Option<usize>,
-        order_by: Option<OrderBy>,
+        columns: Vec<SelectExpr>,
+        from_table: String,
+        joins: Vec<JoinClause>,
+        where_predicate: Option<Predicate>,
     },
     Delete {
         table_name: String,

@@ -302,6 +302,91 @@ pub fn execute_select_with_indexes(
     Ok(false)
 }
 
+pub fn execute_multi_join(
+    plan: &crate::execution::plan::MultiJoinPlan,
+    catalog: &mut Catalog,
+    out: &mut Vec<Vec<String>>,
+) -> io::Result<()> {
+    use crate::sql::ast::evaluate_expression;
+    let mut result_rows: Vec<std::collections::HashMap<String, ColumnValue>> = Vec::new();
+
+    // base table scan
+    {
+        let base_info = catalog.get_table(&plan.base_table)?.clone();
+        let mut tree = BTree::open_root(&mut catalog.pager, base_info.root_page)?;
+        let mut cursor = tree.scan_all_rows();
+        while let Some(row) = cursor.next() {
+            let mut map = std::collections::HashMap::new();
+            for ((c, _), v) in base_info.columns.iter().zip(row.data.0.iter()) {
+                map.insert(format!("{}.{c}", plan.base_table), v.clone());
+            }
+            result_rows.push(map);
+        }
+    }
+
+    for jc in &plan.joins {
+        let alias = jc.alias.as_ref().unwrap_or(&jc.table);
+        let info = catalog.get_table(&jc.table)?.clone();
+        let mut tree = BTree::open_root(&mut catalog.pager, info.root_page)?;
+        let rows: Vec<_> = {
+            let mut curs = tree.scan_all_rows();
+            let mut tmp = Vec::new();
+            while let Some(r) = curs.next() {
+                let mut m = std::collections::HashMap::new();
+                for ((c, _), v) in info.columns.iter().zip(r.data.0.iter()) {
+                    m.insert(format!("{alias}.{c}"), v.clone());
+                }
+                tmp.push(m);
+            }
+            tmp
+        };
+
+        let mut new_rows = Vec::new();
+        for left in &result_rows {
+            let key = left.get(&format!("{}.{}", jc.left_table, jc.left_column));
+            if let Some(key_val) = key {
+                for r in &rows {
+                    if let Some(rv) = r.get(&format!("{alias}.{}", jc.right_column)) {
+                        if rv == key_val {
+                            let mut merged = left.clone();
+                            for (k, v) in r {
+                                merged.insert(k.clone(), v.clone());
+                            }
+                            new_rows.push(merged);
+                        }
+                    }
+                }
+            }
+        }
+        result_rows = new_rows;
+    }
+
+    for row in result_rows {
+        let mut str_map = std::collections::HashMap::new();
+        for (k, v) in &row {
+            let s = match v {
+                ColumnValue::Integer(i) => i.to_string(),
+                ColumnValue::Text(t) => t.clone(),
+                ColumnValue::Boolean(b) => b.to_string(),
+            };
+            str_map.insert(k.clone(), s);
+        }
+        if let Some(ref pred) = plan.where_predicate {
+            if !evaluate_expression(pred, &str_map) {
+                continue;
+            }
+        }
+        let mut projected = Vec::new();
+        for p in &plan.projections {
+            if let Some(v) = str_map.get(p) {
+                projected.push(v.clone());
+            }
+        }
+        out.push(projected);
+    }
+    Ok(())
+}
+
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()> {
     match stmt {
         Statement::CreateTable { table_name, columns, fks, if_not_exists } => {
@@ -371,13 +456,22 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             catalog.insert_into_indexes(&table_name, &row_data)?;
             println!("1 row inserted");
         }
-        Statement::Select { table_name, selection, limit: _, offset: _, order_by: _ } => {
-            let table_info = catalog.get_table(&table_name)?;
-            println!("{}", format_header(&table_info.columns));
-            let mut results = Vec::new();
-            execute_select_with_indexes(catalog, &table_name, selection, &mut results)?;
-            for row in results {
-                println!("{}", format_row(&row));
+        Statement::Select { columns, from_table, joins, where_predicate } => {
+            if joins.is_empty() {
+                let table_info = catalog.get_table(&from_table)?;
+                println!("{}", format_header(&table_info.columns));
+                let mut results = Vec::new();
+                execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
+                for row in results {
+                    println!("{}", format_row(&row));
+                }
+            } else {
+                let plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, joins, projections: columns.clone(), where_predicate };
+                let mut results = Vec::new();
+                execute_multi_join(&plan, catalog, &mut results)?;
+                for row in results {
+                    println!("{}", row.join(" | "));
+                }
             }
         }
         Statement::DropTable { table_name, .. } => {
