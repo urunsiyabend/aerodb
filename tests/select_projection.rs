@@ -31,6 +31,7 @@ fn select_single_column() {
             .map(|p| match p {
                 aerodb::execution::runtime::Projection::Index(i) => vals[*i].clone(),
                 aerodb::execution::runtime::Projection::Literal(s) => s.clone(),
+                aerodb::execution::runtime::Projection::Subquery(_) => String::new(),
             })
             .collect();
         assert_eq!(proj, vec!["bob"]);
@@ -62,6 +63,7 @@ fn select_two_columns() {
             .map(|p| match p {
                 aerodb::execution::runtime::Projection::Index(i) => vals[*i].clone(),
                 aerodb::execution::runtime::Projection::Literal(s) => s.clone(),
+                aerodb::execution::runtime::Projection::Subquery(_) => String::new(),
             })
             .collect();
         assert_eq!(proj, vec!["1", "bob"]);

@@ -268,10 +268,12 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             let mut idx = 1;
             let mut columns = Vec::new();
             let mut col_tokens = Vec::new();
+            let mut depth = 0i32;
             while idx < tokens.len() {
-                if tokens[idx].eq_ignore_ascii_case("FROM") {
+                if depth == 0 && tokens[idx].eq_ignore_ascii_case("FROM") {
                     break;
                 }
+                depth += tokens[idx].matches('(').count() as i32 - tokens[idx].matches(')').count() as i32;
                 col_tokens.push(tokens[idx]);
                 idx += 1;
             }
@@ -281,6 +283,11 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 let upper = token.to_uppercase();
                 if token == "*" {
                     columns.push(crate::sql::ast::SelectExpr::All);
+                } else if token.starts_with('(') {
+                    let end = token.rfind(')').ok_or("Unclosed subquery")?;
+                    let inner = &token[1..end];
+                    let sub = parse_statement(inner)?;
+                    columns.push(crate::sql::ast::SelectExpr::Subquery(Box::new(sub)));
                 } else if upper.starts_with("SELECT") {
                     let sub = parse_statement(token)?;
                     columns.push(crate::sql::ast::SelectExpr::Subquery(Box::new(sub)));

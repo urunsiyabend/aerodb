@@ -167,3 +167,42 @@ fn execute_exists_constant() {
     }
 }
 
+#[test]
+fn parse_select_subquery() {
+    let stmt = parse_statement("SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.user_id = users.id) FROM users").unwrap();
+    if let Statement::Select { columns, .. } = stmt {
+        assert!(matches!(columns[1], SelectExpr::Subquery(_)));
+    } else { panic!("expected select"); }
+}
+
+#[test]
+fn execute_scalar_subquery() {
+    let filename = "test_scalar_subquery.db";
+    let mut catalog = setup_catalog(filename);
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "users".into(),
+        columns: vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "orders".into(),
+        columns: vec![("id".into(), ColumnType::Integer), ("user_id".into(), ColumnType::Integer)],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "Alice".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["2".into(), "Bob".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["10".into(), "1".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["11".into(), "1".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["12".into(), "2".into()] }).unwrap();
+    let stmt = parse_statement("SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.user_id = users.id) FROM users").unwrap();
+    if let Statement::Select { .. } = stmt {
+        let mut out = Vec::new();
+        let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
+        assert_eq!(format_header(&header), "name TEXT | SUBQUERY TEXT");
+        assert_eq!(out.len(), 2);
+        out.sort();
+        assert_eq!(out, vec![vec!["Alice".to_string(), "2".to_string()], vec!["Bob".to_string(), "1".to_string()]]);
+    } else { panic!("expected select"); }
+}
