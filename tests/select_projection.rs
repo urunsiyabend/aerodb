@@ -19,7 +19,7 @@ fn select_single_column() {
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "bob".into()] }).unwrap();
     let stmt = parse_statement("SELECT name FROM users").unwrap();
     if let Statement::Select { columns, from, .. } = stmt {
-        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named(t) => t, _ => panic!("expected table") };
+        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };
         let info = catalog.get_table(table).unwrap();
         let (idxs, meta) = select_projection_indices(&info.columns, &columns).unwrap();
         assert_eq!(format_header(&meta), "name TEXT");
@@ -44,7 +44,7 @@ fn select_two_columns() {
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "bob".into()] }).unwrap();
     let stmt = parse_statement("SELECT id, name FROM users").unwrap();
     if let Statement::Select { columns, from, .. } = stmt {
-        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named(t) => t, _ => panic!("expected table") };
+        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };
         let info = catalog.get_table(table).unwrap();
         let (idxs, meta) = select_projection_indices(&info.columns, &columns).unwrap();
         assert_eq!(format_header(&meta), "id INTEGER | name TEXT");

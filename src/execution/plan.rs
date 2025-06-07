@@ -62,7 +62,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         }
         Statement::Select { columns, from, joins, where_predicate, group_by: _ } => {
             let table_name = match from.first().unwrap() {
-                crate::sql::ast::TableRef::Named(t) => t.clone(),
+                crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                 _ => return PlanNode::Select { table_name: String::new(), selection: None, limit: None, offset: None, order_by: None },
             };
             if joins.is_empty() {

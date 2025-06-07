@@ -155,7 +155,7 @@ mod tests {
         match stmt {
             Statement::Select { from, where_predicate, .. } => {
                 let from_table = match from.first().unwrap() {
-                    crate::sql::ast::TableRef::Named(t) => t.clone(),
+                    crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                     _ => panic!("expected named table"),
                 };
                 assert_eq!(from_table, "users");
@@ -402,8 +402,8 @@ mod tests {
             parse_statement("SELECT * FROM nums LIMIT 5 OFFSET 2 ORDER BY id DESC").unwrap();
         match stmt {
             Statement::Select { from, .. } => {
-                if let Some(crate::sql::ast::TableRef::Named(t)) = from.first() {
-                    assert_eq!(t, "nums");
+                if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
+                    assert_eq!(name, "nums");
                 } else { panic!("expected named table") }
             }
             _ => panic!("Expected select statement"),
@@ -415,8 +415,8 @@ mod tests {
         let stmt = parse_statement("SELECT * FROM users ORDER BY id").unwrap();
         match stmt {
             Statement::Select { from, .. } => {
-                if let Some(crate::sql::ast::TableRef::Named(t)) = from.first() {
-                    assert_eq!(t, "users");
+                if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
+                    assert_eq!(name, "users");
                 } else { panic!("expected named table") }
             }
             _ => panic!("Expected select"),
@@ -425,8 +425,8 @@ mod tests {
         let stmt = parse_statement("SELECT * FROM users ORDER BY id ASC").unwrap();
         match stmt {
             Statement::Select { from, .. } => {
-                if let Some(crate::sql::ast::TableRef::Named(t)) = from.first() {
-                    assert_eq!(t, "users");
+                if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
+                    assert_eq!(name, "users");
                 } else { panic!("expected named table") }
             }
             _ => panic!("Expected select"),
@@ -435,8 +435,8 @@ mod tests {
         let stmt = parse_statement("SELECT * FROM users ORDER BY id DESC").unwrap();
         match stmt {
             Statement::Select { from, .. } => {
-                if let Some(crate::sql::ast::TableRef::Named(t)) = from.first() {
-                    assert_eq!(t, "users");
+                if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
+                    assert_eq!(name, "users");
                 } else { panic!("expected named table") }
             }
             _ => panic!("Expected select"),
@@ -610,7 +610,7 @@ mod tests {
         match stmt {
             Statement::Select { from, where_predicate: selection, .. } => {
                 let table_name = match from.first().unwrap() {
-                    crate::sql::ast::TableRef::Named(t) => t.clone(),
+                    crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                     _ => panic!("expected table"),
                 };
                 let mut results = Vec::new();
@@ -668,7 +668,7 @@ mod tests {
         match stmt {
             Statement::Select { from, where_predicate: selection, .. } => {
                 let table_name = match from.first().unwrap() {
-                    crate::sql::ast::TableRef::Named(t) => t.clone(),
+                    crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                     _ => panic!("expected named table"),
                 };
                 let mut results = Vec::new();
@@ -720,7 +720,7 @@ mod tests {
         match stmt {
             Statement::Select { from, where_predicate: selection, .. } => {
                 let table_name = match from.first().unwrap() {
-                    crate::sql::ast::TableRef::Named(t) => t.clone(),
+                    crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                     _ => panic!("expected named table"),
                 };
                 let mut results = Vec::new();
@@ -770,7 +770,7 @@ mod tests {
         match stmt {
             Statement::Select { from, where_predicate: selection, .. } => {
                 let table_name = match from.first().unwrap() {
-                    crate::sql::ast::TableRef::Named(t) => t.clone(),
+                    crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                     _ => panic!("expected named table"),
                 };
                 let mut results = Vec::new();
@@ -821,7 +821,7 @@ mod tests {
         match stmt {
             Statement::Select { from, where_predicate: selection, .. } => {
                 let table_name = match from.first().unwrap() {
-                    crate::sql::ast::TableRef::Named(t) => t.clone(),
+                    crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                     _ => panic!("expected named table"),
                 };
                 let mut results = Vec::new();

@@ -25,6 +25,35 @@ fn split_top_level(s: &str) -> Vec<String> {
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
 /// Returns the expression and the number of tokens consumed.
 fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
+    if tokens.is_empty() {
+        return Err("Incomplete expression".into());
+    }
+    if tokens[0].eq_ignore_ascii_case("EXISTS") {
+        if tokens.len() < 2 || !tokens[1].starts_with('(') {
+            return Err("Expected '(' after EXISTS".into());
+        }
+        let mut depth = tokens[1].matches('(').count() as i32 - tokens[1].matches(')').count() as i32;
+        let mut end = 1;
+        while depth > 0 {
+            end += 1;
+            if end >= tokens.len() { return Err("Unclosed subquery".into()); }
+            depth += tokens[end].matches('(').count() as i32 - tokens[end].matches(')').count() as i32;
+        }
+        let sub_tokens = tokens[1..=end].join(" ");
+        let inner = sub_tokens.trim_start_matches('(').trim_end_matches(')');
+        let substmt = parse_statement(inner)?;
+        let mut expr = Expr::ExistsSubquery { query: Box::new(substmt) };
+        let mut consumed = end + 1;
+        while tokens.len() > consumed {
+            let logic = tokens[consumed].to_uppercase();
+            if logic != "AND" && logic != "OR" { break; }
+            consumed += 1;
+            let (next, used) = parse_expression(&tokens[consumed..])?;
+            expr = if logic == "AND" { Expr::And(Box::new(expr), Box::new(next)) } else { Expr::Or(Box::new(expr), Box::new(next)) };
+            consumed += used;
+        }
+        return Ok((expr, consumed));
+    }
     if tokens.len() < 3 {
         return Err("Incomplete expression".into());
     }
@@ -303,8 +332,18 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 from.push(crate::sql::ast::TableRef::Subquery { query: Box::new(substmt), alias });
             } else {
                 let table = tokens[idx].trim_end_matches(';').to_string();
-                from.push(crate::sql::ast::TableRef::Named(table));
                 idx += 1;
+                let mut alias = None;
+                if idx < tokens.len()
+                    && !tokens[idx].eq_ignore_ascii_case("JOIN")
+                    && !tokens[idx].eq_ignore_ascii_case("WHERE")
+                    && !tokens[idx].eq_ignore_ascii_case("GROUP")
+                    && !tokens[idx].eq_ignore_ascii_case("ORDER")
+                {
+                    alias = Some(tokens[idx].trim_end_matches(';').to_string());
+                    idx += 1;
+                }
+                from.push(crate::sql::ast::TableRef::Named { name: table, alias });
             }
             let mut joins = Vec::new();
             while idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("JOIN") {

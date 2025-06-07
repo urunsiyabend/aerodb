@@ -609,7 +609,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     group_by: group_by.clone(),
                 };
                 let mut results = Vec::new();
-                let header = execute_select_statement(catalog, &stmt, &mut results)?;
+                let header = execute_select_statement(catalog, &stmt, &mut results, None)?;
                 println!("{}", format_header(&header));
                 for row in results {
                     println!("{}", format_values(&row));
@@ -617,7 +617,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                 return Ok(());
             }
             let from_table = match from.first().unwrap() {
-                crate::sql::ast::TableRef::Named(t) => t.clone(),
+                crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
                 _ => unreachable!(),
             };
             if joins.is_empty() {
@@ -819,7 +819,7 @@ fn evaluate_with_catalog(
         }
         Expr::InSubquery { left, query } => {
             let mut rows = Vec::new();
-            let header = execute_select_statement(catalog, query, &mut rows)?;
+            let header = execute_select_statement(catalog, query, &mut rows, Some(values))?;
             if header.len() != 1 {
                 return Err(io::Error::new(io::ErrorKind::Other, "Subquery must return one column"));
             }
@@ -831,6 +831,11 @@ fn evaluate_with_catalog(
             }
             Ok(false)
         }
+        Expr::ExistsSubquery { query } => {
+            let mut rows = Vec::new();
+            let _ = execute_select_statement(catalog, query, &mut rows, Some(values))?;
+            Ok(!rows.is_empty())
+        }
         Expr::Subquery(_) => Ok(false),
     }
 }
@@ -838,7 +843,7 @@ fn evaluate_with_catalog(
 fn expr_has_subquery(expr: &crate::sql::ast::Expr) -> bool {
     use crate::sql::ast::Expr;
     match expr {
-        Expr::InSubquery { .. } | Expr::Subquery(_) => true,
+        Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } | Expr::Subquery(_) => true,
         Expr::And(a, b) | Expr::Or(a, b) => expr_has_subquery(a) || expr_has_subquery(b),
         _ => false,
     }
@@ -848,6 +853,7 @@ pub fn execute_select_statement(
     catalog: &mut Catalog,
     stmt: &crate::sql::ast::Statement,
     out: &mut Vec<Vec<String>>,
+    context: Option<&std::collections::HashMap<String, String>>,
 ) -> io::Result<Vec<(String, ColumnType)>> {
     use crate::sql::ast::{SelectExpr, TableRef};
     match stmt {
@@ -857,16 +863,23 @@ pub fn execute_select_statement(
             }
             let source = from.first().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Missing FROM"))?;
             match source {
-                TableRef::Named(t) => {
-                    let info = catalog.get_table(t)?.clone();
+                TableRef::Named { name, alias } => {
+                    let info = catalog.get_table(name)?.clone();
                     let (idxs, header) = select_projection_indices(&info.columns, columns)?;
                     let mut rows = Vec::new();
-                    execute_select_with_indexes(catalog, t, None, &mut rows)?;
+                    execute_select_with_indexes(catalog, name, None, &mut rows)?;
                     for row in rows {
                         let vals = row_to_strings(&row);
                         let mut map = std::collections::HashMap::new();
+                        if let Some(ctx) = context {
+                            for (k, v) in ctx {
+                                map.insert(k.clone(), v.clone());
+                            }
+                        }
                         for ((c, _), v) in info.columns.iter().zip(vals.iter()) {
                             map.insert(c.clone(), v.clone());
+                            let qual = format!("{}.{}", alias.as_deref().unwrap_or(name), c);
+                            map.insert(qual, v.clone());
                         }
                         if let Some(pred) = where_predicate {
                             if !evaluate_with_catalog(pred, &map, catalog)? {
@@ -880,10 +893,15 @@ pub fn execute_select_statement(
                 }
                 TableRef::Subquery { query, .. } => {
                     let mut inner_rows = Vec::new();
-                    let inner_header = execute_select_statement(catalog, query, &mut inner_rows)?;
+                    let inner_header = execute_select_statement(catalog, query, &mut inner_rows, context)?;
                     let mut filtered = Vec::new();
                     for row in inner_rows {
                         let mut values = std::collections::HashMap::new();
+                        if let Some(ctx) = context {
+                            for (k, v) in ctx {
+                                values.insert(k.clone(), v.clone());
+                            }
+                        }
                         for ((col, _), val) in inner_header.iter().zip(row.iter()) {
                             values.insert(col.clone(), val.clone());
                         }

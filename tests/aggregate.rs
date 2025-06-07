@@ -22,7 +22,7 @@ fn basic_count() {
     let stmt = parse_statement("SELECT COUNT(*) FROM employees").unwrap();
     if let Statement::Select { columns, from, group_by, .. } = stmt {
         let table = match from.first().unwrap() {
-            aerodb::sql::ast::TableRef::Named(t) => t,
+            aerodb::sql::ast::TableRef::Named { name, .. } => name,
             _ => panic!("expected table"),
         };
         let mut out = Vec::new();
@@ -53,7 +53,7 @@ fn simple_grouping() {
     let stmt = parse_statement("SELECT department, COUNT(*) FROM employees GROUP BY department").unwrap();
     if let Statement::Select { columns, from, group_by, .. } = stmt {
         let table = match from.first().unwrap() {
-            aerodb::sql::ast::TableRef::Named(t) => t,
+            aerodb::sql::ast::TableRef::Named { name, .. } => name,
             _ => panic!("expected table"),
         };
         let mut out = Vec::new();

@@ -39,7 +39,7 @@ fn join_two_tables() {
 
     let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id").unwrap();
     if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named(t) => t.clone(), _ => panic!("expected table") };
+        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
         let plan = aerodb::execution::plan::MultiJoinPlan { base_table, joins, projections: columns, where_predicate };
         let mut results = Vec::new();
         execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
@@ -63,7 +63,7 @@ fn join_three_tables() {
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "c".into(), values: vec!["2".into(), "3".into(), "cx2".into()] }).unwrap();
     let stmt = parse_statement("SELECT a.v, b.w, c.x FROM a JOIN b ON a.id = b.a_id JOIN c ON b.id = c.b_id").unwrap();
     if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named(t) => t.clone(), _ => panic!("expected table") };
+        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
         let plan = aerodb::execution::plan::MultiJoinPlan { base_table, joins, projections: columns, where_predicate };
         let mut results = Vec::new();
         execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
@@ -84,7 +84,7 @@ fn join_with_where() {
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "b".into(), values: vec!["2".into(), "2".into(), "bw2".into()] }).unwrap();
     let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id WHERE a.v = av1").unwrap();
     if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named(t) => t.clone(), _ => panic!("expected table") };
+        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
         let plan = aerodb::execution::plan::MultiJoinPlan { base_table, joins, projections: columns, where_predicate };
         let mut results = Vec::new();
         execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
