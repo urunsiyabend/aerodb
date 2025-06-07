@@ -242,7 +242,7 @@ pub fn execute_select_with_indexes(
     selection: Option<Expr>,
     out: &mut Vec<Row>,
 ) -> io::Result<bool> {
-    let table_info = catalog.get_table(table_name)?;
+    let table_info = catalog.get_table(table_name)?.clone();
     let root_page = table_info.root_page;
     let columns = table_info.columns.clone();
 
@@ -395,10 +395,11 @@ pub fn execute_group_query(
     group_by: Option<&[String]>,
     selection: Option<Expr>,
     out: &mut Vec<Vec<String>>,
+    context: Option<&std::collections::HashMap<String, String>>,
 ) -> io::Result<Vec<(String, ColumnType)>> {
     let mut rows = Vec::new();
-    execute_select_with_indexes(catalog, table_name, selection, &mut rows)?;
-    let table_info = catalog.get_table(table_name)?;
+    execute_select_with_indexes(catalog, table_name, None, &mut rows)?;
+    let table_info = catalog.get_table(table_name)?.clone();
 
     let mut groups: std::collections::HashMap<Vec<String>, Vec<crate::storage::row::Row>> = std::collections::HashMap::new();
     let mut col_pos = std::collections::HashMap::new();
@@ -406,6 +407,27 @@ pub fn execute_group_query(
         col_pos.insert(c.clone(), i);
     }
     for row in rows {
+        let mut values = std::collections::HashMap::new();
+        if let Some(ctx) = context {
+            for (k, v) in ctx {
+                values.insert(k.clone(), v.clone());
+            }
+        }
+        for ((c, _), val) in table_info.columns.iter().zip(row.data.0.iter()) {
+            let s = match val {
+                ColumnValue::Integer(i) => i.to_string(),
+                ColumnValue::Text(t) => t.clone(),
+                ColumnValue::Boolean(b) => b.to_string(),
+            };
+            values.insert(c.clone(), s.clone());
+            let qual = format!("{}.{}", table_name, c);
+            values.insert(qual, s);
+        }
+        if let Some(ref sel) = selection {
+            if !evaluate_with_catalog(sel, &values, catalog)? {
+                continue;
+            }
+        }
         let key = if let Some(gb) = group_by {
             gb.iter()
                 .map(|c| {
@@ -437,6 +459,13 @@ pub fn execute_group_query(
                 for (c, ty) in &table_info.columns {
                     header.push((c.clone(), *ty));
                 }
+            }
+            crate::sql::ast::SelectExpr::Subquery(_) => {
+                header.push(("SUBQUERY".into(), ColumnType::Text));
+            }
+            crate::sql::ast::SelectExpr::Literal(val) => {
+                let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
+                header.push((val.clone(), ty));
             }
         }
     }
@@ -514,6 +543,24 @@ pub fn execute_group_query(
                         result_row.push(s);
                     }
                 }
+                crate::sql::ast::SelectExpr::Subquery(sub) => {
+                    let mut inner_rows = Vec::new();
+                    let mut ctx = std::collections::HashMap::new();
+                    for ((c, _), v) in table_info.columns.iter().zip(grows[0].data.0.iter()) {
+                        let val = match v {
+                            ColumnValue::Integer(i) => i.to_string(),
+                            ColumnValue::Text(t) => t.clone(),
+                            ColumnValue::Boolean(b) => b.to_string(),
+                        };
+                        ctx.insert(c.clone(), val);
+                    }
+                    execute_select_statement(catalog, sub, &mut inner_rows, Some(&ctx))?;
+                    let val = inner_rows.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
+                    result_row.push(val);
+                }
+                crate::sql::ast::SelectExpr::Literal(val) => {
+                    result_row.push(val.clone());
+                }
             }
         }
         out.push(result_row);
@@ -590,11 +637,34 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             catalog.insert_into_indexes(&table_name, &row_data)?;
             println!("1 row inserted");
         }
-        Statement::Select { columns, from_table, joins, where_predicate, group_by } => {
+        Statement::Select { columns, from, joins, where_predicate, group_by } => {
+            let has_subquery = from.iter().any(|t| matches!(t, crate::sql::ast::TableRef::Subquery { .. }))
+                || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Subquery(_)))
+                || where_predicate.as_ref().map_or(false, |e| expr_has_subquery(e));
+            if has_subquery {
+                let stmt = crate::sql::ast::Statement::Select {
+                    columns: columns.clone(),
+                    from: from.clone(),
+                    joins: joins.clone(),
+                    where_predicate: where_predicate.clone(),
+                    group_by: group_by.clone(),
+                };
+                let mut results = Vec::new();
+                let header = execute_select_statement(catalog, &stmt, &mut results, None)?;
+                println!("{}", format_header(&header));
+                for row in results {
+                    println!("{}", format_values(&row));
+                }
+                return Ok(());
+            }
+            let from_table = match from.first().unwrap() {
+                crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
+                _ => unreachable!(),
+            };
             if joins.is_empty() {
                 if group_by.is_some() || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Aggregate { .. })) {
                     let mut results = Vec::new();
-                    let header = execute_group_query(catalog, &from_table, &columns, group_by.as_deref(), where_predicate, &mut results)?;
+                    let header = execute_group_query(catalog, &from_table, &columns, group_by.as_deref(), where_predicate, &mut results, None)?;
                     println!("{}", format_header(&header));
                     for row in results {
                         println!("{}", format_values(&row));
@@ -607,7 +677,14 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
                     for row in results {
                         let vals = row_to_strings(&row);
-                        let projected: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
+                        let projected: Vec<_> = idxs
+                            .iter()
+                            .map(|p| match p {
+                                Projection::Index(i) => vals[*i].clone(),
+                                Projection::Literal(s) => s.clone(),
+                                Projection::Subquery(_) => String::new(),
+                            })
+                            .collect();
                         println!("{}", format_values(&projected));
                     }
                 }
@@ -663,16 +740,22 @@ pub fn row_to_strings(row: &Row) -> Vec<String> {
         .collect()
 }
 
+pub enum Projection {
+    Index(usize),
+    Literal(String),
+    Subquery(Box<crate::sql::ast::Statement>),
+}
+
 pub fn select_projection_indices(
     columns: &[(String, ColumnType)],
     projections: &[crate::sql::ast::SelectExpr],
-) -> io::Result<(Vec<usize>, Vec<(String, ColumnType)>)> {
+) -> io::Result<(Vec<Projection>, Vec<(String, ColumnType)>)> {
     let use_all = projections.len() == 1 && matches!(projections[0], crate::sql::ast::SelectExpr::All);
     let mut idxs = Vec::new();
     let mut meta = Vec::new();
     if use_all {
         for (i, (n, ty)) in columns.iter().enumerate() {
-            idxs.push(i);
+            idxs.push(Projection::Index(i));
             meta.push((n.clone(), *ty));
         }
     } else {
@@ -681,7 +764,7 @@ pub fn select_projection_indices(
                 crate::sql::ast::SelectExpr::Column(col) => {
                     let c = col.split('.').last().unwrap_or(col).to_string();
                     if let Some((i, (_, ty))) = columns.iter().enumerate().find(|(_, (name, _))| name == &c) {
-                        idxs.push(i);
+                        idxs.push(Projection::Index(i));
                         meta.push((c, *ty));
                     } else {
                         return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {c}")));
@@ -692,9 +775,18 @@ pub fn select_projection_indices(
                 }
                 crate::sql::ast::SelectExpr::All => {
                     for (i, (n, ty)) in columns.iter().enumerate() {
-                        idxs.push(i);
+                        idxs.push(Projection::Index(i));
                         meta.push((n.clone(), *ty));
                     }
+                }
+                crate::sql::ast::SelectExpr::Subquery(q) => {
+                    meta.push(("SUBQUERY".into(), ColumnType::Text));
+                    idxs.push(Projection::Subquery(q.clone()));
+                }
+                crate::sql::ast::SelectExpr::Literal(val) => {
+                    let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
+                    meta.push((val.clone(), ty));
+                    idxs.push(Projection::Literal(val.clone()));
                 }
             }
         }
@@ -760,6 +852,172 @@ pub fn join_header(
         out.push((p.clone(), ty));
     }
     Ok(out)
+}
+
+fn evaluate_with_catalog(
+    expr: &crate::sql::ast::Expr,
+    values: &std::collections::HashMap<String, String>,
+    catalog: &mut Catalog,
+) -> io::Result<bool> {
+    use crate::sql::ast::Expr;
+    match expr {
+        Expr::Equals { left, right } => {
+            Ok(values.get(left).map(String::as_str).unwrap_or(left)
+                == values.get(right).map(String::as_str).unwrap_or(right))
+        }
+        Expr::NotEquals { left, right } => {
+            Ok(values.get(left).map(String::as_str).unwrap_or(left)
+                != values.get(right).map(String::as_str).unwrap_or(right))
+        }
+        Expr::And(a, b) => {
+            Ok(evaluate_with_catalog(a, values, catalog)?
+                && evaluate_with_catalog(b, values, catalog)?)
+        }
+        Expr::Or(a, b) => {
+            Ok(evaluate_with_catalog(a, values, catalog)?
+                || evaluate_with_catalog(b, values, catalog)?)
+        }
+        Expr::InSubquery { left, query } => {
+            let mut rows = Vec::new();
+            let header = execute_select_statement(catalog, query, &mut rows, Some(values))?;
+            if header.len() != 1 {
+                return Err(io::Error::new(io::ErrorKind::Other, "Subquery must return one column"));
+            }
+            let val = values.get(left).map(String::as_str).unwrap_or(left);
+            for r in rows {
+                if r.get(0).map(|s| s.as_str()) == Some(val) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        Expr::ExistsSubquery { query } => {
+            let mut rows = Vec::new();
+            let _ = execute_select_statement(catalog, query, &mut rows, Some(values))?;
+            Ok(!rows.is_empty())
+        }
+        Expr::Subquery(_) => Ok(false),
+    }
+}
+
+fn expr_has_subquery(expr: &crate::sql::ast::Expr) -> bool {
+    use crate::sql::ast::Expr;
+    match expr {
+        Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } | Expr::Subquery(_) => true,
+        Expr::And(a, b) | Expr::Or(a, b) => expr_has_subquery(a) || expr_has_subquery(b),
+        _ => false,
+    }
+}
+
+pub fn execute_select_statement(
+    catalog: &mut Catalog,
+    stmt: &crate::sql::ast::Statement,
+    out: &mut Vec<Vec<String>>,
+    context: Option<&std::collections::HashMap<String, String>>,
+) -> io::Result<Vec<(String, ColumnType)>> {
+    use crate::sql::ast::{SelectExpr, TableRef};
+    match stmt {
+        crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by } => {
+            if !joins.is_empty() {
+                return Err(io::Error::new(io::ErrorKind::Other, "Unsupported query"));
+            }
+            let source = from.first().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Missing FROM"))?;
+            match source {
+                TableRef::Named { name, alias } => {
+                    if group_by.is_some() || columns.iter().any(|c| matches!(c, SelectExpr::Aggregate { .. })) {
+                        return execute_group_query(catalog, name, columns, group_by.as_deref(), where_predicate.clone(), out, context);
+                    }
+                    let info = catalog.get_table(name)?.clone();
+                    let (idxs, header) = select_projection_indices(&info.columns, columns)?;
+                    let mut rows = Vec::new();
+                    execute_select_with_indexes(catalog, name, None, &mut rows)?;
+                    for row in rows {
+                        let vals = row_to_strings(&row);
+                        let mut map = std::collections::HashMap::new();
+                        if let Some(ctx) = context {
+                            for (k, v) in ctx {
+                                map.insert(k.clone(), v.clone());
+                            }
+                        }
+                        for ((c, _), v) in info.columns.iter().zip(vals.iter()) {
+                            map.insert(c.clone(), v.clone());
+                            let qual = format!("{}.{}", alias.as_deref().unwrap_or(name), c);
+                            map.insert(qual, v.clone());
+                        }
+                        if let Some(pred) = where_predicate {
+                            if !evaluate_with_catalog(pred, &map, catalog)? {
+                                continue;
+                            }
+                        }
+                        let mut projected = Vec::new();
+                        for p in idxs.iter() {
+                            match p {
+                                Projection::Index(i) => projected.push(vals[*i].clone()),
+                                Projection::Literal(s) => projected.push(s.clone()),
+                                Projection::Subquery(q) => {
+                                    let mut inner_rows = Vec::new();
+                                    execute_select_statement(catalog, q, &mut inner_rows, Some(&map))?;
+                                    let val = inner_rows.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
+                                    projected.push(val);
+                                }
+                            }
+                        }
+                        
+                        out.push(projected);
+                    }
+                    Ok(header)
+                }
+                TableRef::Subquery { query, .. } => {
+                    let mut inner_rows = Vec::new();
+                    let inner_header = execute_select_statement(catalog, query, &mut inner_rows, context)?;
+                    let mut filtered = Vec::new();
+                    for row in inner_rows {
+                        let mut values = std::collections::HashMap::new();
+                        if let Some(ctx) = context {
+                            for (k, v) in ctx {
+                                values.insert(k.clone(), v.clone());
+                            }
+                        }
+                        for ((col, _), val) in inner_header.iter().zip(row.iter()) {
+                            values.insert(col.clone(), val.clone());
+                        }
+                        if let Some(pred) = where_predicate {
+                            if !evaluate_with_catalog(pred, &values, catalog)? {
+                                continue;
+                            }
+                        }
+                        filtered.push(row);
+                    }
+                    if columns.len() == 1 && matches!(columns[0], SelectExpr::All) {
+                        out.extend(filtered.clone());
+                        Ok(inner_header)
+                    } else {
+                        let mut header = Vec::new();
+                        let mut idxs = Vec::new();
+                        for expr in columns {
+                            match expr {
+                                SelectExpr::Column(c) => {
+                                    if let Some((i, (_, ty))) = inner_header.iter().enumerate().find(|(_, (n, _))| n == c) {
+                                        idxs.push(i);
+                                        header.push((c.clone(), *ty));
+                                    } else {
+                                        return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {c}")));
+                                    }
+                                }
+                                _ => return Err(io::Error::new(io::ErrorKind::Other, "Unsupported projection")),
+                            }
+                        }
+                        for row in filtered {
+                            let projected: Vec<_> = idxs.iter().map(|&i| row[i].clone()).collect();
+                            out.push(projected);
+                        }
+                        Ok(header)
+                    }
+                }
+            }
+        }
+        _ => Err(io::Error::new(io::ErrorKind::Other, "Not a SELECT")),
+    }
 }
 
 pub fn format_values(vals: &[String]) -> String {

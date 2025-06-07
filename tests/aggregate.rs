@@ -20,9 +20,13 @@ fn basic_count() {
         aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "employees".into(), values: vec![i.to_string()] }).unwrap();
     }
     let stmt = parse_statement("SELECT COUNT(*) FROM employees").unwrap();
-    if let Statement::Select { columns, from_table, group_by, .. } = stmt {
+    if let Statement::Select { columns, from, group_by, .. } = stmt {
+        let table = match from.first().unwrap() {
+            aerodb::sql::ast::TableRef::Named { name, .. } => name,
+            _ => panic!("expected table"),
+        };
         let mut out = Vec::new();
-        let header = aerodb::execution::runtime::execute_group_query(&mut catalog, &from_table, &columns, group_by.as_deref(), None, &mut out).unwrap();
+        let header = aerodb::execution::runtime::execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), None, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "COUNT(*) INTEGER");
         assert_eq!(out, vec![vec!["3".to_string()]]);
     } else { panic!("expected select"); }
@@ -47,9 +51,13 @@ fn simple_grouping() {
         aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "employees".into(), values: vec![id.to_string(), dep.into()] }).unwrap();
     }
     let stmt = parse_statement("SELECT department, COUNT(*) FROM employees GROUP BY department").unwrap();
-    if let Statement::Select { columns, from_table, group_by, .. } = stmt {
+    if let Statement::Select { columns, from, group_by, .. } = stmt {
+        let table = match from.first().unwrap() {
+            aerodb::sql::ast::TableRef::Named { name, .. } => name,
+            _ => panic!("expected table"),
+        };
         let mut out = Vec::new();
-        let header = aerodb::execution::runtime::execute_group_query(&mut catalog, &from_table, &columns, group_by.as_deref(), None, &mut out).unwrap();
+        let header = aerodb::execution::runtime::execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), None, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "department TEXT | COUNT(*) INTEGER");
         out.sort();
         assert_eq!(out, vec![vec!["d1".to_string(), "2".to_string()], vec!["d2".to_string(), "1".to_string()]]);

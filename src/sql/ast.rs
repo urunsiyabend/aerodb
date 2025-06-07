@@ -5,8 +5,11 @@ use crate::storage::row::ColumnType;
 pub enum Expr {
     Equals { left: String, right: String },
     NotEquals { left: String, right: String },
+    InSubquery { left: String, query: Box<Statement> },
+    ExistsSubquery { query: Box<Statement> },
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
+    Subquery(Box<Statement>),
 }
 
 #[derive(Debug)]
@@ -40,6 +43,12 @@ pub struct JoinClause {
 }
 
 #[derive(Debug, Clone)]
+pub enum TableRef {
+    Named { name: String, alias: Option<String> },
+    Subquery { query: Box<Statement>, alias: String },
+}
+
+#[derive(Debug, Clone)]
 pub enum AggFunc {
     Min,
     Max,
@@ -65,10 +74,12 @@ pub enum SelectExpr {
     All,
     Column(String),
     Aggregate { func: AggFunc, column: Option<String> },
+    Subquery(Box<Statement>),
+    Literal(String),
 }
 pub type Predicate = Expr;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Statement {
     CreateTable {
         table_name: String,
@@ -91,7 +102,7 @@ pub enum Statement {
     },
     Select {
         columns: Vec<SelectExpr>,
-        from_table: String,
+        from: Vec<TableRef>,
         joins: Vec<JoinClause>,
         where_predicate: Option<Predicate>,
         group_by: Option<Vec<String>>,
@@ -124,7 +135,9 @@ pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> boo
     match expr {
         Expr::Equals { left, right } => get_value(left, values) == get_value(right, values),
         Expr::NotEquals { left, right } => get_value(left, values) != get_value(right, values),
+        Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } => false,
         Expr::And(a, b) => evaluate_expression(a, values) && evaluate_expression(b, values),
         Expr::Or(a, b) => evaluate_expression(a, values) || evaluate_expression(b, values),
+        Expr::Subquery(_) => false,
     }
 }
