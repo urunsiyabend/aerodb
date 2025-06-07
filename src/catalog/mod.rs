@@ -76,6 +76,45 @@ impl Catalog {
         Ok(())
     }
 
+    pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
+        let (target_key, columns) = {
+            let mut tree = BTree::open_root(&mut self.pager, 1)?;
+            let mut cursor = tree.scan_all_rows();
+            let mut found = None;
+            let mut cols = Vec::new();
+            while let Some(row) = cursor.next() {
+                let (tbl, _rp, c) = Self::deserialize_catalog_row(&row)?;
+                if tbl == name {
+                    found = Some(row.key);
+                    cols = c;
+                    break;
+                }
+            }
+            (found, cols)
+        };
+
+        if let Some(key) = target_key {
+            let mut tree = BTree::open_root(&mut self.pager, 1)?;
+            tree.delete(key)?;
+            tree.insert(key, Self::serialize_catalog_row(name, new_root, &columns))?;
+            let new_root_page = tree.root_page();
+            if new_root_page != 1 {
+                let src_buf = {
+                    let src = self.pager.get_page(new_root_page)?;
+                    let mut buf = [0u8; PAGE_SIZE];
+                    buf.copy_from_slice(&src.data);
+                    buf
+                };
+                {
+                    let dst = self.pager.get_page(1)?;
+                    dst.data.copy_from_slice(&src_buf);
+                }
+                self.pager.flush_page(1)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
         self.pager.begin_transaction(name)
     }

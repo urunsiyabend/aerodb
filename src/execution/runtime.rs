@@ -48,6 +48,7 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
                 if let Ok(t) = catalog.get_table_mut(table_name) {
                     t.root_page = new_root;
                 }
+                catalog.update_catalog_root(table_name, new_root)?;
             }
 
             for r in rows_to_delete {
@@ -161,6 +162,7 @@ pub fn execute_update(
                 if let Ok(t) = catalog.get_table_mut(table_name) {
                     t.root_page = new_root;
                 }
+                catalog.update_catalog_root(table_name, new_root)?;
             }
 
             for op in ops {

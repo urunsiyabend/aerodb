@@ -972,6 +972,45 @@ mod tests {
     }
 
     #[test]
+    fn transaction_commit_update_persists() {
+        let filename = "test_tx_update_commit.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "users",
+                vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+            )
+            .unwrap();
+
+        let insert = Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "user1".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+        let insert2 = Statement::Insert { table_name: "users".into(), values: vec!["2".into(), "user2".into()] };
+        handle_statement(&mut catalog, insert2).unwrap();
+
+        catalog.begin_transaction(None).unwrap();
+        let update = Statement::Update {
+            table_name: "users".into(),
+            assignments: vec![("name".into(), "new_user2".into())],
+            selection: Some(Expr::Equals { left: "name".into(), right: "user2".into() }),
+        };
+        handle_statement(&mut catalog, update).unwrap();
+        catalog.commit_transaction().unwrap();
+
+        drop(catalog);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+        let root_page = catalog.get_table("users").unwrap().root_page;
+        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let row = bt.find(2).unwrap().unwrap();
+        if let ColumnValue::Text(ref name) = row.data.0[1] {
+            assert_eq!(name, "new_user2");
+        } else {
+            panic!("expected text")
+        }
+    }
+
+    #[test]
     fn transaction_rollback_discards() {
         let filename = "test_tx_rollback.db";
         let _ = fs::remove_file(filename);
