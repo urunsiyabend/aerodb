@@ -997,6 +997,30 @@ mod tests {
     }
 
     #[test]
+    fn transaction_rollback_in_session() {
+        let filename = "test_tx_rollback_mem.db";
+        let _ = fs::remove_file(filename);
+        let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
+
+        catalog
+            .create_table(
+                "items",
+                vec![("id".into(), ColumnType::Integer)],
+            )
+            .unwrap();
+
+        catalog.begin_transaction(None).unwrap();
+        let insert = Statement::Insert { table_name: "items".into(), values: vec!["1".into()] };
+        handle_statement(&mut catalog, insert).unwrap();
+        catalog.rollback_transaction().unwrap();
+
+        // verify without reopening file
+        let root_page = catalog.get_table("items").unwrap().root_page;
+        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        assert!(bt.find(1).unwrap().is_none());
+    }
+
+    #[test]
     fn transaction_rollback_new_pages() {
         let filename = "test_tx_newpage.db";
         let _ = fs::remove_file(filename);

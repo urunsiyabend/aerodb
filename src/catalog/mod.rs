@@ -62,6 +62,20 @@ impl Catalog {
         Ok(Catalog { tables, indexes: HashMap::new(), pager })
     }
 
+    fn reload_tables(&mut self) -> io::Result<()> {
+        self.tables.clear();
+        let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
+        let mut cursor = catalog_btree.scan_all_rows();
+        while let Some(blob_row) = cursor.next() {
+            let (table_name, root_page, columns) = Self::deserialize_catalog_row(&blob_row)?;
+            self.tables.insert(
+                table_name.clone(),
+                TableInfo { name: table_name, root_page, columns },
+            );
+        }
+        Ok(())
+    }
+
     pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
         self.pager.begin_transaction(name)
     }
@@ -71,7 +85,8 @@ impl Catalog {
     }
 
     pub fn rollback_transaction(&mut self) -> io::Result<()> {
-        self.pager.rollback_transaction()
+        self.pager.rollback_transaction()?;
+        self.reload_tables()
     }
 
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
