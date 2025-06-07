@@ -40,6 +40,9 @@ pub fn execute_plan(plan: PlanNode /*, btree: &mut storage::BTree */) {
             );
             // Future: btree.update(...)
         }
+        PlanNode::MultiJoin(plan) => {
+            println!("Executing multi join starting from {}", plan.base_table);
+        }
         PlanNode::Exit => {
             // No action; main loop handles exit.
         }
