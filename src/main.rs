@@ -460,7 +460,7 @@ mod tests {
     fn parse_create_with_types() {
         let stmt = parse_statement("CREATE TABLE t (id INTEGER, name TEXT, active BOOLEAN)").unwrap();
         match stmt {
-            Statement::CreateTable { table_name, columns, if_not_exists } => {
+            Statement::CreateTable { table_name, columns, if_not_exists, .. } => {
                 assert_eq!(table_name, "t");
                 assert_eq!(columns,
                     vec![
@@ -828,6 +828,7 @@ mod tests {
                 ("id".into(), ColumnType::Integer),
                 ("name".into(), ColumnType::Text),
             ],
+            fks: Vec::new(),
             if_not_exists: false,
         };
         handle_statement(&mut catalog, create).unwrap();

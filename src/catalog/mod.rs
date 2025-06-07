@@ -12,6 +12,7 @@ pub struct TableInfo {
     pub name: String,
     pub root_page: u32,
     pub columns: Vec<(String, ColumnType)>, // column name and type
+    pub fks: Vec<crate::sql::ast::ForeignKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,10 +52,10 @@ impl Catalog {
             let mut catalog_btree = BTree::open_root(&mut pager, 1)?;
             let mut cursor = catalog_btree.scan_all_rows();
             while let Some(blob_row) = cursor.next() {
-                let (table_name, root_page, columns) = Self::deserialize_catalog_row(&blob_row)?;
+                let (table_name, root_page, columns, fks) = Self::deserialize_catalog_row(&blob_row)?;
                 tables.insert(
                     table_name.clone(),
-                    TableInfo { name: table_name, root_page, columns },
+                    TableInfo { name: table_name, root_page, columns, fks },
                 );
             }
         }
@@ -67,36 +68,38 @@ impl Catalog {
         let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
         let mut cursor = catalog_btree.scan_all_rows();
         while let Some(blob_row) = cursor.next() {
-            let (table_name, root_page, columns) = Self::deserialize_catalog_row(&blob_row)?;
+            let (table_name, root_page, columns, fks) = Self::deserialize_catalog_row(&blob_row)?;
             self.tables.insert(
                 table_name.clone(),
-                TableInfo { name: table_name, root_page, columns },
+                TableInfo { name: table_name, root_page, columns, fks },
             );
         }
         Ok(())
     }
 
     pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
-        let (target_key, columns) = {
+        let (target_key, columns, fks) = {
             let mut tree = BTree::open_root(&mut self.pager, 1)?;
             let mut cursor = tree.scan_all_rows();
             let mut found = None;
             let mut cols = Vec::new();
+            let mut fk_vec = Vec::new();
             while let Some(row) = cursor.next() {
-                let (tbl, _rp, c) = Self::deserialize_catalog_row(&row)?;
+                let (tbl, _rp, c, f) = Self::deserialize_catalog_row(&row)?;
                 if tbl == name {
                     found = Some(row.key);
                     cols = c;
+                    fk_vec = f;
                     break;
                 }
             }
-            (found, cols)
+            (found, cols, fk_vec)
         };
 
         if let Some(key) = target_key {
             let mut tree = BTree::open_root(&mut self.pager, 1)?;
             tree.delete(key)?;
-            tree.insert(key, Self::serialize_catalog_row(name, new_root, &columns))?;
+            tree.insert(key, Self::serialize_catalog_row(name, new_root, &columns, &fks))?;
             let new_root_page = tree.root_page();
             if new_root_page != 1 {
                 let src_buf = {
@@ -133,6 +136,10 @@ impl Catalog {
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
     pub fn create_table(&mut self, name: &str, columns: Vec<(String, ColumnType)>) -> io::Result<()> {
+        self.create_table_with_fks(name, columns, Vec::new())
+    }
+
+    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType)>, fks: Vec<crate::sql::ast::ForeignKey>) -> io::Result<()> {
         if self.tables.contains_key(name) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -152,7 +159,7 @@ impl Catalog {
         }
 
         // Build the catalog row payload: [name_len][name][root_page][num_columns][col1_len][col1]...
-        let blob_data = Self::serialize_catalog_row(name, new_root, &columns);
+        let blob_data = Self::serialize_catalog_row(name, new_root, &columns, &fks);
 
         // Use a synthetic key = (current number of tables + 1)
         let key = (self.tables.len() as i32) + 1;
@@ -164,7 +171,7 @@ impl Catalog {
         // Update in-memory
         self.tables.insert(
             name.to_string(),
-            TableInfo { name: name.to_string(), root_page: new_root, columns },
+            TableInfo { name: name.to_string(), root_page: new_root, columns, fks },
         );
         Ok(())
     }
@@ -348,6 +355,10 @@ impl Catalog {
         })
     }
 
+    pub fn all_tables(&self) -> Vec<TableInfo> {
+        self.tables.values().cloned().collect()
+    }
+
     /// Drop a table if it exists. Returns true if the table was removed.
     pub fn drop_table(&mut self, name: &str) -> io::Result<bool> {
         if !self.tables.contains_key(name) {
@@ -360,7 +371,7 @@ impl Catalog {
             let mut cursor = catalog_btree.scan_all_rows();
             let mut found = None;
             while let Some(row) = cursor.next() {
-                let (table_name, _rp, _cols) = Self::deserialize_catalog_row(&row)?;
+                let (table_name, _rp, _cols, _fks) = Self::deserialize_catalog_row(&row)?;
                 if table_name == name {
                     found = Some(row.key);
                     break;
@@ -397,7 +408,13 @@ impl Catalog {
     ///
     /// [u32 name_len][name_bytes][u32 root_page][u16 num_columns]
     /// for each column: [u32 col_len][col_bytes]
-    fn serialize_catalog_row(name: &str, root_page: u32, columns: &[(String, ColumnType)]) -> RowData {
+    /// then [u16 num_fks] followed by each foreign key description
+    fn serialize_catalog_row(
+        name: &str,
+        root_page: u32,
+        columns: &[(String, ColumnType)],
+        fks: &[crate::sql::ast::ForeignKey],
+    ) -> RowData {
         let mut vals = Vec::new();
         vals.push(ColumnValue::Text(name.to_string()));
         vals.push(ColumnValue::Integer(root_page as i32));
@@ -406,11 +423,29 @@ impl Catalog {
             vals.push(ColumnValue::Text(name.clone()));
             vals.push(ColumnValue::Integer(ty.to_code()));
         }
+        vals.push(ColumnValue::Integer(fks.len() as i32));
+        for fk in fks {
+            vals.push(ColumnValue::Integer(fk.columns.len() as i32));
+            for c in &fk.columns {
+                vals.push(ColumnValue::Text(c.clone()));
+            }
+            vals.push(ColumnValue::Text(fk.parent_table.clone()));
+            vals.push(ColumnValue::Integer(fk.parent_columns.len() as i32));
+            for pc in &fk.parent_columns {
+                vals.push(ColumnValue::Text(pc.clone()));
+            }
+            let to_code = |a: &Option<crate::sql::ast::Action>| match a {
+                Some(crate::sql::ast::Action::Cascade) => 1,
+                _ => 0,
+            };
+            vals.push(ColumnValue::Integer(to_code(&fk.on_delete)));
+            vals.push(ColumnValue::Integer(to_code(&fk.on_update)));
+        }
         RowData(vals)
     }
 
-    /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>).
-    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>)> {
+    /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>, Vec<ForeignKey>).
+    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<crate::sql::ast::ForeignKey>)> {
         let values = &row.data.0;
         if values.len() < 3 {
             return Err(io::Error::new(io::ErrorKind::Other, "catalog row too short"));
@@ -442,6 +477,61 @@ impl Catalog {
             idx += 1;
             columns.push((name, ty));
         }
-        Ok((name, root_page, columns))
+        let num_fks = match values.get(idx) {
+            Some(ColumnValue::Integer(i)) => *i as usize,
+            _ => 0,
+        };
+        idx += 1;
+        let mut fks = Vec::new();
+        for _ in 0..num_fks {
+            let num_cols = match values.get(idx) {
+                Some(ColumnValue::Integer(i)) => *i as usize,
+                _ => return Err(io::Error::new(io::ErrorKind::Other, "fk cols")),
+            };
+            idx += 1;
+            let mut cols = Vec::new();
+            for _ in 0..num_cols {
+                if let Some(ColumnValue::Text(c)) = values.get(idx) {
+                    cols.push(c.clone());
+                    idx += 1;
+                } else {
+                    return Err(io::Error::new(io::ErrorKind::Other, "fk col name"));
+                }
+            }
+            let parent_table = match values.get(idx) {
+                Some(ColumnValue::Text(s)) => s.clone(),
+                _ => return Err(io::Error::new(io::ErrorKind::Other, "fk parent table")),
+            };
+            idx += 1;
+            let num_pcols = match values.get(idx) {
+                Some(ColumnValue::Integer(i)) => *i as usize,
+                _ => return Err(io::Error::new(io::ErrorKind::Other, "fk pcols")),
+            };
+            idx += 1;
+            let mut parent_cols = Vec::new();
+            for _ in 0..num_pcols {
+                if let Some(ColumnValue::Text(pc)) = values.get(idx) {
+                    parent_cols.push(pc.clone());
+                    idx += 1;
+                } else {
+                    return Err(io::Error::new(io::ErrorKind::Other, "fk pcol name"));
+                }
+            }
+            let action_from = |v: i32| {
+                if v == 1 { Some(crate::sql::ast::Action::Cascade) } else { Some(crate::sql::ast::Action::NoAction) }
+            };
+            let on_delete = match values.get(idx) {
+                Some(ColumnValue::Integer(i)) => action_from(*i),
+                _ => None,
+            };
+            idx += 1;
+            let on_update = match values.get(idx) {
+                Some(ColumnValue::Integer(i)) => action_from(*i),
+                _ => None,
+            };
+            idx += 1;
+            fks.push(crate::sql::ast::ForeignKey { columns: cols, parent_table, parent_columns: parent_cols, on_delete, on_update });
+        }
+        Ok((name, root_page, columns, fks))
     }
 }
