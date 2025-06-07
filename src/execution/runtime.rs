@@ -590,7 +590,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             catalog.insert_into_indexes(&table_name, &row_data)?;
             println!("1 row inserted");
         }
-        Statement::Select { columns, from_table, joins, where_predicate, group_by } => {
+        Statement::Select { columns, from_table, from_subquery: _, joins, where_predicate, group_by } => {
             if joins.is_empty() {
                 if group_by.is_some() || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Aggregate { .. })) {
                     let mut results = Vec::new();

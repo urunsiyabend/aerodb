@@ -259,8 +259,32 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             if idx >= tokens.len() {
                 return Err("Missing table after FROM".into());
             }
-            let from_table = tokens[idx].trim_end_matches(';').to_string();
-            idx += 1;
+            let mut from_table = tokens[idx].trim_end_matches(';').to_string();
+            let mut from_subquery = None;
+            if from_table.starts_with('(') {
+                let mut depth: i32 = from_table.chars().filter(|c| *c == '(').count() as i32 - from_table.chars().filter(|c| *c == ')').count() as i32;
+                let mut sub_parts = vec![from_table.clone()];
+                while depth > 0 {
+                    idx += 1;
+                    if idx >= tokens.len() { return Err("Unclosed subquery".into()); }
+                    let t = tokens[idx];
+                    depth += t.chars().filter(|c| *c == '(').count() as i32 - t.chars().filter(|c| *c == ')').count() as i32;
+                    sub_parts.push(t.to_string());
+                }
+                let joined = sub_parts.join(" ");
+                let inner = joined.trim();
+                if !inner.ends_with(')') { return Err("Invalid subquery".into()); }
+                let inner_query = &inner[1..inner.len()-1];
+                from_subquery = Some(Box::new(parse_statement(inner_query)?));
+                idx += 1;
+                if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("AS") { return Err("Expected AS after subquery".into()); }
+                idx += 1;
+                if idx >= tokens.len() { return Err("Missing alias after subquery".into()); }
+                from_table = tokens[idx].trim_end_matches(';').to_string();
+                idx += 1;
+            } else {
+                idx += 1;
+            }
             let mut joins = Vec::new();
             while idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("JOIN") {
                 idx += 1;
@@ -322,7 +346,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 group_by = Some(cols);
             }
 
-            Ok(Statement::Select { columns, from_table, joins, where_predicate, group_by })
+            Ok(Statement::Select { columns, from_table, from_subquery, joins, where_predicate, group_by })
         }
         "DROP" => {
             if tokens.len() < 3 || !tokens[1].eq_ignore_ascii_case("TABLE") {

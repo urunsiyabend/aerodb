@@ -153,7 +153,7 @@ mod tests {
         // Parse select with WHERE
         let stmt = parse_statement("SELECT * FROM users WHERE name = user2").unwrap();
         match stmt {
-            Statement::Select { from_table, where_predicate, .. } => {
+            Statement::Select { from_table, from_subquery: _, where_predicate, .. } => {
                 assert_eq!(from_table, "users");
                 assert!(where_predicate.is_some());
                 // Execute simple evaluation of WHERE on all rows
@@ -397,7 +397,7 @@ mod tests {
         let stmt =
             parse_statement("SELECT * FROM nums LIMIT 5 OFFSET 2 ORDER BY id DESC").unwrap();
         match stmt {
-            Statement::Select { from_table, .. } => {
+            Statement::Select { from_table, from_subquery: _, .. } => {
                 assert_eq!(from_table, "nums");
             }
             _ => panic!("Expected select statement"),
@@ -408,7 +408,7 @@ mod tests {
     fn parse_order_by_variants() {
         let stmt = parse_statement("SELECT * FROM users ORDER BY id").unwrap();
         match stmt {
-            Statement::Select { from_table, .. } => {
+            Statement::Select { from_table, from_subquery: _, .. } => {
                 assert_eq!(from_table, "users");
             }
             _ => panic!("Expected select"),
@@ -416,7 +416,7 @@ mod tests {
 
         let stmt = parse_statement("SELECT * FROM users ORDER BY id ASC").unwrap();
         match stmt {
-            Statement::Select { from_table, .. } => {
+            Statement::Select { from_table, from_subquery: _, .. } => {
                 assert_eq!(from_table, "users");
             }
             _ => panic!("Expected select"),
@@ -424,7 +424,7 @@ mod tests {
 
         let stmt = parse_statement("SELECT * FROM users ORDER BY id DESC").unwrap();
         match stmt {
-            Statement::Select { from_table, .. } => {
+            Statement::Select { from_table, from_subquery: _, .. } => {
                 assert_eq!(from_table, "users");
             }
             _ => panic!("Expected select"),
@@ -596,7 +596,7 @@ mod tests {
 
         let stmt = parse_statement("SELECT * FROM users WHERE name = user2").unwrap();
         match stmt {
-            Statement::Select { from_table: table_name, where_predicate: selection, .. } => {
+            Statement::Select { from_table: table_name, from_subquery: _, where_predicate: selection, .. } => {
                 let mut results = Vec::new();
                 let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(used, "index should be used for equality predicate");
@@ -650,7 +650,7 @@ mod tests {
 
         let stmt = parse_statement("SELECT * FROM users WHERE name = user2").unwrap();
         match stmt {
-            Statement::Select { from_table: table_name, where_predicate: selection, .. } => {
+            Statement::Select { from_table: table_name, from_subquery: _, where_predicate: selection, .. } => {
                 let mut results = Vec::new();
                 let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(used, "index should be used on delete check");
@@ -698,7 +698,7 @@ mod tests {
 
         let stmt = parse_statement("SELECT * FROM users WHERE name = dup").unwrap();
         match stmt {
-            Statement::Select { from_table: table_name, where_predicate: selection, .. } => {
+            Statement::Select { from_table: table_name, from_subquery: _, where_predicate: selection, .. } => {
                 let mut results = Vec::new();
                 let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(used, "index should be used for duplicate values");
@@ -744,7 +744,7 @@ mod tests {
 
         let stmt = parse_statement("SELECT * FROM users WHERE id = 1").unwrap();
         match stmt {
-            Statement::Select { from_table: table_name, where_predicate: selection, .. } => {
+            Statement::Select { from_table: table_name, from_subquery: _, where_predicate: selection, .. } => {
                 let mut results = Vec::new();
                 let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(!used, "no index should be used when none defined");
@@ -791,7 +791,7 @@ mod tests {
 
         let stmt = parse_statement("SELECT * FROM users WHERE name != user1").unwrap();
         match stmt {
-            Statement::Select { from_table: table_name, where_predicate: selection, .. } => {
+            Statement::Select { from_table: table_name, from_subquery: _, where_predicate: selection, .. } => {
                 let mut results = Vec::new();
                 let used = crate::execution::execute_select_with_indexes(&mut catalog, &table_name, selection, &mut results).unwrap();
                 assert!(!used, "index should not be used for inequality");

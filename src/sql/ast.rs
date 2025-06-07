@@ -7,6 +7,8 @@ pub enum Expr {
     NotEquals { left: String, right: String },
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
+    /// Nested SELECT used as an expression
+    Subquery(Box<Statement>),
 }
 
 #[derive(Debug)]
@@ -68,7 +70,7 @@ pub enum SelectExpr {
 }
 pub type Predicate = Expr;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Statement {
     CreateTable {
         table_name: String,
@@ -92,6 +94,8 @@ pub enum Statement {
     Select {
         columns: Vec<SelectExpr>,
         from_table: String,
+        /// If present, this represents a subquery used in the FROM clause.
+        from_subquery: Option<Box<Statement>>,
         joins: Vec<JoinClause>,
         where_predicate: Option<Predicate>,
         group_by: Option<Vec<String>>,
@@ -126,5 +130,6 @@ pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> boo
         Expr::NotEquals { left, right } => get_value(left, values) != get_value(right, values),
         Expr::And(a, b) => evaluate_expression(a, values) && evaluate_expression(b, values),
         Expr::Or(a, b) => evaluate_expression(a, values) || evaluate_expression(b, values),
+        Expr::Subquery(_) => false,
     }
 }
