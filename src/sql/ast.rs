@@ -5,6 +5,7 @@ use crate::storage::row::ColumnType;
 pub enum Expr {
     Equals { left: String, right: String },
     NotEquals { left: String, right: String },
+    InSubquery { left: String, query: Box<Statement> },
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Subquery(Box<Statement>),
@@ -132,6 +133,7 @@ pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> boo
     match expr {
         Expr::Equals { left, right } => get_value(left, values) == get_value(right, values),
         Expr::NotEquals { left, right } => get_value(left, values) != get_value(right, values),
+        Expr::InSubquery { .. } => false,
         Expr::And(a, b) => evaluate_expression(a, values) && evaluate_expression(b, values),
         Expr::Or(a, b) => evaluate_expression(a, values) || evaluate_expression(b, values),
         Expr::Subquery(_) => false,

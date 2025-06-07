@@ -597,12 +597,28 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             println!("1 row inserted");
         }
         Statement::Select { columns, from, joins, where_predicate, group_by } => {
+            let has_subquery = from.iter().any(|t| matches!(t, crate::sql::ast::TableRef::Subquery { .. }))
+                || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Subquery(_)))
+                || where_predicate.as_ref().map_or(false, |e| expr_has_subquery(e));
+            if has_subquery {
+                let stmt = crate::sql::ast::Statement::Select {
+                    columns: columns.clone(),
+                    from: from.clone(),
+                    joins: joins.clone(),
+                    where_predicate: where_predicate.clone(),
+                    group_by: group_by.clone(),
+                };
+                let mut results = Vec::new();
+                let header = execute_select_statement(catalog, &stmt, &mut results)?;
+                println!("{}", format_header(&header));
+                for row in results {
+                    println!("{}", format_values(&row));
+                }
+                return Ok(());
+            }
             let from_table = match from.first().unwrap() {
                 crate::sql::ast::TableRef::Named(t) => t.clone(),
-                _ => {
-                    println!("Subqueries in FROM not supported in CLI");
-                    return Ok(());
-                }
+                _ => unreachable!(),
             };
             if joins.is_empty() {
                 if group_by.is_some() || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Aggregate { .. })) {
@@ -778,6 +794,56 @@ pub fn join_header(
     Ok(out)
 }
 
+fn evaluate_with_catalog(
+    expr: &crate::sql::ast::Expr,
+    values: &std::collections::HashMap<String, String>,
+    catalog: &mut Catalog,
+) -> io::Result<bool> {
+    use crate::sql::ast::Expr;
+    match expr {
+        Expr::Equals { left, right } => {
+            Ok(values.get(left).map(String::as_str).unwrap_or(left)
+                == values.get(right).map(String::as_str).unwrap_or(right))
+        }
+        Expr::NotEquals { left, right } => {
+            Ok(values.get(left).map(String::as_str).unwrap_or(left)
+                != values.get(right).map(String::as_str).unwrap_or(right))
+        }
+        Expr::And(a, b) => {
+            Ok(evaluate_with_catalog(a, values, catalog)?
+                && evaluate_with_catalog(b, values, catalog)?)
+        }
+        Expr::Or(a, b) => {
+            Ok(evaluate_with_catalog(a, values, catalog)?
+                || evaluate_with_catalog(b, values, catalog)?)
+        }
+        Expr::InSubquery { left, query } => {
+            let mut rows = Vec::new();
+            let header = execute_select_statement(catalog, query, &mut rows)?;
+            if header.len() != 1 {
+                return Err(io::Error::new(io::ErrorKind::Other, "Subquery must return one column"));
+            }
+            let val = values.get(left).map(String::as_str).unwrap_or(left);
+            for r in rows {
+                if r.get(0).map(|s| s.as_str()) == Some(val) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        Expr::Subquery(_) => Ok(false),
+    }
+}
+
+fn expr_has_subquery(expr: &crate::sql::ast::Expr) -> bool {
+    use crate::sql::ast::Expr;
+    match expr {
+        Expr::InSubquery { .. } | Expr::Subquery(_) => true,
+        Expr::And(a, b) | Expr::Or(a, b) => expr_has_subquery(a) || expr_has_subquery(b),
+        _ => false,
+    }
+}
+
 pub fn execute_select_statement(
     catalog: &mut Catalog,
     stmt: &crate::sql::ast::Statement,
@@ -792,12 +858,21 @@ pub fn execute_select_statement(
             let source = from.first().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Missing FROM"))?;
             match source {
                 TableRef::Named(t) => {
-                    let info = catalog.get_table(t)?;
+                    let info = catalog.get_table(t)?.clone();
                     let (idxs, header) = select_projection_indices(&info.columns, columns)?;
                     let mut rows = Vec::new();
-                    execute_select_with_indexes(catalog, t, where_predicate.clone(), &mut rows)?;
+                    execute_select_with_indexes(catalog, t, None, &mut rows)?;
                     for row in rows {
                         let vals = row_to_strings(&row);
+                        let mut map = std::collections::HashMap::new();
+                        for ((c, _), v) in info.columns.iter().zip(vals.iter()) {
+                            map.insert(c.clone(), v.clone());
+                        }
+                        if let Some(pred) = where_predicate {
+                            if !evaluate_with_catalog(pred, &map, catalog)? {
+                                continue;
+                            }
+                        }
                         let projected: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
                         out.push(projected);
                     }
@@ -813,7 +888,7 @@ pub fn execute_select_statement(
                             values.insert(col.clone(), val.clone());
                         }
                         if let Some(pred) = where_predicate {
-                            if !crate::sql::ast::evaluate_expression(pred, &values) {
+                            if !evaluate_with_catalog(pred, &values, catalog)? {
                                 continue;
                             }
                         }

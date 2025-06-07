@@ -30,36 +30,50 @@ fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
     }
     let left = tokens[0].to_string();
     let op = tokens[1];
-    let right = tokens[2].trim_end_matches(';').to_string();
-    let mut expr = match op {
-        "=" => Expr::Equals { left, right },
-        "!=" => Expr::NotEquals { left, right },
-        _ => return Err(format!("Unknown operator '{}', expected = or !=", op)),
+    let mut consumed;
+    let mut expr = match op.to_uppercase().as_str() {
+        "IN" => {
+            if !tokens[2].starts_with('(') {
+                return Err("Expected '(' after IN".into());
+            }
+            let mut depth = tokens[2].matches('(').count() as i32 - tokens[2].matches(')').count() as i32;
+            let mut end = 2;
+            while depth > 0 {
+                end += 1;
+                if end >= tokens.len() { return Err("Unclosed subquery".into()); }
+                depth += tokens[end].matches('(').count() as i32 - tokens[end].matches(')').count() as i32;
+            }
+            let sub_tokens = tokens[2..=end].join(" ");
+            let inner = sub_tokens.trim_start_matches('(').trim_end_matches(')');
+            let substmt = parse_statement(inner)?;
+            consumed = end + 1;
+            Expr::InSubquery { left, query: Box::new(substmt) }
+        }
+        "=" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::Equals { left, right }
+        }
+        "!=" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::NotEquals { left, right }
+        }
+        _ => return Err(format!("Unknown operator '{}'", op)),
     };
-    let mut consumed = 3;
     while tokens.len() > consumed {
         let logic = tokens[consumed].to_uppercase();
         if logic != "AND" && logic != "OR" {
             break;
         }
         consumed += 1;
-        if tokens.len() < consumed + 3 {
-            return Err("Incomplete expression after AND/OR".into());
-        }
-        let l = tokens[consumed].to_string();
-        let op = tokens[consumed + 1];
-        let r = tokens[consumed + 2].trim_end_matches(';').to_string();
-        let next = match op {
-            "=" => Expr::Equals { left: l, right: r },
-            "!=" => Expr::NotEquals { left: l, right: r },
-            _ => return Err(format!("Unknown operator '{}', expected = or !=", op)),
-        };
+        let (next, used) = parse_expression(&tokens[consumed..])?;
         expr = if logic == "AND" {
             Expr::And(Box::new(expr), Box::new(next))
         } else {
             Expr::Or(Box::new(expr), Box::new(next))
         };
-        consumed += 3;
+        consumed += used;
     }
     Ok((expr, consumed))
 }
