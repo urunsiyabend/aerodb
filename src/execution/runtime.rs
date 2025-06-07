@@ -361,6 +361,7 @@ pub fn execute_multi_join(
         result_rows = new_rows;
     }
 
+    let projections = expand_join_projections(plan, catalog)?;
     for row in result_rows {
         let mut str_map = std::collections::HashMap::new();
         for (k, v) in &row {
@@ -377,7 +378,7 @@ pub fn execute_multi_join(
             }
         }
         let mut projected = Vec::new();
-        for p in &plan.projections {
+        for p in &projections {
             if let Some(v) = str_map.get(p) {
                 projected.push(v.clone());
             }
@@ -459,18 +460,25 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
         Statement::Select { columns, from_table, joins, where_predicate } => {
             if joins.is_empty() {
                 let table_info = catalog.get_table(&from_table)?;
-                println!("{}", format_header(&table_info.columns));
+                let (idxs, meta) = select_projection_indices(&table_info.columns, &columns)?;
+                println!("{}", format_header(&meta));
                 let mut results = Vec::new();
                 execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
                 for row in results {
-                    println!("{}", format_row(&row));
+                    let vals = row_to_strings(&row);
+                    let projected: Vec<_> = idxs.iter().map(|&i| vals[i].clone()).collect();
+                    println!("{}", format_values(&projected));
                 }
             } else {
-                let plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, joins, projections: columns.clone(), where_predicate };
+                let mut plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, joins, projections: columns.clone(), where_predicate };
+                let projections = expand_join_projections(&plan, catalog)?;
+                let header_meta = join_header(&plan, catalog, &projections)?;
+                println!("{}", format_header(&header_meta));
+                plan.projections = projections.clone();
                 let mut results = Vec::new();
                 execute_multi_join(&plan, catalog, &mut results)?;
                 for row in results {
-                    println!("{}", row.join(" | "));
+                    println!("{}", format_values(&row));
                 }
             }
         }
@@ -500,6 +508,103 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
     }
     Ok(())
 }
+
+pub fn row_to_strings(row: &Row) -> Vec<String> {
+    row
+        .data
+        .0
+        .iter()
+        .map(|v| match v {
+            ColumnValue::Integer(i) => i.to_string(),
+            ColumnValue::Text(s) => s.clone(),
+            ColumnValue::Boolean(b) => b.to_string(),
+        })
+        .collect()
+}
+
+pub fn select_projection_indices(
+    columns: &[(String, ColumnType)],
+    projections: &[String],
+) -> io::Result<(Vec<usize>, Vec<(String, ColumnType)>)> {
+    let use_all = projections.len() == 1 && projections[0] == "*";
+    let mut idxs = Vec::new();
+    let mut meta = Vec::new();
+    if use_all {
+        for (i, (n, ty)) in columns.iter().enumerate() {
+            idxs.push(i);
+            meta.push((n.clone(), *ty));
+        }
+    } else {
+        for p in projections {
+            let col = p.split('.').last().unwrap_or(p).to_string();
+            if let Some((i, (_, ty))) = columns.iter().enumerate().find(|(_, (c, _))| c == &col) {
+                idxs.push(i);
+                meta.push((col, *ty));
+            } else {
+                return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {col}")));
+            }
+        }
+    }
+    Ok((idxs, meta))
+}
+
+pub fn expand_join_projections(
+    plan: &crate::execution::plan::MultiJoinPlan,
+    catalog: &Catalog,
+) -> io::Result<Vec<String>> {
+    if plan.projections.len() == 1 && plan.projections[0] == "*" {
+        let mut list = Vec::new();
+        let base_info = catalog.get_table(&plan.base_table)?;
+        for (c, _) in &base_info.columns {
+            list.push(format!("{}.{}", plan.base_table, c));
+        }
+        for jc in &plan.joins {
+            let alias = jc.alias.as_ref().unwrap_or(&jc.table);
+            let info = catalog.get_table(&jc.table)?;
+            for (c, _) in &info.columns {
+                list.push(format!("{alias}.{}", c));
+            }
+        }
+        Ok(list)
+    } else {
+        Ok(plan.projections.clone())
+    }
+}
+
+pub fn join_header(
+    plan: &crate::execution::plan::MultiJoinPlan,
+    catalog: &Catalog,
+    projections: &[String],
+) -> io::Result<Vec<(String, ColumnType)>> {
+    use std::collections::HashMap;
+    let mut alias_map = HashMap::new();
+    alias_map.insert(plan.base_table.clone(), plan.base_table.clone());
+    for jc in &plan.joins {
+        alias_map.insert(jc.alias.clone().unwrap_or_else(|| jc.table.clone()), jc.table.clone());
+    }
+
+    let mut out = Vec::new();
+    for p in projections {
+        let mut parts = p.split('.');
+        let alias = parts.next().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Bad column"))?;
+        let col = parts.next().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Bad column"))?;
+        let table = alias_map.get(alias).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Bad alias"))?;
+        let info = catalog.get_table(table)?;
+        let ty = info
+            .columns
+            .iter()
+            .find(|(c, _)| c == col)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Column not found"))?
+            .1;
+        out.push((p.clone(), ty));
+    }
+    Ok(out)
+}
+
+pub fn format_values(vals: &[String]) -> String {
+    vals.join(" | ")
+}
+
 
 pub fn format_row(row: &Row) -> String {
     row.data.0
