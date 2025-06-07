@@ -68,3 +68,85 @@ fn double_unsigned() {
     assert!(res.is_err());
     handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "12.34".into()] }).unwrap();
 }
+#[test]
+fn parse_datetime_types() {
+    let stmt = parse_statement("CREATE TABLE t (a DATETIME, b TIMESTAMP, c TIME, d YEAR)").unwrap();
+    if let Statement::CreateTable { columns, .. } = stmt {
+        assert_eq!(columns[0].1, ColumnType::DateTime);
+        assert_eq!(columns[1].1, ColumnType::Timestamp);
+        assert_eq!(columns[2].1, ColumnType::Time);
+        assert_eq!(columns[3].1, ColumnType::Year);
+    } else { panic!("expected create table"); }
+}
+
+#[test]
+fn date_validation() {
+    let filename = "test_date_validate.db";
+    let mut catalog = setup_catalog(filename);
+    handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "t".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer),
+            ("d".into(), ColumnType::Date),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "2025-13-01".into()] });
+    assert!(res.is_err());
+    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "2025-12-01".into()] }).unwrap();
+}
+
+#[test]
+fn datetime_validation() {
+    let filename = "test_datetime_validate.db";
+    let mut catalog = setup_catalog(filename);
+    handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "t".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer),
+            ("ts".into(), ColumnType::DateTime),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "2025-02-30 10:00:00".into()] });
+    assert!(res.is_err());
+    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "2025-06-08 12:34:56".into()] }).unwrap();
+}
+
+#[test]
+fn time_validation() {
+    let filename = "test_time_validate.db";
+    let mut catalog = setup_catalog(filename);
+    handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "t".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer),
+            ("t".into(), ColumnType::Time),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "839:00:00".into()] });
+    assert!(res.is_err());
+    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "12:30:45".into()] }).unwrap();
+}
+
+#[test]
+fn year_validation() {
+    let filename = "test_year_validate.db";
+    let mut catalog = setup_catalog(filename);
+    handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "t".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer),
+            ("y".into(), ColumnType::Year),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "1900".into()] });
+    assert!(res.is_err());
+    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "2020".into()] }).unwrap();
+}

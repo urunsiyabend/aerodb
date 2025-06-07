@@ -170,13 +170,7 @@ mod tests {
                 while let Some(row) = cursor.next() {
                     let mut values = std::collections::HashMap::new();
                     for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
-                        let v = match val {
-                            ColumnValue::Integer(i) => i.to_string(),
-                            ColumnValue::Text(s) => s.clone(),
-                            ColumnValue::Boolean(b) => b.to_string(),
-                            ColumnValue::Char(s) => s.clone(),
-                            ColumnValue::Double(f) => f.to_string(),
-                        };
+                        let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
                     if evaluate_expression(where_predicate.as_ref().unwrap(), &values) {

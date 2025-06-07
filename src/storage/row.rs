@@ -10,6 +10,10 @@ pub enum ColumnType {
     MediumInt { width: usize, unsigned: bool },
     Double { precision: usize, scale: usize, unsigned: bool },
     Date,
+    DateTime,
+    Timestamp,
+    Time,
+    Year,
 }
 
 impl ColumnType {
@@ -89,6 +93,18 @@ impl ColumnType {
         if base == "DATE" {
             return Some(ColumnType::Date);
         }
+        if base == "DATETIME" {
+            return Some(ColumnType::DateTime);
+        }
+        if base == "TIMESTAMP" {
+            return Some(ColumnType::Timestamp);
+        }
+        if base == "TIME" {
+            return Some(ColumnType::Time);
+        }
+        if base == "YEAR" {
+            return Some(ColumnType::Year);
+        }
         match upper.as_str() {
             "INTEGER" | "INT" => Some(ColumnType::Integer),
             "TEXT" => Some(ColumnType::Text),
@@ -121,6 +137,10 @@ impl ColumnType {
                 s
             }
             ColumnType::Date => "DATE".into(),
+            ColumnType::DateTime => "DATETIME".into(),
+            ColumnType::Timestamp => "TIMESTAMP".into(),
+            ColumnType::Time => "TIME".into(),
+            ColumnType::Year => "YEAR".into(),
         }
     }
 
@@ -134,6 +154,10 @@ impl ColumnType {
             6 => Some(ColumnType::MediumInt { width: 0, unsigned: false }),
             7 => Some(ColumnType::Double { precision: 10, scale: 0, unsigned: false }),
             8 => Some(ColumnType::Date),
+            9 => Some(ColumnType::DateTime),
+            10 => Some(ColumnType::Timestamp),
+            11 => Some(ColumnType::Time),
+            12 => Some(ColumnType::Year),
             _ => None,
         }
     }
@@ -148,6 +172,10 @@ impl ColumnType {
             ColumnType::MediumInt { .. } => 6,
             ColumnType::Double { .. } => 7,
             ColumnType::Date => 8,
+            ColumnType::DateTime => 9,
+            ColumnType::Timestamp => 10,
+            ColumnType::Time => 11,
+            ColumnType::Year => 12,
         }
     }
 }
@@ -159,6 +187,11 @@ pub enum ColumnValue {
     Boolean(bool),
     Char(String),
     Double(f64),
+    Date(i32),
+    DateTime(i64),
+    Timestamp(i64),
+    Time(i32),
+    Year(u16),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +224,26 @@ impl RowData {
                 ColumnValue::Double(f) => {
                     buf.push(0x05);
                     buf.extend(&f.to_le_bytes());
+                }
+                ColumnValue::Date(d) => {
+                    buf.push(0x06);
+                    buf.extend(&d.to_le_bytes());
+                }
+                ColumnValue::DateTime(ts) => {
+                    buf.push(0x07);
+                    buf.extend(&ts.to_le_bytes());
+                }
+                ColumnValue::Timestamp(ts) => {
+                    buf.push(0x08);
+                    buf.extend(&ts.to_le_bytes());
+                }
+                ColumnValue::Time(t) => {
+                    buf.push(0x09);
+                    buf.extend(&t.to_le_bytes());
+                }
+                ColumnValue::Year(y) => {
+                    buf.push(0x0A);
+                    buf.extend(&y.to_le_bytes());
                 }
             }
         }
@@ -261,6 +314,46 @@ impl RowData {
                     let val = f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
                     offset += 8;
                     cols.push(ColumnValue::Double(val));
+                }
+                0x06 => {
+                    if offset + 4 > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let val = i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+                    offset += 4;
+                    cols.push(ColumnValue::Date(val));
+                }
+                0x07 => {
+                    if offset + 8 > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let val = i64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+                    offset += 8;
+                    cols.push(ColumnValue::DateTime(val));
+                }
+                0x08 => {
+                    if offset + 8 > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let val = i64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+                    offset += 8;
+                    cols.push(ColumnValue::Timestamp(val));
+                }
+                0x09 => {
+                    if offset + 4 > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let val = i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+                    offset += 4;
+                    cols.push(ColumnValue::Time(val));
+                }
+                0x0A => {
+                    if offset + 2 > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let val = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
+                    offset += 2;
+                    cols.push(ColumnValue::Year(val));
                 }
                 _ => {
                     return Err(io::Error::new(io::ErrorKind::Other, "Unknown type tag"));
@@ -344,7 +437,44 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
                 cols.push(ColumnValue::Double(val));
             }
             ColumnType::Date => {
-                cols.push(ColumnValue::Text(v.clone()));
+                match parse_date(v) {
+                    Some(d) => cols.push(ColumnValue::Date(d)),
+                    None => {
+                        return Err(format!("Value '{}' for column '{}' is not a valid DATE", v, name));
+                    }
+                }
+            }
+            ColumnType::DateTime => {
+                match parse_datetime(v) {
+                    Some(ts) => cols.push(ColumnValue::DateTime(ts)),
+                    None => {
+                        return Err(format!("Value '{}' for column '{}' is not a valid DATETIME", v, name));
+                    }
+                }
+            }
+            ColumnType::Timestamp => {
+                match parse_datetime(v) {
+                    Some(ts) => cols.push(ColumnValue::Timestamp(ts)),
+                    None => {
+                        return Err(format!("Value '{}' for column '{}' is not a valid TIMESTAMP", v, name));
+                    }
+                }
+            }
+            ColumnType::Time => {
+                match parse_time(v) {
+                    Some(t) => cols.push(ColumnValue::Time(t)),
+                    None => {
+                        return Err(format!("Value '{}' for column '{}' is not a valid TIME", v, name));
+                    }
+                }
+            }
+            ColumnType::Year => {
+                match parse_year(v) {
+                    Some(y) => cols.push(ColumnValue::Year(y)),
+                    None => {
+                        return Err(format!("Value '{}' for column '{}' is not a valid YEAR", v, name));
+                    }
+                }
             }
         }
     }
@@ -355,4 +485,69 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
 pub struct Row {
     pub key: i32,
     pub data: RowData,
+}
+
+impl ColumnValue {
+    pub fn to_string_value(&self) -> String {
+        match self {
+            ColumnValue::Integer(i) => i.to_string(),
+            ColumnValue::Text(s) => s.clone(),
+            ColumnValue::Boolean(b) => b.to_string(),
+            ColumnValue::Char(s) => s.clone(),
+            ColumnValue::Double(f) => f.to_string(),
+            ColumnValue::Date(d) => {
+                use chrono::{NaiveDate, Duration};
+                let epoch = NaiveDate::from_ymd_opt(1970,1,1).unwrap();
+                let date = epoch + Duration::days(*d as i64);
+                date.format("%Y-%m-%d").to_string()
+            }
+            ColumnValue::DateTime(ts) | ColumnValue::Timestamp(ts) => {
+                use chrono::NaiveDateTime;
+                NaiveDateTime::from_timestamp_opt(*ts, 0).unwrap().format("%Y-%m-%d %H:%M:%S").to_string()
+            }
+            ColumnValue::Time(t) => {
+                let neg = *t < 0;
+                let mut s = t.abs();
+                let h = s / 3600;
+                let m = (s % 3600) / 60;
+                let sec = s % 60;
+                format!("{}{:02}:{:02}:{:02}", if neg { "-" } else { "" }, h, m, sec)
+            }
+            ColumnValue::Year(y) => format!("{:04}", y),
+        }
+    }
+}
+
+pub(crate) fn parse_date(s: &str) -> Option<i32> {
+    use chrono::NaiveDate;
+    let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)?;
+    Some((date - epoch).num_days() as i32)
+}
+
+pub(crate) fn parse_datetime(s: &str) -> Option<i64> {
+    use chrono::NaiveDateTime;
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|dt| dt.timestamp())
+}
+
+pub(crate) fn parse_time(s: &str) -> Option<i32> {
+    let neg = s.starts_with('-');
+    let t = if neg { &s[1..] } else { s };
+    let parts: Vec<&str> = t.split(':').collect();
+    if parts.len() != 3 { return None; }
+    let h: i32 = parts[0].parse().ok()?;
+    let m: i32 = parts[1].parse().ok()?;
+    let sec: i32 = parts[2].parse().ok()?;
+    if h > 838 || m > 59 || sec > 59 { return None; }
+    let mut total = h * 3600 + m * 60 + sec;
+    if neg { total = -total; }
+    Some(total)
+}
+
+pub(crate) fn parse_year(s: &str) -> Option<u16> {
+    if s.len() != 4 { return None; }
+    let y: u16 = s.parse().ok()?;
+    if y == 0 || (1901..=2155).contains(&y) { Some(y) } else { None }
 }

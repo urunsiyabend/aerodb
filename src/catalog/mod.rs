@@ -255,6 +255,11 @@ impl Catalog {
             ColumnValue::Boolean(b) => b.to_string(),
             ColumnValue::Char(s) => s.clone(),
             ColumnValue::Double(f) => f.to_string(),
+            ColumnValue::Date(d) => ColumnValue::Date(*d).to_string_value(),
+            ColumnValue::DateTime(ts) => ColumnValue::DateTime(*ts).to_string_value(),
+            ColumnValue::Timestamp(ts) => ColumnValue::Timestamp(*ts).to_string_value(),
+            ColumnValue::Time(t) => ColumnValue::Time(*t).to_string_value(),
+            ColumnValue::Year(y) => ColumnValue::Year(*y).to_string_value(),
         }
     }
 
@@ -275,6 +280,11 @@ impl Catalog {
                 (h.finish() as i64 & 0x7FFF_FFFF) as i32
             }
             ColumnValue::Double(f) => *f as i32,
+            ColumnValue::Date(d) => *d,
+            ColumnValue::DateTime(ts) => (*ts % i32::MAX as i64) as i32,
+            ColumnValue::Timestamp(ts) => (*ts % i32::MAX as i64) as i32,
+            ColumnValue::Time(t) => *t,
+            ColumnValue::Year(y) => *y as i32,
         }
     }
 
