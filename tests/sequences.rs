@@ -28,6 +28,7 @@ use std::fs;
 fn create_sequence_and_next_values() {
     let filename = "test_sequence_basic.db";
     let _ = fs::remove_file(filename);
+    let _ = fs::remove_file(format!("{}.wal", filename));
     let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
     let stmt = parse_statement("CREATE SEQUENCE my_seq START WITH 100 INCREMENT BY 5").unwrap();

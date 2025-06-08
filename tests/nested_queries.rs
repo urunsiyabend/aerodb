@@ -16,6 +16,7 @@ use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
     let _ = fs::remove_file(filename);
+    let _ = fs::remove_file(format!("{}.wal", filename));
     Catalog::open(Pager::new(filename).unwrap()).unwrap()
 }
 

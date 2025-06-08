@@ -685,7 +685,6 @@ impl Catalog {
             not_null.push(nn);
             defaults.push(default);
             auto_inc.push(ai);
-            auto_inc.push(ai);
         }
         let num_fks = match values.get(idx) {
             Some(ColumnValue::Integer(i)) => *i as usize,
