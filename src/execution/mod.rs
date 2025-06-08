@@ -4,7 +4,7 @@ pub mod runtime;
 
 pub use executor::Executor;
 pub use plan::PlanNode;
-pub use runtime::{execute_delete, execute_select_with_indexes, execute_update, handle_statement, execute_select_statement};
+pub use runtime::{execute_delete, execute_select_with_indexes, execute_update, handle_statement, execute_select_statement, row_to_strings};
 
 /// Entry point for executing a plan (stub).
 pub fn execute_plan(plan: PlanNode /*, btree: &mut storage::BTree */) {

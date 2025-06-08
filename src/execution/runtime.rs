@@ -645,11 +645,15 @@ pub fn execute_group_query(
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()> {
     match stmt {
         Statement::CreateTable { table_name, columns, fks, if_not_exists } => {
+            let auto_cols: Vec<_> = columns.iter().filter(|c| c.auto_increment).collect();
+            if auto_cols.len() > 1 {
+                return Err(io::Error::new(io::ErrorKind::Other, "Only one AUTO_INCREMENT column allowed per table"));
+            }
             let cols: Vec<_> = columns
                 .into_iter()
-                .map(|c| (c.name, c.col_type, c.not_null, c.default_value))
+                .map(|c| (c.name.clone(), c.col_type, c.not_null, c.default_value, c.auto_increment))
                 .collect();
-            match catalog.create_table_with_fks(&table_name, cols, fks) {
+            match catalog.create_table_with_fks(&table_name, cols.clone(), fks) {
                 Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {
@@ -657,6 +661,12 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     } else {
                         return Err(e);
                     }
+                }
+            }
+            for (name, _, _, _, ai) in cols {
+                if ai {
+                    let seq_name = format!("{}_{}", table_name, name);
+                    catalog.create_sequence(&seq_name, 1, 1)?;
                 }
             }
         }
@@ -691,32 +701,43 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     }
                 }
                 for (idx, (col_name, _)) in columns.iter().enumerate() {
+                    let auto = table_info.auto_increment.get(idx).copied().unwrap_or(false);
                     if let Some(pos) = cols.iter().position(|c| c == col_name) {
                         let expr = &values[pos];
-                        if matches!(expr, Expr::DefaultValue) {
+                        if auto {
+                            if matches!(expr, Expr::DefaultValue) {
+                                let seq = format!("{}_{}", table_name, col_name);
+                                let next = catalog.next_sequence_value(&seq)?;
+                                vals.push(next.to_string());
+                            } else {
+                                let s = expr_to_string(expr);
+                                if let Ok(v) = s.parse::<i64>() {
+                                    catalog.update_sequence_current(&format!("{}_{}", table_name, col_name), v)?;
+                                }
+                                vals.push(s);
+                            }
+                        } else if matches!(expr, Expr::DefaultValue) {
                             if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
                                 vals.push(evaluate_default(def)?);
                             } else if !table_info.not_null[idx] {
                                 vals.push("NULL".into());
                             } else {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::Other,
-                                    format!("Cannot use DEFAULT for column '{}' - no default value defined", col_name),
-                                ));
+                                return Err(io::Error::new(io::ErrorKind::Other, format!("Cannot use DEFAULT for column '{}' - no default value defined", col_name)));
                             }
                         } else {
                             vals.push(expr_to_string(expr));
                         }
                     } else {
-                        if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                        if auto {
+                            let seq = format!("{}_{}", table_name, col_name);
+                            let next = catalog.next_sequence_value(&seq)?;
+                            vals.push(next.to_string());
+                        } else if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
                             vals.push(evaluate_default(def)?);
                         } else if !table_info.not_null[idx] {
                             vals.push("NULL".into());
                         } else {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Other,
-                                format!("Column '{}' requires a value or DEFAULT", col_name),
-                            ));
+                            return Err(io::Error::new(io::ErrorKind::Other, format!("Column '{}' requires a value or DEFAULT", col_name)));
                         }
                     }
                 }
@@ -732,19 +753,28 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     ));
                 }
                 for (idx, expr) in values.iter().enumerate() {
-                    if matches!(expr, Expr::DefaultValue) {
+                    let auto = table_info.auto_increment.get(idx).copied().unwrap_or(false);
+                    if auto {
+                        if matches!(expr, Expr::DefaultValue) {
+                            let seq = format!("{}_{}", table_name, columns[idx].0);
+                            let next = catalog.next_sequence_value(&seq)?;
+                            vals.push(next.to_string());
+                        } else {
+                            let s = expr_to_string(expr);
+                            if let Ok(v) = s.parse::<i64>() {
+                                catalog.update_sequence_current(&format!("{}_{}", table_name, columns[idx].0), v)?;
+                            }
+                            vals.push(s);
+                        }
+                    } else if matches!(expr, Expr::DefaultValue) {
                         if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
                             vals.push(evaluate_default(def)?);
                         } else if !table_info.not_null[idx] {
                             vals.push("NULL".into());
                         } else {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Other,
-                                format!(
+                            return Err(io::Error::new(io::ErrorKind::Other, format!(
                                     "Cannot use DEFAULT for column '{}' - no default value defined",
-                                    columns[idx].0
-                                ),
-                            ));
+                                    columns[idx].0)));
                         }
                     } else {
                         vals.push(expr_to_string(expr));
@@ -886,6 +916,10 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
         Statement::Update { table_name, assignments, selection } => {
             let count = execute_update(catalog, &table_name, assignments, selection)?;
             println!("{} row(s) updated", count);
+        }
+        Statement::CreateSequence(seq) => {
+            catalog.create_sequence(&seq.name, seq.start, seq.increment)?;
+            println!("Sequence '{}' created successfully", seq.name);
         }
         Statement::BeginTransaction { name } => {
             catalog.begin_transaction(name)?;

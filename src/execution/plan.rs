@@ -86,6 +86,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         Statement::DropTable { table_name, if_exists } => PlanNode::DropTable { table_name, if_exists },
         Statement::Delete { table_name, selection } => PlanNode::Delete { table_name, selection },
         Statement::Update { table_name, assignments, selection } => PlanNode::Update { table_name, assignments, selection },
+        Statement::CreateSequence(_) => PlanNode::Exit,
         Statement::BeginTransaction { .. } | Statement::Commit | Statement::Rollback => PlanNode::Exit,
         Statement::Exit => PlanNode::Exit,
     }

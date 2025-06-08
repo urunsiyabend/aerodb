@@ -15,7 +15,16 @@ pub struct TableInfo {
     pub columns: Vec<(String, ColumnType)>, // column name and type
     pub not_null: Vec<bool>,
     pub default_values: Vec<Option<Expr>>,
+    pub auto_increment: Vec<bool>,
     pub fks: Vec<crate::sql::ast::ForeignKey>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SequenceInfo {
+    pub key: i32,
+    pub current_value: i64,
+    pub start_value: i64,
+    pub increment: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +39,7 @@ pub struct IndexInfo {
 pub struct Catalog {
     tables: HashMap<String, TableInfo>,
     indexes: HashMap<String, IndexInfo>,
+    sequences: HashMap<String, SequenceInfo>,
     pub(crate) pager: Pager,
 }
 
@@ -49,21 +59,43 @@ impl Catalog {
             pager.flush_page(1)?;
         }
 
+        // Ensure page 2 exists for sequence catalog
+        if pager.file_length_pages() <= 2 {
+            pager.allocate_page()?;
+            let page = pager.get_page(2)?;
+            crate::storage::page::set_node_type(&mut page.data, crate::storage::page::NODE_LEAF);
+            crate::storage::page::set_is_root(&mut page.data, true);
+            crate::storage::page::set_parent(&mut page.data, 0);
+            crate::storage::page::set_cell_count(&mut page.data, 0);
+            pager.flush_page(2)?;
+        }
+
         // Now read all catalog entries (if any) from page 1
         let mut tables = HashMap::new();
         {
             let mut catalog_btree = BTree::open_root(&mut pager, 1)?;
             let mut cursor = catalog_btree.scan_all_rows();
             while let Some(blob_row) = cursor.next() {
-                let (table_name, root_page, columns, not_null, defaults, fks) = Self::deserialize_catalog_row(&blob_row)?;
+                let (table_name, root_page, columns, not_null, defaults, auto_inc, fks) = Self::deserialize_catalog_row(&blob_row)?;
                 tables.insert(
                     table_name.clone(),
-                    TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks },
+                    TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks, auto_increment: auto_inc },
                 );
             }
         }
 
-        Ok(Catalog { tables, indexes: HashMap::new(), pager })
+        // Load sequences from page 2
+        let mut sequences = HashMap::new();
+        {
+            let mut seq_btree = BTree::open_root(&mut pager, 2)?;
+            let mut cursor = seq_btree.scan_all_rows();
+            while let Some(row) = cursor.next() {
+                let (name, current, start, inc) = Self::deserialize_sequence_row(&row)?;
+                sequences.insert(name.clone(), SequenceInfo { key: row.key, current_value: current, start_value: start, increment: inc });
+            }
+        }
+
+        Ok(Catalog { tables, indexes: HashMap::new(), sequences, pager })
     }
 
     fn reload_tables(&mut self) -> io::Result<()> {
@@ -71,17 +103,27 @@ impl Catalog {
         let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
         let mut cursor = catalog_btree.scan_all_rows();
         while let Some(blob_row) = cursor.next() {
-            let (table_name, root_page, columns, not_null, defaults, fks) = Self::deserialize_catalog_row(&blob_row)?;
+            let (table_name, root_page, columns, not_null, defaults, auto_inc, fks) = Self::deserialize_catalog_row(&blob_row)?;
             self.tables.insert(
                 table_name.clone(),
-                TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks },
+                TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks, auto_increment: auto_inc },
             );
+        }
+        // reload sequences
+        self.sequences.clear();
+        {
+            let mut seq_btree = BTree::open_root(&mut self.pager, 2)?;
+            let mut cursor = seq_btree.scan_all_rows();
+            while let Some(row) = cursor.next() {
+                let (name, cur, start, inc) = Self::deserialize_sequence_row(&row)?;
+                self.sequences.insert(name.clone(), SequenceInfo { key: row.key, current_value: cur, start_value: start, increment: inc });
+            }
         }
         Ok(())
     }
 
     pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
-        let (target_key, columns, not_null, defaults, fks) = {
+        let (target_key, columns, not_null, defaults, ai_vec, fks) = {
             let mut tree = BTree::open_root(&mut self.pager, 1)?;
             let mut cursor = tree.scan_all_rows();
             let mut found = None;
@@ -89,18 +131,20 @@ impl Catalog {
             let mut nn_vec = Vec::new();
             let mut fk_vec = Vec::new();
             let mut def_vec = Vec::new();
+            let mut ai_vec = Vec::new();
             while let Some(row) = cursor.next() {
-                let (tbl, _rp, c, nn, def, f) = Self::deserialize_catalog_row(&row)?;
+                let (tbl, _rp, c, nn, def, ai, f) = Self::deserialize_catalog_row(&row)?;
                 if tbl == name {
                     found = Some(row.key);
                     cols = c;
                     nn_vec = nn;
                     def_vec = def;
+                    ai_vec = ai;
                     fk_vec = f;
                     break;
                 }
             }
-            (found, cols, nn_vec, def_vec, fk_vec)
+            (found, cols, nn_vec, def_vec, ai_vec, fk_vec)
         };
 
         if let Some(key) = target_key {
@@ -111,7 +155,8 @@ impl Catalog {
                 .cloned()
                 .zip(not_null.iter().cloned())
                 .zip(defaults.iter().cloned())
-                .map(|(((n, t), nn), d)| (n, t, nn, d))
+                .zip(ai_vec.iter().cloned())
+                .map(|((((n, t), nn), d), a)| (n, t, nn, d, a))
                 .collect();
             tree.insert(key, Self::serialize_catalog_row(name, new_root, &cols, &fks))?;
             let new_root_page = tree.root_page();
@@ -150,11 +195,11 @@ impl Catalog {
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
     pub fn create_table(&mut self, name: &str, columns: Vec<(String, ColumnType)>) -> io::Result<()> {
-        let cols_with_nn: Vec<_> = columns.into_iter().map(|(n,t)| (n,t,false,None)).collect();
+        let cols_with_nn: Vec<_> = columns.into_iter().map(|(n,t)| (n,t,false,None,false)).collect();
         self.create_table_with_fks(name, cols_with_nn, Vec::new())
     }
 
-    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<Expr>)>, fks: Vec<crate::sql::ast::ForeignKey>) -> io::Result<()> {
+    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<Expr>, bool)>, fks: Vec<crate::sql::ast::ForeignKey>) -> io::Result<()> {
         if self.tables.contains_key(name) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -187,14 +232,16 @@ impl Catalog {
         let mut cols = Vec::new();
         let mut not_null = Vec::new();
         let mut defaults = Vec::new();
-        for (n, t, nn, d) in columns {
+        let mut auto_inc = Vec::new();
+        for (n, t, nn, d, ai) in columns {
             cols.push((n, t));
             not_null.push(nn);
             defaults.push(d);
+            auto_inc.push(ai);
         }
         self.tables.insert(
             name.to_string(),
-            TableInfo { name: name.to_string(), root_page: new_root, columns: cols, not_null, default_values: defaults, fks },
+            TableInfo { name: name.to_string(), root_page: new_root, columns: cols, not_null, default_values: defaults, fks, auto_increment: auto_inc },
         );
         Ok(())
     }
@@ -313,6 +360,42 @@ impl Catalog {
         }
     }
 
+    pub fn create_sequence(&mut self, name: &str, start: i64, increment: i64) -> io::Result<()> {
+        if self.sequences.contains_key(name) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("Sequence '{}' already exists", name)));
+        }
+        let key = (self.sequences.len() as i32) + 1;
+        let current = start - increment;
+        {
+            let mut tree = BTree::open_root(&mut self.pager, 2)?;
+            tree.insert(key, Self::serialize_sequence_row(name, current, start, increment))?;
+        }
+        self.sequences.insert(name.to_string(), SequenceInfo { key, current_value: current, start_value: start, increment });
+        Ok(())
+    }
+
+    pub fn next_sequence_value(&mut self, name: &str) -> io::Result<i64> {
+        let info = self.sequences.get_mut(name).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("Sequence '{}' not found", name)))?;
+        info.current_value += info.increment;
+        {
+            let mut tree = BTree::open_root(&mut self.pager, 2)?;
+            tree.delete(info.key)?;
+            tree.insert(info.key, Self::serialize_sequence_row(name, info.current_value, info.start_value, info.increment))?;
+        }
+        Ok(info.current_value)
+    }
+
+    pub fn update_sequence_current(&mut self, name: &str, new_current: i64) -> io::Result<()> {
+        let info = self.sequences.get_mut(name).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "sequence not found"))?;
+        if new_current > info.current_value {
+            info.current_value = new_current;
+            let mut tree = BTree::open_root(&mut self.pager, 2)?;
+            tree.delete(info.key)?;
+            tree.insert(info.key, Self::serialize_sequence_row(name, info.current_value, info.start_value, info.increment))?;
+        }
+        Ok(())
+    }
+
     pub fn insert_into_indexes(&mut self, table_name: &str, row_data: &RowData) -> io::Result<()> {
         let indices: Vec<IndexInfo> = self.indexes.values().cloned().collect();
         for idx in indices {
@@ -415,7 +498,7 @@ impl Catalog {
             let mut cursor = catalog_btree.scan_all_rows();
             let mut found = None;
             while let Some(row) = cursor.next() {
-                let (table_name, _rp, _cols, _nn, _defaults, _fks) = Self::deserialize_catalog_row(&row)?;
+                let (table_name, _rp, _cols, _nn, _defaults, _ai, _fks) = Self::deserialize_catalog_row(&row)?;
                 if table_name == name {
                     found = Some(row.key);
                     break;
@@ -456,14 +539,14 @@ impl Catalog {
     fn serialize_catalog_row(
         name: &str,
         root_page: u32,
-        columns: &[(String, ColumnType, bool, Option<Expr>)],
+        columns: &[(String, ColumnType, bool, Option<Expr>, bool)],
         fks: &[crate::sql::ast::ForeignKey],
     ) -> RowData {
         let mut vals = Vec::new();
         vals.push(ColumnValue::Text(name.to_string()));
         vals.push(ColumnValue::Integer(root_page as i32));
         vals.push(ColumnValue::Integer(columns.len() as i32));
-        for (name, ty, nn, default) in columns {
+        for (name, ty, nn, default, ai) in columns {
             vals.push(ColumnValue::Text(name.clone()));
             vals.push(ColumnValue::Integer(ty.to_code()));
             match ty {
@@ -493,6 +576,7 @@ impl Catalog {
                     vals.push(ColumnValue::Integer(0));
                 }
             }
+            vals.push(ColumnValue::Integer(if *ai { 1 } else { 0 }));
         }
         vals.push(ColumnValue::Integer(fks.len() as i32));
         for fk in fks {
@@ -516,7 +600,7 @@ impl Catalog {
     }
 
     /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>, Vec<ForeignKey>).
-    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<bool>, Vec<Option<Expr>>, Vec<crate::sql::ast::ForeignKey>)> {
+    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<bool>, Vec<Option<Expr>>, Vec<bool>, Vec<crate::sql::ast::ForeignKey>)> {
         let values = &row.data.0;
         if values.len() < 3 {
             return Err(io::Error::new(io::ErrorKind::Other, "catalog row too short"));
@@ -536,6 +620,7 @@ impl Catalog {
         let mut columns = Vec::new();
         let mut not_null = Vec::new();
         let mut defaults = Vec::new();
+        let mut auto_inc: Vec<bool> = Vec::new();
         let mut idx = 3;
         for _ in 0..num_cols {
             let name = match &values[idx] {
@@ -594,9 +679,13 @@ impl Catalog {
                     Some(crate::sql::ast::parse_default_expr(s))
                 } else { None }
             } else { None };
+            let ai = match values.get(idx) { Some(ColumnValue::Integer(i)) => *i == 1, _ => false };
+            idx += 1;
             columns.push((name, ty));
             not_null.push(nn);
             defaults.push(default);
+            auto_inc.push(ai);
+            auto_inc.push(ai);
         }
         let num_fks = match values.get(idx) {
             Some(ColumnValue::Integer(i)) => *i as usize,
@@ -653,7 +742,26 @@ impl Catalog {
             idx += 1;
             fks.push(crate::sql::ast::ForeignKey { columns: cols, parent_table, parent_columns: parent_cols, on_delete, on_update });
         }
-        Ok((name, root_page, columns, not_null, defaults, fks))
+        Ok((name, root_page, columns, not_null, defaults, auto_inc, fks))
+    }
+
+    fn serialize_sequence_row(name: &str, current: i64, start: i64, increment: i64) -> RowData {
+        RowData(vec![
+            ColumnValue::Text(name.to_string()),
+            ColumnValue::Integer(current as i32),
+            ColumnValue::Integer(start as i32),
+            ColumnValue::Integer(increment as i32),
+        ])
+    }
+
+    fn deserialize_sequence_row(row: &Row) -> io::Result<(String, i64, i64, i64)> {
+        let vals = &row.data.0;
+        if vals.len() < 4 { return Err(io::Error::new(io::ErrorKind::Other, "sequence row")); }
+        let name = match &vals[0] { ColumnValue::Text(s) => s.clone(), _ => return Err(io::Error::new(io::ErrorKind::Other, "seq name")) };
+        let cur = match vals[1] { ColumnValue::Integer(i) => i as i64, _ => 0 };
+        let start = match vals[2] { ColumnValue::Integer(i) => i as i64, _ => 1 };
+        let inc = match vals[3] { ColumnValue::Integer(i) => i as i64, _ => 1 };
+        Ok((name, cur, start, inc))
     }
 }
 

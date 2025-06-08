@@ -15,8 +15,8 @@ fn join_two_tables() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "a".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -24,9 +24,9 @@ fn join_two_tables() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -62,8 +62,8 @@ fn join_three_tables() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "a".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -71,9 +71,9 @@ fn join_three_tables() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -81,9 +81,9 @@ fn join_three_tables() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "c".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "b_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "x".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "b_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "x".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -112,8 +112,8 @@ fn join_with_where() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "a".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -121,9 +121,9 @@ fn join_with_where() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
