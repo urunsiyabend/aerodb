@@ -72,6 +72,7 @@ pub struct ColumnDef {
     pub name: String,
     pub col_type: ColumnType,
     pub not_null: bool,
+    pub primary_key: bool,
     pub default_value: Option<Expr>,
     pub auto_increment: bool,
 }

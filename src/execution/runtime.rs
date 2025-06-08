@@ -3,6 +3,7 @@ use std::io;
 use crate::catalog::Catalog;
 use crate::sql::ast::{Statement, Expr, expr_to_string};
 use crate::sql::functions::{FunctionEvaluator, EvalError};
+use crate::constraints::{ConstraintValidator, NotNullConstraint, PrimaryKeyConstraint};
 use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
 use std::collections::HashMap;
@@ -649,11 +650,12 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             if auto_cols.len() > 1 {
                 return Err(io::Error::new(io::ErrorKind::Other, "Only one AUTO_INCREMENT column allowed per table"));
             }
+            let pk_idx = columns.iter().position(|c| c.primary_key);
             let cols: Vec<_> = columns
                 .into_iter()
-                .map(|c| (c.name.clone(), c.col_type, c.not_null, c.default_value, c.auto_increment))
+                .map(|c| (c.name.clone(), c.col_type, c.not_null || c.primary_key, c.default_value, c.auto_increment, c.primary_key))
                 .collect();
-            match catalog.create_table_with_fks(&table_name, cols.clone(), fks) {
+            match catalog.create_table_with_fks(&table_name, cols.clone(), fks, pk_idx) {
                 Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {
@@ -663,7 +665,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     }
                 }
             }
-            for (name, _, _, _, ai) in cols {
+            for (name, _, _, _, ai, _) in cols {
                 if ai {
                     let seq_name = format!("{}_{}", table_name, name);
                     catalog.create_sequence(&seq_name, 1, 1)?;
@@ -785,16 +787,24 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             let row_data = build_row_data(&vals, &columns)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-            for ((val, nn), (name, _)) in row_data.0.iter().zip(table_info.not_null.iter()).zip(table_info.columns.iter()) {
-                if *nn && matches!(val, ColumnValue::Null) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "null value in column \"{}\" of relation \"{}\" violates not-null constraint",
-                            name, table_name
-                        ),
-                    ));
+            for (idx, nn) in table_info.not_null.iter().enumerate() {
+                if *nn {
+                    let nnc = NotNullConstraint {
+                        table_name: table_name.clone(),
+                        column_index: idx,
+                    };
+                    nnc.validate_insert(&row_data, &table_info, &mut catalog.pager)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
                 }
+            }
+
+            if let Some(pk_idx) = table_info.primary_key {
+                let pk = PrimaryKeyConstraint {
+                    table_name: table_name.clone(),
+                    column_index: pk_idx,
+                };
+                pk.validate_insert(&row_data, &table_info, &mut catalog.pager)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
             }
 
             for fk in &fks {

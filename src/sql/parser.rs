@@ -38,6 +38,15 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
     } else if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("NULL")) {
         parts.remove(pos);
     }
+    let mut primary_key = false;
+    if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("PRIMARY")) {
+        if pos + 1 < parts.len() && parts[pos + 1].eq_ignore_ascii_case("KEY") {
+            primary_key = true;
+            not_null = true;
+            parts.remove(pos + 1);
+            parts.remove(pos);
+        }
+    }
     let mut default_value = None;
     if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("DEFAULT")) {
         if pos + 1 >= parts.len() {
@@ -69,7 +78,7 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
             return Err("AUTO_INCREMENT columns must be NOT NULL".into());
         }
     }
-    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, default_value, auto_increment })
+    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, primary_key, default_value, auto_increment })
 }
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.

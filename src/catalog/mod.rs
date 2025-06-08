@@ -16,6 +16,7 @@ pub struct TableInfo {
     pub not_null: Vec<bool>,
     pub default_values: Vec<Option<Expr>>,
     pub auto_increment: Vec<bool>,
+    pub primary_key: Option<usize>,
     pub fks: Vec<crate::sql::ast::ForeignKey>,
 }
 
@@ -79,7 +80,7 @@ impl Catalog {
                 let (table_name, root_page, columns, not_null, defaults, auto_inc, fks) = Self::deserialize_catalog_row(&blob_row)?;
                 tables.insert(
                     table_name.clone(),
-                    TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks, auto_increment: auto_inc },
+                    TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, auto_increment: auto_inc, primary_key: None, fks },
                 );
             }
         }
@@ -106,7 +107,7 @@ impl Catalog {
             let (table_name, root_page, columns, not_null, defaults, auto_inc, fks) = Self::deserialize_catalog_row(&blob_row)?;
             self.tables.insert(
                 table_name.clone(),
-                TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks, auto_increment: auto_inc },
+                TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, auto_increment: auto_inc, primary_key: None, fks },
             );
         }
         // reload sequences
@@ -195,11 +196,11 @@ impl Catalog {
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
     pub fn create_table(&mut self, name: &str, columns: Vec<(String, ColumnType)>) -> io::Result<()> {
-        let cols_with_nn: Vec<_> = columns.into_iter().map(|(n,t)| (n,t,false,None,false)).collect();
-        self.create_table_with_fks(name, cols_with_nn, Vec::new())
+        let cols_with_nn: Vec<_> = columns.into_iter().map(|(n,t)| (n,t,false,None,false,false)).collect();
+        self.create_table_with_fks(name, cols_with_nn, Vec::new(), None)
     }
 
-    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<Expr>, bool)>, fks: Vec<crate::sql::ast::ForeignKey>) -> io::Result<()> {
+    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<Expr>, bool, bool)>, fks: Vec<crate::sql::ast::ForeignKey>, primary_key: Option<usize>) -> io::Result<()> {
         if self.tables.contains_key(name) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -219,7 +220,8 @@ impl Catalog {
         }
 
         // Build the catalog row payload: [name_len][name][root_page][num_columns][col1_len][col1]...
-        let blob_data = Self::serialize_catalog_row(name, new_root, &columns, &fks);
+        let cols_for_serial: Vec<_> = columns.iter().map(|(n,t,nn,d,ai,_)| (n.clone(), t.clone(), *nn, d.clone(), *ai)).collect();
+        let blob_data = Self::serialize_catalog_row(name, new_root, &cols_for_serial, &fks);
 
         // Use a synthetic key = (current number of tables + 1)
         let key = (self.tables.len() as i32) + 1;
@@ -233,15 +235,19 @@ impl Catalog {
         let mut not_null = Vec::new();
         let mut defaults = Vec::new();
         let mut auto_inc = Vec::new();
-        for (n, t, nn, d, ai) in columns {
+        let mut pk = primary_key;
+        for (idx, (n, t, nn, d, ai, is_pk)) in columns.into_iter().enumerate() {
             cols.push((n, t));
             not_null.push(nn);
             defaults.push(d);
             auto_inc.push(ai);
+            if is_pk {
+                pk = Some(idx);
+            }
         }
         self.tables.insert(
             name.to_string(),
-            TableInfo { name: name.to_string(), root_page: new_root, columns: cols, not_null, default_values: defaults, fks, auto_increment: auto_inc },
+            TableInfo { name: name.to_string(), root_page: new_root, columns: cols, not_null, default_values: defaults, auto_increment: auto_inc, primary_key: pk, fks },
         );
         Ok(())
     }

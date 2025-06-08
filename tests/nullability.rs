@@ -22,8 +22,8 @@ fn insert_and_retrieve_null() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "nickname".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, primary_key: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "nickname".into(), col_type: ColumnType::Text, not_null: false, primary_key: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,

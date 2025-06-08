@@ -25,7 +25,7 @@ fn smallint_range() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::SmallInt { width: 5, unsigned: true }, not_null: false, default_value: None, auto_increment: false}
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::SmallInt { width: 5, unsigned: true }, not_null: false, primary_key: false, default_value: None, auto_increment: false}
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -44,7 +44,7 @@ fn mediumint_range() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "val".into(), col_type: ColumnType::MediumInt { width: 6, unsigned: false }, not_null: false, default_value: None, auto_increment: false}
+            aerodb::sql::ast::ColumnDef { name: "val".into(), col_type: ColumnType::MediumInt { width: 6, unsigned: false }, not_null: false, primary_key: false, default_value: None, auto_increment: false}
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -63,8 +63,8 @@ fn double_unsigned() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "price".into(), col_type: ColumnType::Double { precision: 8, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false}
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, primary_key: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "price".into(), col_type: ColumnType::Double { precision: 8, scale: 2, unsigned: true }, not_null: false, primary_key: false, default_value: None, auto_increment: false}
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -91,8 +91,8 @@ fn date_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "d".into(), col_type: ColumnType::Date, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, primary_key: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "d".into(), col_type: ColumnType::Date, not_null: false, primary_key: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -109,8 +109,8 @@ fn datetime_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "ts".into(), col_type: ColumnType::DateTime, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, primary_key: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "ts".into(), col_type: ColumnType::DateTime, not_null: false, primary_key: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -127,8 +127,8 @@ fn time_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "t".into(), col_type: ColumnType::Time, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, primary_key: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "t".into(), col_type: ColumnType::Time, not_null: false, primary_key: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -145,8 +145,8 @@ fn year_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "y".into(), col_type: ColumnType::Year, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, primary_key: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "y".into(), col_type: ColumnType::Year, not_null: false, primary_key: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,

@@ -2,6 +2,7 @@
 
 mod storage;
 mod sql;
+mod constraints;
 mod catalog;
 mod execution;
 mod transaction;
