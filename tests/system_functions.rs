@@ -21,7 +21,7 @@ fn insert_with_function_defaults() {
     let filename = "test_function_defaults.db";
     let mut catalog = setup_catalog(filename);
     handle_statement(&mut catalog, parse_statement("CREATE TABLE logs (id INTEGER, created DATETIME DEFAULT CURRENT_TIMESTAMP, utc_time DATETIME DEFAULT GETUTCDATE())").unwrap()).unwrap();
-    handle_statement(&mut catalog, parse_statement("INSERT INTO logs VALUES (1)").unwrap()).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO logs (id) VALUES (1)").unwrap()).unwrap();
     let mut out = Vec::new();
     execute_select_with_indexes(&mut catalog, "logs", Some(aerodb::sql::ast::Expr::Equals { left: "id".into(), right: "1".into() }), &mut out).unwrap();
     if let ColumnValue::DateTime(created) = out[0].data.0[1] {

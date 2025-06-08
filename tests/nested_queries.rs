@@ -31,8 +31,8 @@ fn execute_from_subquery_simple() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "t1".into(), values: vec!["1".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "t1".into(), values: vec!["2".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO t1 VALUES (1)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO t1 VALUES (2)").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT * FROM (SELECT id FROM t1) AS sub").unwrap();
     if let Statement::Select { .. } = stmt {
@@ -72,10 +72,10 @@ fn execute_where_in_subquery() {
         if_not_exists: false,
     }).unwrap();
     for id in 1..=3 {
-        aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec![id.to_string()] }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO users VALUES ({})", id)).unwrap()).unwrap();
     }
     for id in [2,3] {
-        aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "admins".into(), values: vec![id.to_string()] }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO admins VALUES ({})", id)).unwrap()).unwrap();
     }
 
     let stmt = parse_statement("SELECT id FROM users WHERE id IN (SELECT id FROM admins)").unwrap();
@@ -124,11 +124,11 @@ fn execute_exists_correlated() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "Alice".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["2".into(), "Bob".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["3".into(), "Cason".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["10".into(), "1".into(), "Widget".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["11".into(), "2".into(), "Phone".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (3, 'Cason')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (10, 1, 'Widget')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (11, 2, 'Phone')").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT name FROM users WHERE EXISTS (SELECT user_id FROM orders WHERE orders.user_id = users.id)").unwrap();
     if let Statement::Select { .. } = stmt {
@@ -165,11 +165,11 @@ fn execute_exists_constant() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "Alice".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["2".into(), "Bob".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["3".into(), "Cason".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["10".into(), "1".into(), "Widget".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["11".into(), "2".into(), "Phone".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (3, 'Cason')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (10, 1, 'Widget')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (11, 2, 'Phone')").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT name FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)").unwrap();
     if let Statement::Select { .. } = stmt {
@@ -213,11 +213,11 @@ fn execute_scalar_subquery() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "Alice".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["2".into(), "Bob".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["10".into(), "1".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["11".into(), "1".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "orders".into(), values: vec!["12".into(), "2".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (10, 1)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (11, 1)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (12, 2)").unwrap()).unwrap();
     let stmt = parse_statement("SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.user_id = users.id) FROM users").unwrap();
     if let Statement::Select { .. } = stmt {
         let mut out = Vec::new();

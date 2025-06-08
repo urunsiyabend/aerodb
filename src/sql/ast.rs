@@ -15,6 +15,7 @@ pub enum Expr {
     Or(Box<Expr>, Box<Expr>),
     Subquery(Box<Statement>),
     Literal(String),
+    DefaultValue,
     FunctionCall { name: String, args: Vec<Expr> },
 }
 
@@ -115,7 +116,8 @@ pub enum Statement {
     },
     Insert {
         table_name: String,
-        values: Vec<String>, // all literal values as strings
+        columns: Option<Vec<String>>, // None for unqualified
+        values: Vec<Expr>,
     },
     Select {
         columns: Vec<SelectExpr>,
@@ -172,13 +174,14 @@ pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> boo
         Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } => false,
         Expr::And(a, b) => evaluate_expression(a, values) && evaluate_expression(b, values),
         Expr::Or(a, b) => evaluate_expression(a, values) || evaluate_expression(b, values),
-        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } => false,
+        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } | Expr::DefaultValue => false,
     }
 }
 
 pub fn expr_to_string(expr: &Expr) -> String {
     match expr {
         Expr::Literal(s) => s.clone(),
+        Expr::DefaultValue => "DEFAULT".into(),
         Expr::FunctionCall { name, args } => {
             if args.is_empty() {
                 format!("{}{}", name, if name.ends_with("()") { "" } else { "()" })

@@ -664,28 +664,91 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             catalog.create_index(&index_name, &table_name, &column_name)?;
             println!("Index {} created", index_name);
         }
-        Statement::Insert { table_name, values } => {
+        Statement::Insert { table_name, columns: col_list, values } => {
             let table_info = catalog.get_table(&table_name)?.clone();
             let root_page = table_info.root_page;
             let columns = table_info.columns.clone();
             let fks = table_info.fks.clone();
 
-            let mut vals = values;
-            if vals.len() < columns.len() {
-                for i in vals.len()..columns.len() {
-                    if let Some(def) = table_info.default_values.get(i).cloned().flatten() {
-                        vals.push(evaluate_default(&def)?);
-                    } else {
-                        vals.push("NULL".into());
+            let mut vals = Vec::new();
+            if let Some(cols) = col_list {
+                if values.len() != cols.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "INSERT column/value count mismatch: expected {} columns, got {} values",
+                            cols.len(),
+                            values.len()
+                        ),
+                    ));
+                }
+                for c in &cols {
+                    if !columns.iter().any(|(n, _)| n == c) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("Column '{}' does not exist in table '{}'", c, table_name),
+                        ));
                     }
                 }
-            }
-            for (i, v) in vals.iter_mut().enumerate() {
-                if v.to_ascii_uppercase() == "DEFAULT" {
-                    *v = match table_info.default_values.get(i).and_then(|o| o.as_ref()) {
-                        Some(expr) => evaluate_default(expr)?,
-                        None => "NULL".into(),
-                    };
+                for (idx, (col_name, _)) in columns.iter().enumerate() {
+                    if let Some(pos) = cols.iter().position(|c| c == col_name) {
+                        let expr = &values[pos];
+                        if matches!(expr, Expr::DefaultValue) {
+                            if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                                vals.push(evaluate_default(def)?);
+                            } else if !table_info.not_null[idx] {
+                                vals.push("NULL".into());
+                            } else {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    format!("Cannot use DEFAULT for column '{}' - no default value defined", col_name),
+                                ));
+                            }
+                        } else {
+                            vals.push(expr_to_string(expr));
+                        }
+                    } else {
+                        if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                            vals.push(evaluate_default(def)?);
+                        } else if !table_info.not_null[idx] {
+                            vals.push("NULL".into());
+                        } else {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                format!("Column '{}' requires a value or DEFAULT", col_name),
+                            ));
+                        }
+                    }
+                }
+            } else {
+                if values.len() != columns.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "INSERT has wrong number of values: expected {}, got {}",
+                            columns.len(),
+                            values.len()
+                        ),
+                    ));
+                }
+                for (idx, expr) in values.iter().enumerate() {
+                    if matches!(expr, Expr::DefaultValue) {
+                        if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                            vals.push(evaluate_default(def)?);
+                        } else if !table_info.not_null[idx] {
+                            vals.push("NULL".into());
+                        } else {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                format!(
+                                    "Cannot use DEFAULT for column '{}' - no default value defined",
+                                    columns[idx].0
+                                ),
+                            ));
+                        }
+                    } else {
+                        vals.push(expr_to_string(expr));
+                    }
                 }
             }
 
@@ -1023,7 +1086,7 @@ fn evaluate_with_catalog(
             let _ = execute_select_statement(catalog, query, &mut rows, Some(values))?;
             Ok(!rows.is_empty())
         }
-        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } => Ok(false),
+        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } | Expr::DefaultValue => Ok(false),
     }
 }
 

@@ -29,10 +29,7 @@ fn having_basic_sum() {
     for (id, region, amt) in rows {
         aerodb::execution::handle_statement(
             &mut catalog,
-            Statement::Insert {
-                table_name: "sales".into(),
-                values: vec![id.to_string(), region.into(), amt.to_string()],
-            },
+            parse_statement(&format!("INSERT INTO sales VALUES ({}, '{}', {})", id, region, amt)).unwrap(),
         ).unwrap();
     }
     let stmt = parse_statement("SELECT region, SUM(amount) FROM sales GROUP BY region HAVING SUM(amount) > 100").unwrap();
@@ -77,10 +74,7 @@ fn having_with_where() {
     for (id, dept, active) in rows {
         aerodb::execution::handle_statement(
             &mut catalog,
-            Statement::Insert {
-                table_name: "employees".into(),
-                values: vec![id.to_string(), dept.into(), active.to_string()],
-            },
+            parse_statement(&format!("INSERT INTO employees VALUES ({}, '{}', {})", id, dept, active)).unwrap(),
         ).unwrap();
     }
     let stmt = parse_statement("SELECT dept, COUNT(*) FROM employees WHERE active = 1 GROUP BY dept HAVING COUNT(*) >= 5").unwrap();
@@ -108,7 +102,7 @@ fn having_filters_all() {
         if_not_exists: false,
     }).unwrap();
     for i in 1..=3 {
-        aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec![i.to_string()] }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO t VALUES ({})", i)).unwrap()).unwrap();
     }
     let stmt = parse_statement("SELECT COUNT(*) FROM t HAVING COUNT(*) > 10").unwrap();
     if let Statement::Select { columns, from, group_by, having: Some(have), .. } = stmt {

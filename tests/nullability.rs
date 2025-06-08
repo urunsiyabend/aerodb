@@ -10,7 +10,7 @@ fn setup_catalog(filename: &str) -> Catalog {
 fn parse_insert_null() {
     let stmt = parse_statement("INSERT INTO users VALUES (1, NULL)").unwrap();
     if let Statement::Insert { values, .. } = stmt {
-        assert_eq!(values[1], "NULL");
+        assert!(matches!(values[1], Expr::Literal(ref v) if v == "NULL"));
     } else { panic!("expected insert"); }
 }
 
@@ -27,7 +27,7 @@ fn insert_and_retrieve_null() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "NULL".into()] }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, NULL)").unwrap()).unwrap();
     let mut out = Vec::new();
     execute_select_with_indexes(
         &mut catalog,

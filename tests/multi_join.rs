@@ -33,7 +33,7 @@ fn join_two_tables() {
     }).unwrap();
     // insert rows
     for (id, v) in &[(1,"av1"),(2,"av2")] {
-        aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec![id.to_string(), (*v).into()] }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO a VALUES ({}, '{}')", id, v)).unwrap()).unwrap();
     }
     let b_rows = vec![
         (1,1,"bw1"),
@@ -41,7 +41,7 @@ fn join_two_tables() {
         (3,2,"bw3"),
     ];
     for (id,a_id,w) in b_rows {
-        aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "b".into(), values: vec![id.to_string(), a_id.to_string(), w.into()] }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO b VALUES ({}, {}, '{}')", id, a_id, w)).unwrap()).unwrap();
     }
 
     let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id").unwrap();
@@ -88,12 +88,12 @@ fn join_three_tables() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec!["1".into(), "av1".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec!["2".into(), "av2".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "b".into(), values: vec!["1".into(), "1".into(), "bw1".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "b".into(), values: vec!["3".into(), "2".into(), "bw3".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "c".into(), values: vec!["1".into(), "1".into(), "cx1".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "c".into(), values: vec!["2".into(), "3".into(), "cx2".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1, 'av1')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2, 'av2')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (1, 1, 'bw1')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (3, 2, 'bw3')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO c VALUES (1, 1, 'cx1')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO c VALUES (2, 3, 'cx2')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT a.v, b.w, c.x FROM a JOIN b ON a.id = b.a_id JOIN c ON b.id = c.b_id").unwrap();
     if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
         let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
@@ -128,10 +128,10 @@ fn join_with_where() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec!["1".into(), "av1".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec!["2".into(), "av2".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "b".into(), values: vec!["1".into(), "1".into(), "bw1".into()] }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "b".into(), values: vec!["2".into(), "2".into(), "bw2".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1, 'av1')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2, 'av2')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (1, 1, 'bw1')").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (2, 2, 'bw2')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id WHERE a.v = av1").unwrap();
     if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
         let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };

@@ -1,4 +1,4 @@
-use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{ast::{Statement, TableRef}, parser::parse_statement}, execution::runtime::{select_projection_indices, execute_select_with_indexes, row_to_strings, Projection, format_header}, storage::row::{ColumnType}};
+use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{ast::{Statement, TableRef, Expr}, parser::parse_statement}, execution::runtime::{select_projection_indices, execute_select_with_indexes, row_to_strings, Projection, format_header}, storage::row::{ColumnType}};
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -19,7 +19,7 @@ fn char_column_basic() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "items".into(), values: vec!["1".into(), "A".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "items".into(), columns: None, values: vec![Expr::Literal("1".into()), Expr::Literal("A".into())] }).unwrap();
     let stmt = parse_statement("SELECT code FROM items").unwrap();
     if let Statement::Select { columns, from, .. } = stmt {
         let table = match from.first().unwrap() { TableRef::Named { name, .. } => name, _ => panic!("expected table") };
@@ -51,7 +51,8 @@ fn char_column_validate_length() {
         &mut catalog,
         Statement::Insert {
             table_name: "items".into(),
-            values: vec!["2".into(), "SASASDADSA".into()],
+            columns: None,
+            values: vec![Expr::Literal("2".into()), Expr::Literal("SASASDADSA".into())],
         },
     );
     assert!(res.is_err());

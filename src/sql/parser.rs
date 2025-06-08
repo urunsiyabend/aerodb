@@ -278,35 +278,59 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             Ok(Statement::CreateTable { table_name: name, columns, fks, if_not_exists })
         }
         "INSERT" => {
-            // Expect: INSERT INTO table_name VALUES (v1, v2, v3)
             if tokens.len() < 4 || !tokens[1].eq_ignore_ascii_case("INTO") {
-                return Err("Usage: INSERT INTO <table> VALUES (v1, v2, ...)".to_string());
+                return Err("Usage: INSERT INTO <table> [ (cols) ] VALUES (...)".to_string());
             }
-            let table = tokens[2].to_string();
-            let rest = input[input.find('(').ok_or("Missing '('")?..].trim();
+            let table = tokens[2].trim_end_matches(',').to_string();
+            let mut idx = 3;
+            let mut columns = None;
+            if idx < tokens.len() && tokens[idx].starts_with('(') && !tokens[idx].eq_ignore_ascii_case("VALUES") {
+                let mut depth = tokens[idx].matches('(').count() as i32 - tokens[idx].matches(')').count() as i32;
+                let mut col_tokens = vec![tokens[idx]];
+                idx += 1;
+                while depth > 0 {
+                    if idx >= tokens.len() { return Err("Unclosed column list".into()); }
+                    depth += tokens[idx].matches('(').count() as i32 - tokens[idx].matches(')').count() as i32;
+                    col_tokens.push(tokens[idx]);
+                    idx += 1;
+                }
+                let joined = col_tokens.join(" ");
+                let inner = joined.trim();
+                if !inner.starts_with('(') || !inner.ends_with(')') {
+                    return Err("Column list must be in parentheses".into());
+                }
+                let cols_str = &inner[1..inner.len() - 1];
+                let cols: Vec<String> = cols_str.split(',').map(|c| c.trim().to_string()).collect();
+                columns = Some(cols);
+            }
+            if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("VALUES") {
+                return Err("Expected VALUES".into());
+            }
+            idx += 1;
+            if idx >= tokens.len() { return Err("Missing values".into()); }
+            let rest_tokens = tokens[idx..].join(" ");
+            let rest = rest_tokens.trim();
             if !rest.starts_with('(') || !rest.ends_with(')') {
                 return Err("Values must be in parentheses".to_string());
             }
             let inner = &rest[1..rest.len() - 1];
-            let vals: Vec<String> = inner
-                .split(',')
+            let vals: Vec<Expr> = split_top_level(inner)
+                .into_iter()
                 .map(|s| {
                     let v = s.trim();
-                    if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
-                        v[1..v.len() - 1].to_string()
+                    if v.eq_ignore_ascii_case("DEFAULT") {
+                        Expr::DefaultValue
+                    } else if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+                        Expr::Literal(v[1..v.len()-1].to_string())
                     } else {
-                        v.to_string()
+                        Expr::Literal(v.to_string())
                     }
                 })
-                .filter(|s| !s.is_empty())
                 .collect();
             if vals.is_empty() {
                 return Err("At least one value required".to_string());
             }
-            Ok(Statement::Insert {
-                table_name: table,
-                values: vals,
-            })
+            Ok(Statement::Insert { table_name: table, columns, values: vals })
         }
         "SELECT" => {
             if tokens.len() < 4 {
