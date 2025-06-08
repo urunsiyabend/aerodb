@@ -30,16 +30,16 @@ fn foreign_key_basic() {
     } else { panic!("expected create table") }
 
     // insert a user id=1
-    let insert_user = Statement::Insert { table_name: "users".into(), values: vec!["1".into()] };
+    let insert_user = parse_statement("INSERT INTO users VALUES (1)").unwrap();
     aerodb::execution::handle_statement(&mut catalog, insert_user).unwrap();
 
     // insert order with user_id=2 should fail
-    let bad_order = Statement::Insert { table_name: "orders".into(), values: vec!["1".into(), "2".into()] };
+    let bad_order = parse_statement("INSERT INTO orders VALUES (1, 2)").unwrap();
     let res = aerodb::execution::handle_statement(&mut catalog, bad_order);
     assert!(res.is_err());
 
     // insert order with user_id=1 should succeed
-    let good_order = Statement::Insert { table_name: "orders".into(), values: vec!["2".into(), "1".into()] };
+    let good_order = parse_statement("INSERT INTO orders VALUES (2, 1)").unwrap();
     aerodb::execution::handle_statement(&mut catalog, good_order).unwrap();
 
     // attempt delete user id=1 without cascade should fail
@@ -73,9 +73,9 @@ fn foreign_key_on_delete_cascade() {
         aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, if_not_exists }).unwrap();
     } else { panic!("expected create") }
 
-    let insert_user = Statement::Insert { table_name: "users".into(), values: vec!["1".into()] };
+    let insert_user = parse_statement("INSERT INTO users VALUES (1)").unwrap();
     aerodb::execution::handle_statement(&mut catalog, insert_user).unwrap();
-    let insert_order = Statement::Insert { table_name: "orders".into(), values: vec!["1".into(), "1".into()] };
+    let insert_order = parse_statement("INSERT INTO orders VALUES (1, 1)").unwrap();
     aerodb::execution::handle_statement(&mut catalog, insert_order).unwrap();
 
     // delete user should cascade

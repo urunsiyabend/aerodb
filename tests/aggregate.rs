@@ -19,7 +19,7 @@ fn basic_count() {
         if_not_exists: false,
     }).unwrap();
     for i in 1..=3 {
-        aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "employees".into(), values: vec![i.to_string()] }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO employees VALUES ({})", i)).unwrap()).unwrap();
     }
     let stmt = parse_statement("SELECT COUNT(*) FROM employees").unwrap();
     if let Statement::Select { columns, from, group_by, .. } = stmt {
@@ -53,7 +53,7 @@ fn simple_grouping() {
         (3, "d2"),
     ];
     for (id, dep) in data {
-        aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "employees".into(), values: vec![id.to_string(), dep.into()] }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO employees VALUES ({}, '{}')", id, dep)).unwrap()).unwrap();
     }
     let stmt = parse_statement("SELECT department, COUNT(*) FROM employees GROUP BY department").unwrap();
     if let Statement::Select { columns, from, group_by, .. } = stmt {

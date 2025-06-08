@@ -29,11 +29,11 @@ fn smallint_range() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["-1".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (-1)").unwrap());
     assert!(res.is_err());
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["70000".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (70000)").unwrap());
     assert!(res.is_err());
-    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["123".into()] }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (123)").unwrap()).unwrap();
 }
 
 #[test]
@@ -48,11 +48,11 @@ fn mediumint_range() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["-9000000".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (-9000000)").unwrap());
     assert!(res.is_err());
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["9000000".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (9000000)").unwrap());
     assert!(res.is_err());
-    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["100".into()] }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (100)").unwrap()).unwrap();
 }
 
 #[test]
@@ -68,9 +68,9 @@ fn double_unsigned() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "-1".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, -1)").unwrap());
     assert!(res.is_err());
-    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "12.34".into()] }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, 12.34)").unwrap()).unwrap();
 }
 #[test]
 fn parse_datetime_types() {
@@ -96,9 +96,9 @@ fn date_validation() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "2025-13-01".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, '2025-13-01')").unwrap());
     assert!(res.is_err());
-    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "2025-12-01".into()] }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, '2025-12-01')").unwrap()).unwrap();
 }
 
 #[test]
@@ -114,9 +114,9 @@ fn datetime_validation() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "2025-02-30 10:00:00".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, '2025-02-30 10:00:00')").unwrap());
     assert!(res.is_err());
-    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "2025-06-08 12:34:56".into()] }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, '2025-06-08 12:34:56')").unwrap()).unwrap();
 }
 
 #[test]
@@ -132,9 +132,9 @@ fn time_validation() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "839:00:00".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, '839:00:00')").unwrap());
     assert!(res.is_err());
-    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "12:30:45".into()] }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, '12:30:45')").unwrap()).unwrap();
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn year_validation() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    let res = handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["1".into(), "1900".into()] });
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, '1900')").unwrap());
     assert!(res.is_err());
-    handle_statement(&mut catalog, Statement::Insert { table_name: "t".into(), values: vec!["2".into(), "2020".into()] }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, '2020')").unwrap()).unwrap();
 }

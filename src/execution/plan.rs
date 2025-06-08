@@ -20,7 +20,7 @@ pub enum PlanNode {
     },
     Insert {
         table_name: String,
-        values: Vec<String>,
+        values: Vec<Expr>,
     },
     Select {
         table_name: String,
@@ -58,7 +58,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         Statement::CreateIndex { index_name, table_name, column_name } => {
             PlanNode::CreateIndex { index_name, table_name, column_name }
         }
-        Statement::Insert { table_name, values } => {
+        Statement::Insert { table_name, values, .. } => {
             PlanNode::Insert { table_name, values }
         }
         Statement::Select { columns, from, joins, where_predicate, group_by: _, having: _ } => {

@@ -19,7 +19,7 @@ fn select_single_column() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "bob".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'bob')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT name FROM users").unwrap();
     if let Statement::Select { columns, from, .. } = stmt {
         let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };
@@ -54,7 +54,7 @@ fn select_two_columns() {
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "users".into(), values: vec!["1".into(), "bob".into()] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'bob')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT id, name FROM users").unwrap();
     if let Statement::Select { columns, from, .. } = stmt {
         let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };

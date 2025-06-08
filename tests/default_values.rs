@@ -23,9 +23,18 @@ fn insert_with_defaults() {
     let mut catalog = setup_catalog(filename);
     handle_statement(&mut catalog, parse_statement("CREATE TABLE t (id INTEGER, name TEXT DEFAULT 'anon', age INTEGER DEFAULT 18)").unwrap()).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, DEFAULT, 20)").unwrap()).unwrap();
-    handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2)").unwrap()).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO t (id) VALUES (2)").unwrap()).unwrap();
     let mut out = Vec::new();
     execute_select_with_indexes(&mut catalog, "t", Some(Expr::Equals { left: "id".into(), right: "2".into() }), &mut out).unwrap();
     assert_eq!(out[0].data.0[1], ColumnValue::Text("anon".into()));
     assert_eq!(out[0].data.0[2], ColumnValue::Integer(18));
+}
+
+#[test]
+fn unqualified_insert_wrong_count() {
+    let filename = "test_defaults_error.db";
+    let mut catalog = setup_catalog(filename);
+    handle_statement(&mut catalog, parse_statement("CREATE TABLE t (id INTEGER, name TEXT)").unwrap()).unwrap();
+    let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1)").unwrap());
+    assert!(res.is_err());
 }
