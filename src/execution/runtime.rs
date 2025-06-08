@@ -624,7 +624,11 @@ pub fn execute_group_query(
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()> {
     match stmt {
         Statement::CreateTable { table_name, columns, fks, if_not_exists } => {
-            match catalog.create_table_with_fks(&table_name, columns, fks) {
+            let cols: Vec<_> = columns
+                .into_iter()
+                .map(|c| (c.name, c.col_type, c.not_null, c.default_value))
+                .collect();
+            match catalog.create_table_with_fks(&table_name, cols, fks) {
                 Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {
@@ -644,7 +648,28 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             let root_page = table_info.root_page;
             let columns = table_info.columns.clone();
             let fks = table_info.fks.clone();
-            let row_data = build_row_data(&values, &columns)
+
+            let mut vals = values;
+            if vals.len() < columns.len() {
+                for i in vals.len()..columns.len() {
+                    if let Some(def) = table_info.default_values.get(i).cloned().flatten() {
+                        vals.push(def);
+                    } else {
+                        vals.push("NULL".into());
+                    }
+                }
+            }
+            for (i, v) in vals.iter_mut().enumerate() {
+                if v.to_ascii_uppercase() == "DEFAULT" {
+                    *v = table_info
+                        .default_values
+                        .get(i)
+                        .and_then(|o| o.clone())
+                        .unwrap_or_else(|| "NULL".into());
+                }
+            }
+
+            let row_data = build_row_data(&vals, &columns)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             for ((val, nn), (name, _)) in row_data.0.iter().zip(table_info.not_null.iter()).zip(table_info.columns.iter()) {

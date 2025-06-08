@@ -61,6 +61,17 @@ pub enum AggFunc {
     Avg,
 }
 
+/// SQL literal used in DEFAULT clauses and elsewhere.
+pub type Literal = String;
+
+#[derive(Debug, Clone)]
+pub struct ColumnDef {
+    pub name: String,
+    pub col_type: ColumnType,
+    pub not_null: bool,
+    pub default_value: Option<Literal>,
+}
+
 impl AggFunc {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -87,7 +98,7 @@ pub type Predicate = Expr;
 pub enum Statement {
     CreateTable {
         table_name: String,
-        columns: Vec<(String, ColumnType, bool)>,
+        columns: Vec<ColumnDef>,
         fks: Vec<ForeignKey>,
         if_not_exists: bool,
     },

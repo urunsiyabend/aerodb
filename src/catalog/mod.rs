@@ -13,6 +13,7 @@ pub struct TableInfo {
     pub root_page: u32,
     pub columns: Vec<(String, ColumnType)>, // column name and type
     pub not_null: Vec<bool>,
+    pub default_values: Vec<Option<crate::sql::ast::Literal>>,
     pub fks: Vec<crate::sql::ast::ForeignKey>,
 }
 
@@ -53,10 +54,10 @@ impl Catalog {
             let mut catalog_btree = BTree::open_root(&mut pager, 1)?;
             let mut cursor = catalog_btree.scan_all_rows();
             while let Some(blob_row) = cursor.next() {
-                let (table_name, root_page, columns, not_null, fks) = Self::deserialize_catalog_row(&blob_row)?;
+                let (table_name, root_page, columns, not_null, defaults, fks) = Self::deserialize_catalog_row(&blob_row)?;
                 tables.insert(
                     table_name.clone(),
-                    TableInfo { name: table_name, root_page, columns, not_null, fks },
+                    TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks },
                 );
             }
         }
@@ -69,34 +70,36 @@ impl Catalog {
         let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
         let mut cursor = catalog_btree.scan_all_rows();
         while let Some(blob_row) = cursor.next() {
-            let (table_name, root_page, columns, not_null, fks) = Self::deserialize_catalog_row(&blob_row)?;
+            let (table_name, root_page, columns, not_null, defaults, fks) = Self::deserialize_catalog_row(&blob_row)?;
             self.tables.insert(
                 table_name.clone(),
-                TableInfo { name: table_name, root_page, columns, not_null, fks },
+                TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks },
             );
         }
         Ok(())
     }
 
     pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
-        let (target_key, columns, not_null, fks) = {
+        let (target_key, columns, not_null, defaults, fks) = {
             let mut tree = BTree::open_root(&mut self.pager, 1)?;
             let mut cursor = tree.scan_all_rows();
             let mut found = None;
             let mut cols = Vec::new();
             let mut nn_vec = Vec::new();
             let mut fk_vec = Vec::new();
+            let mut def_vec = Vec::new();
             while let Some(row) = cursor.next() {
-                let (tbl, _rp, c, nn, f) = Self::deserialize_catalog_row(&row)?;
+                let (tbl, _rp, c, nn, def, f) = Self::deserialize_catalog_row(&row)?;
                 if tbl == name {
                     found = Some(row.key);
                     cols = c;
                     nn_vec = nn;
+                    def_vec = def;
                     fk_vec = f;
                     break;
                 }
             }
-            (found, cols, nn_vec, fk_vec)
+            (found, cols, nn_vec, def_vec, fk_vec)
         };
 
         if let Some(key) = target_key {
@@ -106,7 +109,8 @@ impl Catalog {
                 .iter()
                 .cloned()
                 .zip(not_null.iter().cloned())
-                .map(|((n, t), nn)| (n, t, nn))
+                .zip(defaults.iter().cloned())
+                .map(|(((n, t), nn), d)| (n, t, nn, d))
                 .collect();
             tree.insert(key, Self::serialize_catalog_row(name, new_root, &cols, &fks))?;
             let new_root_page = tree.root_page();
@@ -145,11 +149,11 @@ impl Catalog {
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
     pub fn create_table(&mut self, name: &str, columns: Vec<(String, ColumnType)>) -> io::Result<()> {
-        let cols_with_nn: Vec<_> = columns.into_iter().map(|(n,t)| (n,t,false)).collect();
+        let cols_with_nn: Vec<_> = columns.into_iter().map(|(n,t)| (n,t,false,None)).collect();
         self.create_table_with_fks(name, cols_with_nn, Vec::new())
     }
 
-    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool)>, fks: Vec<crate::sql::ast::ForeignKey>) -> io::Result<()> {
+    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<crate::sql::ast::Literal>)>, fks: Vec<crate::sql::ast::ForeignKey>) -> io::Result<()> {
         if self.tables.contains_key(name) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -179,10 +183,17 @@ impl Catalog {
         }
 
         // Update in-memory
-        let (cols, not_null): (Vec<_>, Vec<_>) = columns.into_iter().map(|(n,t,nn)| ((n,t), nn)).unzip();
+        let mut cols = Vec::new();
+        let mut not_null = Vec::new();
+        let mut defaults = Vec::new();
+        for (n, t, nn, d) in columns {
+            cols.push((n, t));
+            not_null.push(nn);
+            defaults.push(d);
+        }
         self.tables.insert(
             name.to_string(),
-            TableInfo { name: name.to_string(), root_page: new_root, columns: cols, not_null, fks },
+            TableInfo { name: name.to_string(), root_page: new_root, columns: cols, not_null, default_values: defaults, fks },
         );
         Ok(())
     }
@@ -403,7 +414,7 @@ impl Catalog {
             let mut cursor = catalog_btree.scan_all_rows();
             let mut found = None;
             while let Some(row) = cursor.next() {
-                let (table_name, _rp, _cols, _nn, _fks) = Self::deserialize_catalog_row(&row)?;
+                let (table_name, _rp, _cols, _nn, _defaults, _fks) = Self::deserialize_catalog_row(&row)?;
                 if table_name == name {
                     found = Some(row.key);
                     break;
@@ -444,14 +455,14 @@ impl Catalog {
     fn serialize_catalog_row(
         name: &str,
         root_page: u32,
-        columns: &[(String, ColumnType, bool)],
+        columns: &[(String, ColumnType, bool, Option<crate::sql::ast::Literal>)],
         fks: &[crate::sql::ast::ForeignKey],
     ) -> RowData {
         let mut vals = Vec::new();
         vals.push(ColumnValue::Text(name.to_string()));
         vals.push(ColumnValue::Integer(root_page as i32));
         vals.push(ColumnValue::Integer(columns.len() as i32));
-        for (name, ty, nn) in columns {
+        for (name, ty, nn, default) in columns {
             vals.push(ColumnValue::Text(name.clone()));
             vals.push(ColumnValue::Integer(ty.to_code()));
             match ty {
@@ -472,6 +483,15 @@ impl Catalog {
                 _ => {}
             }
             vals.push(ColumnValue::Integer(if *nn { 1 } else { 0 }));
+            match default {
+                Some(lit) => {
+                    vals.push(ColumnValue::Integer(1));
+                    vals.push(ColumnValue::Text(lit.clone()));
+                }
+                None => {
+                    vals.push(ColumnValue::Integer(0));
+                }
+            }
         }
         vals.push(ColumnValue::Integer(fks.len() as i32));
         for fk in fks {
@@ -495,7 +515,7 @@ impl Catalog {
     }
 
     /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>, Vec<ForeignKey>).
-    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<bool>, Vec<crate::sql::ast::ForeignKey>)> {
+    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<bool>, Vec<Option<crate::sql::ast::Literal>>, Vec<crate::sql::ast::ForeignKey>)> {
         let values = &row.data.0;
         if values.len() < 3 {
             return Err(io::Error::new(io::ErrorKind::Other, "catalog row too short"));
@@ -514,6 +534,7 @@ impl Catalog {
         };
         let mut columns = Vec::new();
         let mut not_null = Vec::new();
+        let mut defaults = Vec::new();
         let mut idx = 3;
         for _ in 0..num_cols {
             let name = match &values[idx] {
@@ -564,8 +585,17 @@ impl Catalog {
             };
             let nn = match values.get(idx) { Some(ColumnValue::Integer(i)) => *i == 1, _ => false };
             idx += 1;
+            let has_default = match values.get(idx) { Some(ColumnValue::Integer(i)) => *i == 1, _ => false };
+            idx += 1;
+            let default = if has_default {
+                if let Some(ColumnValue::Text(s)) = values.get(idx) {
+                    idx += 1;
+                    Some(s.clone())
+                } else { None }
+            } else { None };
             columns.push((name, ty));
             not_null.push(nn);
+            defaults.push(default);
         }
         let num_fks = match values.get(idx) {
             Some(ColumnValue::Integer(i)) => *i as usize,
@@ -622,6 +652,6 @@ impl Catalog {
             idx += 1;
             fks.push(crate::sql::ast::ForeignKey { columns: cols, parent_table, parent_columns: parent_cols, on_delete, on_update });
         }
-        Ok((name, root_page, columns, not_null, fks))
+        Ok((name, root_page, columns, not_null, defaults, fks))
     }
 }

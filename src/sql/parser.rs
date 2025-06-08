@@ -1,4 +1,4 @@
-use crate::sql::ast::{Expr, Statement, OrderBy, ForeignKey, Action};
+use crate::sql::ast::{Expr, Statement, OrderBy, ForeignKey, Action, ColumnDef, Literal};
 use crate::storage::row::ColumnType;
 
 fn split_top_level(s: &str) -> Vec<String> {
@@ -20,6 +20,39 @@ fn split_top_level(s: &str) -> Vec<String> {
         parts.push(current.trim().to_string());
     }
     parts
+}
+
+fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
+    let mut parts: Vec<&str> = chunk.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Err("Column definitions must be <name> <type>".to_string());
+    }
+    let name = parts.remove(0);
+    let mut not_null = false;
+    if parts.len() >= 2 && parts[parts.len()-2].eq_ignore_ascii_case("NOT") && parts[parts.len()-1].eq_ignore_ascii_case("NULL") {
+        not_null = true;
+        parts.truncate(parts.len()-2);
+    } else if parts.last().map(|s| s.eq_ignore_ascii_case("NULL")) == Some(true) {
+        parts.pop();
+    }
+    let mut default_value = None;
+    if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("DEFAULT")) {
+        if pos + 1 >= parts.len() {
+            return Err("DEFAULT requires a literal".into());
+        }
+        let literal = parts[pos+1..].join(" ");
+        let lit = literal.trim();
+        let lit = if (lit.starts_with('"') && lit.ends_with('"')) || (lit.starts_with('\'') && lit.ends_with('\'')) {
+            lit[1..lit.len()-1].to_string()
+        } else {
+            lit.to_string()
+        };
+        default_value = Some(lit);
+        parts.truncate(pos);
+    }
+    let type_str = parts.join(" ");
+    let ctype = ColumnType::from_str(&type_str).ok_or_else(|| format!("Unknown type {}", type_str))?;
+    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, default_value })
 }
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
@@ -183,7 +216,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             let inner = &rest[1..rest.len() - 1];
 
 
-            let mut columns = Vec::new();
+            let mut columns: Vec<ColumnDef> = Vec::new();
             let mut fks = Vec::new();
             for chunk in split_top_level(inner) {
                 if chunk.to_uppercase().starts_with("FOREIGN KEY") {
@@ -233,22 +266,8 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     }
                     fks.push(ForeignKey { columns: cols, parent_table, parent_columns, on_delete, on_update });
                 } else {
-                    let mut parts: Vec<&str> = chunk.split_whitespace().collect();
-                    if parts.len() < 2 {
-                        return Err("Column definitions must be <name> <type>".to_string());
-                    }
-                    let name = parts.remove(0);
-                    let mut not_null = false;
-                    if parts.len() >= 2 && parts[parts.len()-2].eq_ignore_ascii_case("NOT") && parts[parts.len()-1].eq_ignore_ascii_case("NULL") {
-                        not_null = true;
-                        parts.truncate(parts.len()-2);
-                    } else if parts.last().map(|s| s.eq_ignore_ascii_case("NULL")) == Some(true) {
-                        parts.pop();
-                    }
-                    let type_str = parts.join(" ");
-                    let ctype = ColumnType::from_str(&type_str)
-                        .ok_or_else(|| format!("Unknown type {}", type_str))?;
-                    columns.push((name.to_string(), ctype, not_null));
+                    let col = parse_column_def(&chunk)?;
+                    columns.push(col);
                 }
             }
 
