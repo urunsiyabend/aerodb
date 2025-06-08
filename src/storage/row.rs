@@ -182,6 +182,7 @@ impl ColumnType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColumnValue {
+    Null,
     Integer(i32),
     Text(String),
     Boolean(bool),
@@ -203,6 +204,9 @@ impl RowData {
         buf.extend(&(self.0.len() as u16).to_le_bytes());
         for col in &self.0 {
             match col {
+                ColumnValue::Null => {
+                    buf.push(0x00);
+                }
                 ColumnValue::Integer(i) => {
                     buf.push(0x01);
                     buf.extend(&i.to_le_bytes());
@@ -265,6 +269,9 @@ impl RowData {
             let tag = bytes[offset];
             offset += 1;
             match tag {
+                0x00 => {
+                    cols.push(ColumnValue::Null);
+                }
                 0x01 => {
                     if offset + 4 > bytes.len() {
                         return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
@@ -373,6 +380,10 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
     }
     let mut cols = Vec::with_capacity(columns.len());
     for (v, (name, ty)) in values.iter().zip(columns.iter()) {
+        if v.to_ascii_uppercase() == "NULL" {
+            cols.push(ColumnValue::Null);
+            continue;
+        }
         match ty {
             ColumnType::Integer => match v.parse::<i32>() {
                 Ok(i) => cols.push(ColumnValue::Integer(i)),
@@ -490,6 +501,7 @@ pub struct Row {
 impl ColumnValue {
     pub fn to_string_value(&self) -> String {
         match self {
+            ColumnValue::Null => "NULL".into(),
             ColumnValue::Integer(i) => i.to_string(),
             ColumnValue::Text(s) => s.clone(),
             ColumnValue::Boolean(b) => b.to_string(),

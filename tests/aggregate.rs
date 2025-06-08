@@ -12,7 +12,7 @@ fn basic_count() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
-        columns: vec![("id".into(), ColumnType::Integer)],
+        columns: vec![("id".into(), ColumnType::Integer, false)],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -38,7 +38,10 @@ fn simple_grouping() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("department".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("department".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();

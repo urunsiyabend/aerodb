@@ -23,7 +23,7 @@ fn smallint_range() {
     let mut catalog = setup_catalog(filename);
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
-        columns: vec![("id".into(), ColumnType::SmallInt { width: 5, unsigned: true })],
+        columns: vec![("id".into(), ColumnType::SmallInt { width: 5, unsigned: true }, false)],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -40,7 +40,7 @@ fn mediumint_range() {
     let mut catalog = setup_catalog(filename);
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
-        columns: vec![("val".into(), ColumnType::MediumInt { width: 6, unsigned: false })],
+        columns: vec![("val".into(), ColumnType::MediumInt { width: 6, unsigned: false }, false)],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -58,8 +58,8 @@ fn double_unsigned() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("price".into(), ColumnType::Double { precision: 8, scale: 2, unsigned: true })
+            ("id".into(), ColumnType::Integer, false),
+            ("price".into(), ColumnType::Double { precision: 8, scale: 2, unsigned: true }, false)
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -86,8 +86,8 @@ fn date_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("d".into(), ColumnType::Date),
+            ("id".into(), ColumnType::Integer, false),
+            ("d".into(), ColumnType::Date, false),
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -104,8 +104,8 @@ fn datetime_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("ts".into(), ColumnType::DateTime),
+            ("id".into(), ColumnType::Integer, false),
+            ("ts".into(), ColumnType::DateTime, false),
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -122,8 +122,8 @@ fn time_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("t".into(), ColumnType::Time),
+            ("id".into(), ColumnType::Integer, false),
+            ("t".into(), ColumnType::Time, false),
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -140,8 +140,8 @@ fn year_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("y".into(), ColumnType::Year),
+            ("id".into(), ColumnType::Integer, false),
+            ("y".into(), ColumnType::Year, false),
         ],
         fks: Vec::new(),
         if_not_exists: false,

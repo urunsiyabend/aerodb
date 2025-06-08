@@ -647,6 +647,18 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             let row_data = build_row_data(&values, &columns)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
+            for ((val, nn), (name, _)) in row_data.0.iter().zip(table_info.not_null.iter()).zip(table_info.columns.iter()) {
+                if *nn && matches!(val, ColumnValue::Null) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "null value in column \"{}\" of relation \"{}\" violates not-null constraint",
+                            name, table_name
+                        ),
+                    ));
+                }
+            }
+
             for fk in &fks {
                 if fk.columns.is_empty() || fk.parent_columns.is_empty() {
                     continue;

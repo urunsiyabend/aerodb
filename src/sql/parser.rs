@@ -233,14 +233,22 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     }
                     fks.push(ForeignKey { columns: cols, parent_table, parent_columns, on_delete, on_update });
                 } else {
-                    let parts: Vec<&str> = chunk.split_whitespace().collect();
+                    let mut parts: Vec<&str> = chunk.split_whitespace().collect();
                     if parts.len() < 2 {
                         return Err("Column definitions must be <name> <type>".to_string());
                     }
-                    let type_str = parts[1..].join(" ");
+                    let name = parts.remove(0);
+                    let mut not_null = false;
+                    if parts.len() >= 2 && parts[parts.len()-2].eq_ignore_ascii_case("NOT") && parts[parts.len()-1].eq_ignore_ascii_case("NULL") {
+                        not_null = true;
+                        parts.truncate(parts.len()-2);
+                    } else if parts.last().map(|s| s.eq_ignore_ascii_case("NULL")) == Some(true) {
+                        parts.pop();
+                    }
+                    let type_str = parts.join(" ");
                     let ctype = ColumnType::from_str(&type_str)
                         .ok_or_else(|| format!("Unknown type {}", type_str))?;
-                    columns.push((parts[0].to_string(), ctype));
+                    columns.push((name.to_string(), ctype, not_null));
                 }
             }
 

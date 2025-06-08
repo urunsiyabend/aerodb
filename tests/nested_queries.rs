@@ -25,7 +25,7 @@ fn execute_from_subquery_simple() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t1".into(),
-        columns: vec![("id".into(), ColumnType::Integer)],
+        columns: vec![("id".into(), ColumnType::Integer, false)],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -59,13 +59,13 @@ fn execute_where_in_subquery() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer)],
+        columns: vec![("id".into(), ColumnType::Integer, false)],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "admins".into(),
-        columns: vec![("id".into(), ColumnType::Integer)],
+        columns: vec![("id".into(), ColumnType::Integer, false)],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -105,13 +105,20 @@ fn execute_exists_correlated() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("name".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "orders".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("user_id".into(), ColumnType::Integer), ("product".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("user_id".into(), ColumnType::Integer, false),
+            ("product".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -139,13 +146,20 @@ fn execute_exists_constant() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("name".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "orders".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("user_id".into(), ColumnType::Integer), ("product".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("user_id".into(), ColumnType::Integer, false),
+            ("product".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -181,13 +195,19 @@ fn execute_scalar_subquery() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("name".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "orders".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("user_id".into(), ColumnType::Integer)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("user_id".into(), ColumnType::Integer, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
