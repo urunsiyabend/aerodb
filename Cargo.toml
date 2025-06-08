@@ -8,4 +8,4 @@ env_logger = "0.11.8"
 lazy_static = "1.5.0"
 log = "0.4.27"
 nom = "8.0.0"
-chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+chrono = { version = "0.4", default-features = false, features = ["alloc", "clock", "serde"] }

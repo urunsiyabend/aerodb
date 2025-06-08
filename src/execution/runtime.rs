@@ -1,10 +1,31 @@
 use std::io;
 
 use crate::catalog::Catalog;
-use crate::sql::ast::{Statement, Expr};
+use crate::sql::ast::{Statement, Expr, expr_to_string};
+use crate::sql::functions::{FunctionEvaluator, EvalError};
 use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
 use std::collections::HashMap;
+
+fn evaluate_default(expr: &Expr) -> io::Result<String> {
+    match expr {
+        Expr::Literal(s) => Ok(s.clone()),
+        Expr::FunctionCall { name, args } => {
+            let arg_vals: Vec<ColumnValue> = args
+                .iter()
+                .map(|e| match evaluate_default(e) {
+                    Ok(s) => Ok(ColumnValue::Text(s)),
+                    Err(e) => Err(e),
+                })
+                .collect::<Result<_, _>>()?;
+            match FunctionEvaluator::evaluate_function(name, &arg_vals) {
+                Ok(val) => Ok(val.to_string_value()),
+                Err(_) => Err(io::Error::new(io::ErrorKind::Other, "function error")),
+            }
+        }
+        _ => Err(io::Error::new(io::ErrorKind::Other, "unsupported default expression")),
+    }
+}
 
 pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> io::Result<usize> {
     if let Ok(table_info) = catalog.get_table(table_name) {
@@ -653,7 +674,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             if vals.len() < columns.len() {
                 for i in vals.len()..columns.len() {
                     if let Some(def) = table_info.default_values.get(i).cloned().flatten() {
-                        vals.push(def);
+                        vals.push(evaluate_default(&def)?);
                     } else {
                         vals.push("NULL".into());
                     }
@@ -661,11 +682,10 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             }
             for (i, v) in vals.iter_mut().enumerate() {
                 if v.to_ascii_uppercase() == "DEFAULT" {
-                    *v = table_info
-                        .default_values
-                        .get(i)
-                        .and_then(|o| o.clone())
-                        .unwrap_or_else(|| "NULL".into());
+                    *v = match table_info.default_values.get(i).and_then(|o| o.as_ref()) {
+                        Some(expr) => evaluate_default(expr)?,
+                        None => "NULL".into(),
+                    };
                 }
             }
 
@@ -1003,7 +1023,7 @@ fn evaluate_with_catalog(
             let _ = execute_select_statement(catalog, query, &mut rows, Some(values))?;
             Ok(!rows.is_empty())
         }
-        Expr::Subquery(_) => Ok(false),
+        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } => Ok(false),
     }
 }
 
