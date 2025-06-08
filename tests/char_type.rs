@@ -13,8 +13,8 @@ fn char_column_basic() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "items".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("code".into(), ColumnType::Char(3)),
+            ("id".into(), ColumnType::Integer, false),
+            ("code".into(), ColumnType::Char(3), false),
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -41,8 +41,8 @@ fn char_column_validate_length() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "items".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("code".into(), ColumnType::Char(3)),
+            ("id".into(), ColumnType::Integer, false),
+            ("code".into(), ColumnType::Char(3), false),
         ],
         fks: Vec::new(),
         if_not_exists: false,

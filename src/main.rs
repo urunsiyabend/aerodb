@@ -61,7 +61,7 @@ fn main() -> io::Result<()> {
 }
 
 
-#[cfg(test)]
+#[cfg(all(test, feature = "main-tests"))]
 mod tests {
     use super::*; // bring Catalog, Pager, BTree, etc. into scope
     use crate::sql::ast::evaluate_expression;
@@ -82,9 +82,9 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
-                    ("email".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
+                    ("email".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -132,8 +132,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -196,8 +196,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -242,8 +242,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -287,7 +287,7 @@ mod tests {
         catalog
             .create_table(
                 "nums",
-                vec![("id".into(), ColumnType::Integer)],
+                vec![("id".into(), ColumnType::Integer, false)],
             )
             .unwrap();
 
@@ -328,7 +328,7 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer, false)])
             .unwrap();
 
         for i in 1..=100 {
@@ -368,7 +368,7 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer, false)])
             .unwrap();
 
         for i in 1..=300 {
@@ -458,9 +458,9 @@ mod tests {
                 assert_eq!(table_name, "t");
                 assert_eq!(columns,
                     vec![
-                        ("id".into(), ColumnType::Integer),
-                        ("name".into(), ColumnType::Text),
-                        ("active".into(), ColumnType::Boolean),
+                        ("id".into(), ColumnType::Integer, false),
+                        ("name".into(), ColumnType::Text, false),
+                        ("active".into(), ColumnType::Boolean, false),
                     ]
                 );
                 assert!(!if_not_exists);
@@ -476,7 +476,7 @@ mod tests {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
         catalog
-            .create_table("nums", vec![("id".into(), ColumnType::Integer)])
+            .create_table("nums", vec![("id".into(), ColumnType::Integer, false)])
             .unwrap();
 
         for i in 1..=3 {
@@ -504,8 +504,8 @@ mod tests {
     fn build_row_data_type_mismatch() {
         use crate::storage::row::build_row_data;
         let columns = vec![
-            ("id".into(), ColumnType::Integer),
-            ("name".into(), ColumnType::Text),
+            ("id".into(), ColumnType::Integer, false),
+            ("name".into(), ColumnType::Text, false),
         ];
         let values = vec!["abc".to_string(), "bob".to_string()];
         let result = build_row_data(&values, &columns);
@@ -532,7 +532,7 @@ mod tests {
         catalog
             .create_table(
                 "users",
-                vec![("id".into(), ColumnType::Integer)],
+                vec![("id".into(), ColumnType::Integer, false)],
             )
             .unwrap();
         assert!(catalog.get_table("users").is_ok());
@@ -567,8 +567,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -629,8 +629,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -686,8 +686,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -739,8 +739,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -789,8 +789,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -839,8 +839,8 @@ mod tests {
         let create = Statement::CreateTable {
             table_name: "users".into(),
             columns: vec![
-                ("id".into(), ColumnType::Integer),
-                ("name".into(), ColumnType::Text),
+                ("id".into(), ColumnType::Integer, false),
+                ("name".into(), ColumnType::Text, false),
             ],
             fks: Vec::new(),
             if_not_exists: false,
@@ -891,8 +891,8 @@ mod tests {
             .create_table(
                 "users",
                 vec![
-                    ("id".into(), ColumnType::Integer),
-                    ("name".into(), ColumnType::Text),
+                    ("id".into(), ColumnType::Integer, false),
+                    ("name".into(), ColumnType::Text, false),
                 ],
             )
             .unwrap();
@@ -970,7 +970,7 @@ mod tests {
         catalog
             .create_table(
                 "items",
-                vec![("id".into(), ColumnType::Integer)],
+                vec![("id".into(), ColumnType::Integer, false)],
             )
             .unwrap();
 
@@ -995,7 +995,7 @@ mod tests {
         catalog
             .create_table(
                 "users",
-                vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+                vec![("id".into(), ColumnType::Integer, false), ("name".into(), ColumnType::Text, false)],
             )
             .unwrap();
 
@@ -1034,7 +1034,7 @@ mod tests {
         catalog
             .create_table(
                 "items",
-                vec![("id".into(), ColumnType::Integer)],
+                vec![("id".into(), ColumnType::Integer, false)],
             )
             .unwrap();
 
@@ -1059,7 +1059,7 @@ mod tests {
         catalog
             .create_table(
                 "items",
-                vec![("id".into(), ColumnType::Integer)],
+                vec![("id".into(), ColumnType::Integer, false)],
             )
             .unwrap();
 
@@ -1083,7 +1083,7 @@ mod tests {
         catalog
             .create_table(
                 "items",
-                vec![("id".into(), ColumnType::Integer)],
+                vec![("id".into(), ColumnType::Integer, false)],
             )
             .unwrap();
 

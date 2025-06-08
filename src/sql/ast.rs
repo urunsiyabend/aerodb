@@ -87,7 +87,7 @@ pub type Predicate = Expr;
 pub enum Statement {
     CreateTable {
         table_name: String,
-        columns: Vec<(String, ColumnType)>,
+        columns: Vec<(String, ColumnType, bool)>,
         fks: Vec<ForeignKey>,
         if_not_exists: bool,
     },

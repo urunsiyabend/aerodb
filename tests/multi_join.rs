@@ -14,13 +14,20 @@ fn join_two_tables() {
     // create tables a(id INTEGER, v TEXT) and b(id INTEGER, a_id INTEGER, w TEXT)
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "a".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("v".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("v".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("a_id".into(), ColumnType::Integer), ("w".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("a_id".into(), ColumnType::Integer, false),
+            ("w".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -52,9 +59,35 @@ fn join_two_tables() {
 fn join_three_tables() {
     let filename = "test_join_three.db";
     let mut catalog = setup_catalog(filename);
-    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name: "a".into(), columns: vec![("id".into(), ColumnType::Integer), ("v".into(), ColumnType::Text)], fks: Vec::new(), if_not_exists: false }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name: "b".into(), columns: vec![("id".into(), ColumnType::Integer), ("a_id".into(), ColumnType::Integer), ("w".into(), ColumnType::Text)], fks: Vec::new(), if_not_exists: false }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name: "c".into(), columns: vec![("id".into(), ColumnType::Integer), ("b_id".into(), ColumnType::Integer), ("x".into(), ColumnType::Text)], fks: Vec::new(), if_not_exists: false }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "a".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("v".into(), ColumnType::Text, false),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "b".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("a_id".into(), ColumnType::Integer, false),
+            ("w".into(), ColumnType::Text, false),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "c".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("b_id".into(), ColumnType::Integer, false),
+            ("x".into(), ColumnType::Text, false),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec!["1".into(), "av1".into()] }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec!["2".into(), "av2".into()] }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "b".into(), values: vec!["1".into(), "1".into(), "bw1".into()] }).unwrap();
@@ -76,8 +109,25 @@ fn join_three_tables() {
 fn join_with_where() {
     let filename = "test_join_where.db";
     let mut catalog = setup_catalog(filename);
-    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name: "a".into(), columns: vec![("id".into(), ColumnType::Integer), ("v".into(), ColumnType::Text)], fks: Vec::new(), if_not_exists: false }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name: "b".into(), columns: vec![("id".into(), ColumnType::Integer), ("a_id".into(), ColumnType::Integer), ("w".into(), ColumnType::Text)], fks: Vec::new(), if_not_exists: false }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "a".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("v".into(), ColumnType::Text, false),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "b".into(),
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("a_id".into(), ColumnType::Integer, false),
+            ("w".into(), ColumnType::Text, false),
+        ],
+        fks: Vec::new(),
+        if_not_exists: false,
+    }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec!["1".into(), "av1".into()] }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "a".into(), values: vec!["2".into(), "av2".into()] }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "b".into(), values: vec!["1".into(), "1".into(), "bw1".into()] }).unwrap();

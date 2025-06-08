@@ -5,7 +5,7 @@ use crate::storage::row::ColumnType;
 pub enum PlanNode {
     CreateTable {
         table_name: String,
-        columns: Vec<(String, ColumnType)>,
+        columns: Vec<(String, ColumnType, bool)>,
         if_not_exists: bool,
     },
     CreateIndex {

@@ -12,7 +12,10 @@ fn select_single_column() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("name".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -44,7 +47,10 @@ fn select_two_columns() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer), ("name".into(), ColumnType::Text)],
+        columns: vec![
+            ("id".into(), ColumnType::Integer, false),
+            ("name".into(), ColumnType::Text, false),
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();

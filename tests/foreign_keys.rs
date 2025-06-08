@@ -11,7 +11,7 @@ fn foreign_key_basic() {
     // create users table
     let create_users = Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer)],
+        columns: vec![("id".into(), ColumnType::Integer, false)],
         fks: Vec::new(),
         if_not_exists: false,
     };
@@ -55,7 +55,7 @@ fn foreign_key_on_delete_cascade() {
     // users
     let create_users = Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer)],
+        columns: vec![("id".into(), ColumnType::Integer, false)],
         fks: Vec::new(),
         if_not_exists: false,
     };

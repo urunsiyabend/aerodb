@@ -13,9 +13,9 @@ fn having_basic_sum() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "sales".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("region".into(), ColumnType::Text),
-            ("amount".into(), ColumnType::Integer),
+            ("id".into(), ColumnType::Integer, false),
+            ("region".into(), ColumnType::Text, false),
+            ("amount".into(), ColumnType::Integer, false),
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -55,9 +55,9 @@ fn having_with_where() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer),
-            ("dept".into(), ColumnType::Text),
-            ("active".into(), ColumnType::Integer),
+            ("id".into(), ColumnType::Integer, false),
+            ("dept".into(), ColumnType::Text, false),
+            ("active".into(), ColumnType::Integer, false),
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -103,7 +103,7 @@ fn having_filters_all() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
-        columns: vec![("id".into(), ColumnType::Integer)],
+        columns: vec![("id".into(), ColumnType::Integer, false)],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
