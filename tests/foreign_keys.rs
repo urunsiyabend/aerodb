@@ -11,7 +11,9 @@ fn foreign_key_basic() {
     // create users table
     let create_users = Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer, false)],
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None }
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     };
@@ -55,7 +57,9 @@ fn foreign_key_on_delete_cascade() {
     // users
     let create_users = Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![("id".into(), ColumnType::Integer, false)],
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None }
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     };

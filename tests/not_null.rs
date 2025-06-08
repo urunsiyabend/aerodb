@@ -11,10 +11,10 @@ fn parse_create_not_null() {
     let stmt = parse_statement("CREATE TABLE persons (id INTEGER NOT NULL, last_name TEXT NOT NULL, first_name TEXT NOT NULL, age INTEGER)").unwrap();
     if let Statement::CreateTable { columns, .. } = stmt {
         assert_eq!(columns.len(), 4);
-        assert!(columns[0].2);
-        assert!(columns[1].2);
-        assert!(columns[2].2);
-        assert!(!columns[3].2);
+        assert!(columns[0].not_null);
+        assert!(columns[1].not_null);
+        assert!(columns[2].not_null);
+        assert!(!columns[3].not_null);
     } else { panic!("expected create table"); }
 }
 

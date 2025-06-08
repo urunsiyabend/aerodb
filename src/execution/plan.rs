@@ -1,11 +1,12 @@
 use crate::sql::ast::{Expr, Statement, OrderBy, JoinClause, SelectExpr, Predicate};
 use crate::storage::row::ColumnType;
+use crate::sql::ast::ColumnDef;
 
 #[derive(Debug)]
 pub enum PlanNode {
     CreateTable {
         table_name: String,
-        columns: Vec<(String, ColumnType, bool)>,
+        columns: Vec<ColumnDef>,
         if_not_exists: bool,
     },
     CreateIndex {

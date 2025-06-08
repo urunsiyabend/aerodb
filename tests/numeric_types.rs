@@ -10,10 +10,10 @@ fn setup_catalog(filename: &str) -> Catalog {
 fn parse_numeric_types() {
     let stmt = parse_statement("CREATE TABLE nums (a SMALLINT(5) UNSIGNED, b MEDIUMINT(6), c DOUBLE(8,2) UNSIGNED, d DATE)").unwrap();
     if let Statement::CreateTable { columns, .. } = stmt {
-        assert_eq!(columns[0].1, ColumnType::SmallInt { width: 5, unsigned: true });
-        assert_eq!(columns[1].1, ColumnType::MediumInt { width: 6, unsigned: false });
-        assert_eq!(columns[2].1, ColumnType::Double { precision: 8, scale: 2, unsigned: true });
-        assert_eq!(columns[3].1, ColumnType::Date);
+        assert_eq!(columns[0].col_type, ColumnType::SmallInt { width: 5, unsigned: true });
+        assert_eq!(columns[1].col_type, ColumnType::MediumInt { width: 6, unsigned: false });
+        assert_eq!(columns[2].col_type, ColumnType::Double { precision: 8, scale: 2, unsigned: true });
+        assert_eq!(columns[3].col_type, ColumnType::Date);
     } else { panic!("expected create table"); }
 }
 
@@ -23,7 +23,9 @@ fn smallint_range() {
     let mut catalog = setup_catalog(filename);
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
-        columns: vec![("id".into(), ColumnType::SmallInt { width: 5, unsigned: true }, false)],
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::SmallInt { width: 5, unsigned: true }, not_null: false, default_value: None }
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -40,7 +42,9 @@ fn mediumint_range() {
     let mut catalog = setup_catalog(filename);
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
-        columns: vec![("val".into(), ColumnType::MediumInt { width: 6, unsigned: false }, false)],
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "val".into(), col_type: ColumnType::MediumInt { width: 6, unsigned: false }, not_null: false, default_value: None }
+        ],
         fks: Vec::new(),
         if_not_exists: false,
     }).unwrap();
@@ -58,8 +62,8 @@ fn double_unsigned() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer, false),
-            ("price".into(), ColumnType::Double { precision: 8, scale: 2, unsigned: true }, false)
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "price".into(), col_type: ColumnType::Double { precision: 8, scale: 2, unsigned: true }, not_null: false, default_value: None }
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -72,10 +76,10 @@ fn double_unsigned() {
 fn parse_datetime_types() {
     let stmt = parse_statement("CREATE TABLE t (a DATETIME, b TIMESTAMP, c TIME, d YEAR)").unwrap();
     if let Statement::CreateTable { columns, .. } = stmt {
-        assert_eq!(columns[0].1, ColumnType::DateTime);
-        assert_eq!(columns[1].1, ColumnType::Timestamp);
-        assert_eq!(columns[2].1, ColumnType::Time);
-        assert_eq!(columns[3].1, ColumnType::Year);
+        assert_eq!(columns[0].col_type, ColumnType::DateTime);
+        assert_eq!(columns[1].col_type, ColumnType::Timestamp);
+        assert_eq!(columns[2].col_type, ColumnType::Time);
+        assert_eq!(columns[3].col_type, ColumnType::Year);
     } else { panic!("expected create table"); }
 }
 
@@ -86,8 +90,8 @@ fn date_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer, false),
-            ("d".into(), ColumnType::Date, false),
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "d".into(), col_type: ColumnType::Date, not_null: false, default_value: None },
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -104,8 +108,8 @@ fn datetime_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer, false),
-            ("ts".into(), ColumnType::DateTime, false),
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "ts".into(), col_type: ColumnType::DateTime, not_null: false, default_value: None },
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -122,8 +126,8 @@ fn time_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer, false),
-            ("t".into(), ColumnType::Time, false),
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "t".into(), col_type: ColumnType::Time, not_null: false, default_value: None },
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -140,8 +144,8 @@ fn year_validation() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![
-            ("id".into(), ColumnType::Integer, false),
-            ("y".into(), ColumnType::Year, false),
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "y".into(), col_type: ColumnType::Year, not_null: false, default_value: None },
         ],
         fks: Vec::new(),
         if_not_exists: false,
