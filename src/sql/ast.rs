@@ -73,6 +73,14 @@ pub struct ColumnDef {
     pub col_type: ColumnType,
     pub not_null: bool,
     pub default_value: Option<Expr>,
+    pub auto_increment: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateSequence {
+    pub name: String,
+    pub start: i64,
+    pub increment: i64,
 }
 
 impl AggFunc {
@@ -136,6 +144,7 @@ pub enum Statement {
         assignments: Vec<(String, String)>,
         selection: Option<Expr>,
     },
+    CreateSequence(CreateSequence),
     BeginTransaction { name: Option<String> },
     Commit,
     Rollback,

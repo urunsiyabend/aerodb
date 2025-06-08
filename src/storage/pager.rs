@@ -46,11 +46,12 @@ impl Pager {
             .write(true)
             .create(true)
             .open(filename)?;
-        let file_len = file.metadata()?.len();
-        let file_length_pages = (file_len as usize / PAGE_SIZE) as u32;
-
         let wal_path = format!("{}.wal", filename);
         let wal = Wal::open(&wal_path, &mut file)?;
+
+        // Determine file length after WAL recovery in case pages were replayed
+        let file_len_after = file.metadata()?.len();
+        let file_length_pages = (file_len_after as usize / PAGE_SIZE) as u32;
 
         Ok(Pager {
             file,

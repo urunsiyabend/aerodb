@@ -182,8 +182,8 @@ impl<'a> BTree<'a> {
             return Ok(false);
         }
 
-        // Allocate a fresh root page
-        let new_root = self.pager.allocate_page()?;
+        // Reinitialize current root page instead of allocating new one
+        let new_root = self.root_page;
         {
             let page = self.pager.get_page(new_root)?;
             set_node_type(&mut page.data, NODE_LEAF);
@@ -195,7 +195,6 @@ impl<'a> BTree<'a> {
         }
 
         // Replace root and insert rows back
-        self.root_page = new_root;
         for row in all_rows {
             self.insert(row.key, row.data.clone())?;
         }

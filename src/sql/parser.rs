@@ -29,11 +29,14 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
     }
     let name = parts.remove(0);
     let mut not_null = false;
-    if parts.len() >= 2 && parts[parts.len()-2].eq_ignore_ascii_case("NOT") && parts[parts.len()-1].eq_ignore_ascii_case("NULL") {
-        not_null = true;
-        parts.truncate(parts.len()-2);
-    } else if parts.last().map(|s| s.eq_ignore_ascii_case("NULL")) == Some(true) {
-        parts.pop();
+    if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("NOT")) {
+        if pos + 1 < parts.len() && parts[pos + 1].eq_ignore_ascii_case("NULL") {
+            not_null = true;
+            parts.remove(pos + 1);
+            parts.remove(pos);
+        }
+    } else if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("NULL")) {
+        parts.remove(pos);
     }
     let mut default_value = None;
     if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("DEFAULT")) {
@@ -50,9 +53,23 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
         default_value = Some(crate::sql::ast::parse_default_expr(lit));
         parts.truncate(pos);
     }
+    let mut auto_increment = false;
+    if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("AUTO_INCREMENT")) {
+        auto_increment = true;
+        parts.remove(pos);
+    }
     let type_str = parts.join(" ");
     let ctype = ColumnType::from_str(&type_str).ok_or_else(|| format!("Unknown type {}", type_str))?;
-    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, default_value })
+    if auto_increment {
+        let is_int = matches!(ctype, ColumnType::Integer | ColumnType::SmallInt { .. } | ColumnType::MediumInt { .. });
+        if !is_int {
+            return Err("AUTO_INCREMENT can only be used with integer columns".into());
+        }
+        if !not_null {
+            return Err("AUTO_INCREMENT columns must be NOT NULL".into());
+        }
+    }
+    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, default_value, auto_increment })
 }
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
@@ -160,6 +177,34 @@ fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
     Ok((expr, consumed))
 }
 
+fn parse_create_sequence(tokens: &[&str]) -> Result<Statement, String> {
+    if tokens.len() < 2 {
+        return Err("Usage: CREATE SEQUENCE <name> [START WITH n] [INCREMENT BY m]".into());
+    }
+    let mut idx = 1; // tokens[0] is SEQUENCE
+    let name = tokens[idx].to_string();
+    idx += 1;
+    let mut start = 1i64;
+    let mut increment = 1i64;
+    while idx < tokens.len() {
+        if idx + 1 < tokens.len() && tokens[idx].eq_ignore_ascii_case("START") && tokens[idx + 1].eq_ignore_ascii_case("WITH") {
+            idx += 2;
+            if idx >= tokens.len() { return Err("Missing value after START WITH".into()); }
+            start = tokens[idx].trim_end_matches(';').parse::<i64>().map_err(|_| "Invalid START value".to_string())?;
+            idx += 1;
+        } else if idx + 1 < tokens.len() && tokens[idx].eq_ignore_ascii_case("INCREMENT") && tokens[idx + 1].eq_ignore_ascii_case("BY") {
+            idx += 2;
+            if idx >= tokens.len() { return Err("Missing value after INCREMENT BY".into()); }
+            increment = tokens[idx].trim_end_matches(';').parse::<i64>().map_err(|_| "Invalid INCREMENT value".to_string())?;
+            if increment == 0 { return Err("INCREMENT BY cannot be zero".into()); }
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+    Ok(Statement::CreateSequence(crate::sql::ast::CreateSequence { name, start, increment }))
+}
+
 pub fn parse_statement(input: &str) -> Result<Statement, String> {
     let tokens: Vec<&str> = input.split_whitespace().collect();
     if tokens.is_empty() {
@@ -178,6 +223,9 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
         "COMMIT" => Ok(Statement::Commit),
         "ROLLBACK" => Ok(Statement::Rollback),
         "CREATE" => {
+            if tokens.len() >= 3 && tokens[1].eq_ignore_ascii_case("SEQUENCE") {
+                return parse_create_sequence(&tokens[1..]);
+            }
             if tokens.len() >= 3 && tokens[1].eq_ignore_ascii_case("INDEX") {
                 if tokens.len() < 6 || !tokens[3].eq_ignore_ascii_case("ON") {
                     return Err("Usage: CREATE INDEX <name> ON <table>(<column>)".to_string());

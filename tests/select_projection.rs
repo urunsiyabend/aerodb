@@ -3,6 +3,7 @@ use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
     let _ = fs::remove_file(filename);
+    let _ = fs::remove_file(format!("{}.wal", filename));
     Catalog::open(Pager::new(filename).unwrap()).unwrap()
 }
 
@@ -13,8 +14,8 @@ fn select_single_column() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -48,8 +49,8 @@ fn select_two_columns() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None },
-            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
         ],
         fks: Vec::new(),
         if_not_exists: false,

@@ -6,13 +6,14 @@ use std::fs;
 fn foreign_key_basic() {
     let filename = "test_fk.db";
     let _ = fs::remove_file(filename);
+    let _ = fs::remove_file(format!("{}.wal", filename));
     let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
     // create users table
     let create_users = Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None }
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false}
         ],
         fks: Vec::new(),
         if_not_exists: false,
@@ -52,13 +53,14 @@ fn foreign_key_basic() {
 fn foreign_key_on_delete_cascade() {
     let filename = "test_fk_cascade.db";
     let _ = fs::remove_file(filename);
+    let _ = fs::remove_file(format!("{}.wal", filename));
     let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
     // users
     let create_users = Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None }
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false}
         ],
         fks: Vec::new(),
         if_not_exists: false,
