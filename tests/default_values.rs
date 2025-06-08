@@ -10,8 +10,9 @@ fn setup_catalog(filename: &str) -> Catalog {
 fn parse_default_values() {
     let stmt = parse_statement("CREATE TABLE t (id INTEGER, name TEXT DEFAULT 'anon', age INTEGER DEFAULT 18 NOT NULL)").unwrap();
     if let Statement::CreateTable { columns, .. } = stmt {
-        assert_eq!(columns[1].default_value, Some("anon".into()));
-        assert_eq!(columns[2].default_value, Some("18".into()));
+        use aerodb::sql::ast::{Expr};
+        assert!(matches!(columns[1].default_value, Some(Expr::Literal(ref s)) if s == "anon"));
+        assert!(matches!(columns[2].default_value, Some(Expr::Literal(ref s)) if s == "18"));
         assert!(columns[2].not_null);
     } else { panic!("expected create table"); }
 }

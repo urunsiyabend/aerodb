@@ -43,11 +43,11 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
         let literal = parts[pos+1..].join(" ");
         let lit = literal.trim();
         let lit = if (lit.starts_with('"') && lit.ends_with('"')) || (lit.starts_with('\'') && lit.ends_with('\'')) {
-            lit[1..lit.len()-1].to_string()
+            &lit[1..lit.len()-1]
         } else {
-            lit.to_string()
+            lit
         };
-        default_value = Some(lit);
+        default_value = Some(crate::sql::ast::parse_default_expr(lit));
         parts.truncate(pos);
     }
     let type_str = parts.join(" ");

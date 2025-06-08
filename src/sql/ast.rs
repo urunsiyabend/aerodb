@@ -14,6 +14,8 @@ pub enum Expr {
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Subquery(Box<Statement>),
+    Literal(String),
+    FunctionCall { name: String, args: Vec<Expr> },
 }
 
 #[derive(Debug)]
@@ -69,7 +71,7 @@ pub struct ColumnDef {
     pub name: String,
     pub col_type: ColumnType,
     pub not_null: bool,
-    pub default_value: Option<Literal>,
+    pub default_value: Option<Expr>,
 }
 
 impl AggFunc {
@@ -170,6 +172,34 @@ pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> boo
         Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } => false,
         Expr::And(a, b) => evaluate_expression(a, values) && evaluate_expression(b, values),
         Expr::Or(a, b) => evaluate_expression(a, values) || evaluate_expression(b, values),
-        Expr::Subquery(_) => false,
+        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } => false,
+    }
+}
+
+pub fn expr_to_string(expr: &Expr) -> String {
+    match expr {
+        Expr::Literal(s) => s.clone(),
+        Expr::FunctionCall { name, args } => {
+            if args.is_empty() {
+                format!("{}{}", name, if name.ends_with("()") { "" } else { "()" })
+            } else {
+                let inner: Vec<String> = args.iter().map(expr_to_string).collect();
+                format!("{}({})", name, inner.join(", "))
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+pub fn parse_default_expr(s: &str) -> Expr {
+    let upper = s.to_ascii_uppercase();
+    if upper == "CURRENT_TIMESTAMP" {
+        Expr::FunctionCall { name: "CURRENT_TIMESTAMP".into(), args: Vec::new() }
+    } else if upper == "GETDATE()" {
+        Expr::FunctionCall { name: "GETDATE".into(), args: Vec::new() }
+    } else if upper == "GETUTCDATE()" {
+        Expr::FunctionCall { name: "GETUTCDATE".into(), args: Vec::new() }
+    } else {
+        Expr::Literal(s.to_string())
     }
 }

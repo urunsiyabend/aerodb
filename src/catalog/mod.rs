@@ -5,6 +5,7 @@ use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType};
 use crate::storage::pager::Pager;
 use crate::storage::page::PAGE_SIZE;
+use crate::sql::ast::{Expr};
 
 /// In‐memory representation of a table’s metadata.
 #[derive(Debug, Clone)]
@@ -13,7 +14,7 @@ pub struct TableInfo {
     pub root_page: u32,
     pub columns: Vec<(String, ColumnType)>, // column name and type
     pub not_null: Vec<bool>,
-    pub default_values: Vec<Option<crate::sql::ast::Literal>>,
+    pub default_values: Vec<Option<Expr>>,
     pub fks: Vec<crate::sql::ast::ForeignKey>,
 }
 
@@ -153,7 +154,7 @@ impl Catalog {
         self.create_table_with_fks(name, cols_with_nn, Vec::new())
     }
 
-    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<crate::sql::ast::Literal>)>, fks: Vec<crate::sql::ast::ForeignKey>) -> io::Result<()> {
+    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<Expr>)>, fks: Vec<crate::sql::ast::ForeignKey>) -> io::Result<()> {
         if self.tables.contains_key(name) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -455,7 +456,7 @@ impl Catalog {
     fn serialize_catalog_row(
         name: &str,
         root_page: u32,
-        columns: &[(String, ColumnType, bool, Option<crate::sql::ast::Literal>)],
+        columns: &[(String, ColumnType, bool, Option<Expr>)],
         fks: &[crate::sql::ast::ForeignKey],
     ) -> RowData {
         let mut vals = Vec::new();
@@ -484,9 +485,9 @@ impl Catalog {
             }
             vals.push(ColumnValue::Integer(if *nn { 1 } else { 0 }));
             match default {
-                Some(lit) => {
+                Some(expr) => {
                     vals.push(ColumnValue::Integer(1));
-                    vals.push(ColumnValue::Text(lit.clone()));
+                    vals.push(ColumnValue::Text(crate::sql::ast::expr_to_string(expr).into()));
                 }
                 None => {
                     vals.push(ColumnValue::Integer(0));
@@ -515,7 +516,7 @@ impl Catalog {
     }
 
     /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>, Vec<ForeignKey>).
-    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<bool>, Vec<Option<crate::sql::ast::Literal>>, Vec<crate::sql::ast::ForeignKey>)> {
+    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<bool>, Vec<Option<Expr>>, Vec<crate::sql::ast::ForeignKey>)> {
         let values = &row.data.0;
         if values.len() < 3 {
             return Err(io::Error::new(io::ErrorKind::Other, "catalog row too short"));
@@ -590,7 +591,7 @@ impl Catalog {
             let default = if has_default {
                 if let Some(ColumnValue::Text(s)) = values.get(idx) {
                     idx += 1;
-                    Some(s.clone())
+                    Some(crate::sql::ast::parse_default_expr(s))
                 } else { None }
             } else { None };
             columns.push((name, ty));
@@ -655,3 +656,4 @@ impl Catalog {
         Ok((name, root_page, columns, not_null, defaults, fks))
     }
 }
+
