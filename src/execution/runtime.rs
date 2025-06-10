@@ -2,7 +2,7 @@ use std::io;
 
 use crate::catalog::Catalog;
 use crate::sql::ast::{Statement, Expr, expr_to_string};
-use crate::constraints::{Constraint, not_null::NotNullConstraint, foreign_key::ForeignKeyConstraint, default::DefaultConstraint};
+use crate::constraints::{Constraint, not_null::NotNullConstraint, foreign_key::ForeignKeyConstraint, default::DefaultConstraint, primary_key::PrimaryKeyConstraint};
 use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
 use std::collections::HashMap;
@@ -568,7 +568,7 @@ pub fn execute_group_query(
 
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()> {
     match stmt {
-        Statement::CreateTable { table_name, columns, fks, if_not_exists } => {
+        Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } => {
             let auto_cols: Vec<_> = columns.iter().filter(|c| c.auto_increment).collect();
             if auto_cols.len() > 1 {
                 return Err(io::Error::new(io::ErrorKind::Other, "Only one AUTO_INCREMENT column allowed per table"));
@@ -577,7 +577,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                 .into_iter()
                 .map(|c| (c.name.clone(), c.col_type, c.not_null, c.default_value, c.auto_increment))
                 .collect();
-            match catalog.create_table_with_fks(&table_name, cols.clone(), fks) {
+            match catalog.create_table_with_fks(&table_name, cols.clone(), fks, primary_key.clone()) {
                 Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {
@@ -714,6 +714,10 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
 
             let fk_cons = ForeignKeyConstraint { fks: &fks };
             fk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
+            if let Some(ref pk_cols) = table_info.primary_key {
+                let pk_cons = PrimaryKeyConstraint { columns: pk_cols };
+                pk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
+            }
             let key = match row_data.0.get(0) {
                 Some(ColumnValue::Integer(i)) => *i,
                 _ => {

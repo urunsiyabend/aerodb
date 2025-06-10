@@ -27,10 +27,9 @@ fn execute_from_subquery_simple() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t1".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false}
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO t1 VALUES (1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO t1 VALUES (2)").unwrap()).unwrap();
@@ -62,15 +61,13 @@ fn execute_where_in_subquery() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
-        columns: vec![aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false}],
-        fks: Vec::new(),
-        if_not_exists: false,
+        columns: vec![aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "admins".into(),
-        columns: vec![aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false}],
-        fks: Vec::new(),
-        if_not_exists: false,
+        columns: vec![aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     for id in 1..=3 {
         aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO users VALUES ({})", id)).unwrap()).unwrap();
@@ -109,21 +106,19 @@ fn execute_exists_correlated() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "orders".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "product".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "product".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
@@ -150,21 +145,19 @@ fn execute_exists_constant() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "orders".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "product".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "product".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
@@ -199,20 +192,18 @@ fn execute_scalar_subquery() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "orders".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();

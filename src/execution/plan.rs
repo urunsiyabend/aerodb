@@ -7,6 +7,7 @@ pub enum PlanNode {
     CreateTable {
         table_name: String,
         columns: Vec<ColumnDef>,
+        primary_key: Option<Vec<String>>,
         if_not_exists: bool,
     },
     CreateIndex {
@@ -52,8 +53,8 @@ pub struct MultiJoinPlan {
 
 pub fn plan_statement(stmt: Statement) -> PlanNode {
     match stmt {
-        Statement::CreateTable { table_name, columns, if_not_exists, .. } => {
-            PlanNode::CreateTable { table_name, columns, if_not_exists }
+        Statement::CreateTable { table_name, columns, primary_key, if_not_exists, .. } => {
+            PlanNode::CreateTable { table_name, columns, primary_key, if_not_exists }
         }
         Statement::CreateIndex { index_name, table_name, column_name } => {
             PlanNode::CreateIndex { index_name, table_name, column_name }

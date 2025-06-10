@@ -24,8 +24,8 @@ fn enforce_not_null() {
     let filename = "test_not_null.db";
     let mut catalog = setup_catalog(filename);
     let stmt = parse_statement("CREATE TABLE persons (id INTEGER NOT NULL, last_name TEXT NOT NULL, first_name TEXT NOT NULL, age INTEGER)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, if_not_exists } = stmt {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = stmt {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
     } else { panic!("expected create table"); }
 
     // valid insert with NULL age
