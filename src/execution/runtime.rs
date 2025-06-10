@@ -8,7 +8,7 @@ use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data}
 use std::collections::HashMap;
 
 pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> io::Result<usize> {
-    if let Ok(table_info) = catalog.get_table(table_name) {
+    if let Ok(table_info) = catalog.get_table(table_name).map(Clone::clone) {
         let root_page = table_info.root_page;
         let columns = table_info.columns.clone();
         let rows_to_delete = {

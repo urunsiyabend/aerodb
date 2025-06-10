@@ -1,7 +1,7 @@
-use aerodb::constraints::{self, Constraint, not_null::NotNullConstraint, default::DefaultConstraint, foreign_key::ForeignKeyConstraint};
+use aerodb::constraints::{Constraint, not_null::NotNullConstraint, default::DefaultConstraint, foreign_key::ForeignKeyConstraint};
 use aerodb::storage::row::{RowData, ColumnValue, ColumnType};
 use aerodb::catalog::{Catalog, TableInfo};
-use aerodb::sql::ast::{ForeignKey, Action};
+use aerodb::sql::ast::ForeignKey;
 use aerodb::storage::pager::Pager;
 use std::fs;
 
@@ -49,7 +49,13 @@ fn foreign_key_constraint_detects_missing_parent() {
         auto_increment: vec![false],
         fks: vec![],
     };
-    catalog.tables.insert("p".into(), parent.clone());
+    catalog
+        .create_table_with_fks(
+            &parent.name,
+            vec![("id".into(), ColumnType::Integer, false, None, false)],
+            vec![],
+        )
+        .unwrap();
     // child table info
     let child = TableInfo {
         name: "c".into(),
@@ -60,7 +66,13 @@ fn foreign_key_constraint_detects_missing_parent() {
         auto_increment: vec![false],
         fks: vec![ForeignKey { columns: vec!["pid".into()], parent_table: "p".into(), parent_columns: vec!["id".into()], on_delete: None, on_update: None }],
     };
-    catalog.tables.insert("c".into(), child.clone());
+    catalog
+        .create_table_with_fks(
+            &child.name,
+            vec![("pid".into(), ColumnType::Integer, false, None, false)],
+            child.fks.clone(),
+        )
+        .unwrap();
     let mut row = RowData(vec![ColumnValue::Integer(1)]);
     let constraint = ForeignKeyConstraint { fks: &child.fks };
     let res = constraint.validate_insert(&mut catalog, &child, &mut row);

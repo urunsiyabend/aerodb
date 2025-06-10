@@ -5,6 +5,7 @@ mod sql;
 mod catalog;
 mod execution;
 mod transaction;
+mod constraints;
 
 use std::io::{self, Write};
 use log::{debug, info, warn};
