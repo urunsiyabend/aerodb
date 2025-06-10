@@ -1,3 +1,4 @@
+cargo-features = ["edition2024"]
 [package]
 name = "aerodb"
 version = "0.5.0"
