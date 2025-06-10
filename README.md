@@ -42,4 +42,3 @@ These tasks outline upcoming work and reference articles we plan to publish.
 - [x] **Add secondary indexes** to accelerate lookups on non-primary keys.
 - [ ] **Implement concurrency control** (locking or MVCC) with tests.
 - [ ] **Write tutorial articles** detailing the B-Tree implementation and SQL parsing strategy.
-
