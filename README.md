@@ -22,6 +22,15 @@ cargo run
 
 A prompt will appear where you can enter simple SQL commands (CREATE TABLE, INSERT, SELECT, DELETE) or type `.exit` to quit.
 
+## Manual Testing
+
+To experiment with constraint validation interactively:
+
+1. Create a table with a `NOT NULL` column and try inserting a row with `NULL` in that column to observe the error.
+2. Define a `DEFAULT` value for a column and insert using the `DEFAULT` keyword to verify it is populated automatically.
+3. Set up two tables with a `FOREIGN KEY` relationship and insert a child row referencing a missing parent to trigger a violation.
+4. Define `ON DELETE CASCADE` on a foreign key and delete the parent row to see the child rows removed.
+
 ## Development Approach
 
 Development follows a **Test-Driven Development (TDD)** workflow:
