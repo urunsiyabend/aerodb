@@ -24,12 +24,35 @@ A prompt will appear where you can enter simple SQL commands (CREATE TABLE, INSE
 
 ## Manual Testing
 
-To experiment with constraint validation interactively:
+To experiment with constraint validation interactively you can run the following commands after starting the CLI:
 
-1. Create a table with a `NOT NULL` column and try inserting a row with `NULL` in that column to observe the error.
-2. Define a `DEFAULT` value for a column and insert using the `DEFAULT` keyword to verify it is populated automatically.
-3. Set up two tables with a `FOREIGN KEY` relationship and insert a child row referencing a missing parent to trigger a violation.
-4. Define `ON DELETE CASCADE` on a foreign key and delete the parent row to see the child rows removed.
+```sql
+CREATE TABLE cities(id INTEGER PRIMARY KEY);
+CREATE TABLE people(
+    id       INTEGER NOT NULL,
+    name     TEXT DEFAULT 'anon',
+    city_id  INTEGER REFERENCES cities(id)
+);
+CREATE TABLE pets(
+    id       INTEGER PRIMARY KEY,
+    owner_id INTEGER REFERENCES people(id) ON DELETE CASCADE
+);
+
+-- NOT NULL failure
+INSERT INTO people(id, name) VALUES (1, NULL);
+
+-- DEFAULT value is used
+INSERT INTO people(id) VALUES (1);
+
+-- FOREIGN KEY violation
+INSERT INTO people(id, city_id) VALUES (2, 99);
+
+-- Satisfy FK and demonstrate cascading delete
+INSERT INTO cities VALUES (99);
+INSERT INTO people(id, city_id) VALUES (2, 99);
+INSERT INTO pets VALUES (1, 2);
+DELETE FROM people WHERE id = 2; -- pets row deleted as well
+```
 
 ## Development Approach
 
