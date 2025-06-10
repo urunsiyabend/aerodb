@@ -1,7 +1,7 @@
-use std::io;
 use crate::catalog::{Catalog, TableInfo};
 use crate::storage::row::{RowData, ColumnValue};
 use crate::storage::btree::BTree;
+use crate::error::{DbError, DbResult};
 use super::Constraint;
 
 pub struct PrimaryKeyConstraint<'a> {
@@ -9,12 +9,12 @@ pub struct PrimaryKeyConstraint<'a> {
 }
 
 impl<'a> Constraint for PrimaryKeyConstraint<'a> {
-    fn validate_insert(&self, catalog: &mut Catalog, table: &TableInfo, row: &mut RowData) -> io::Result<()> {
+    fn validate_insert(&self, catalog: &mut Catalog, table: &TableInfo, row: &mut RowData) -> DbResult<()> {
         // ensure not null
         for col in self.columns {
             if let Some(idx) = table.columns.iter().position(|(c, _)| c == col) {
                 if matches!(row.0[idx], ColumnValue::Null) {
-                    return Err(io::Error::new(io::ErrorKind::Other, "PRIMARY KEY column cannot be NULL"));
+                    return Err(DbError::NullViolation(col.clone()));
                 }
             }
         }
@@ -32,7 +32,10 @@ impl<'a> Constraint for PrimaryKeyConstraint<'a> {
                 }
             }
             if equal {
-                return Err(io::Error::new(io::ErrorKind::Other, "duplicate primary key"));
+                if let Some(ColumnValue::Integer(i)) = row.0.get(0) {
+                    return Err(DbError::DuplicateKey(*i));
+                }
+                return Err(DbError::DuplicateKey(0));
             }
         }
         Ok(())

@@ -1,13 +1,12 @@
-use std::io;
-
 use crate::catalog::Catalog;
 use crate::sql::ast::{Statement, Expr, expr_to_string};
 use crate::constraints::{Constraint, not_null::NotNullConstraint, foreign_key::ForeignKeyConstraint, default::DefaultConstraint, primary_key::PrimaryKeyConstraint};
 use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
 use std::collections::HashMap;
+use crate::error::{DbError, DbResult};
 
-pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> io::Result<usize> {
+pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> DbResult<usize> {
     if let Ok(table_info) = catalog.get_table(table_name).map(Clone::clone) {
         let root_page = table_info.root_page;
         let columns = table_info.columns.clone();
@@ -67,7 +66,7 @@ pub fn execute_update(
     table_name: &str,
     assignments: Vec<(String, String)>,
     selection: Option<Expr>,
-) -> io::Result<usize> {
+) -> DbResult<usize> {
     if let Ok(table_info) = catalog.get_table(table_name) {
         let root_page = table_info.root_page;
         let columns = table_info.columns.clone();
@@ -79,32 +78,25 @@ pub fn execute_update(
         for (col, val) in assignments {
             let idx = *col_pos
                 .get(&col)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Column not found"))?;
+                .ok_or_else(|| DbError::ColumnNotFound(col.clone()))?;
             let ty = columns[idx].1;
             let cv = match ty {
                 ColumnType::Integer => ColumnValue::Integer(
                     val.parse::<i32>()
-                        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid INTEGER"))?,
+                        .map_err(|_| DbError::InvalidValue("Invalid INTEGER".into()))?,
                 ),
                 ColumnType::Text => ColumnValue::Text(val.clone()),
                 ColumnType::Boolean => match val.to_ascii_lowercase().as_str() {
                     "true" => ColumnValue::Boolean(true),
                     "false" => ColumnValue::Boolean(false),
                     _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "Invalid BOOLEAN",
-                        ))
+                        return Err(DbError::InvalidValue("Invalid BOOLEAN".into()))
                     }
                 },
                 ColumnType::Char(len) => {
                     if val.len() > len {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            format!(
-                                "Value '{}' for column '{}' exceeds length {}",
-                                val, col, len
-                            ),
+                        return Err(DbError::InvalidValue(
+                            format!("Value '{}' for column '{}' exceeds length {}", val, col, len)
                         ));
                     }
                     let mut s = val.clone();
@@ -114,31 +106,31 @@ pub fn execute_update(
                     ColumnValue::Char(s)
                 }
                 ColumnType::SmallInt { unsigned, .. } => {
-                    let i = val.parse::<i32>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid SMALLINT"))?;
+                    let i = val.parse::<i32>().map_err(|_| DbError::ParseError("Invalid SMALLINT".into()))?;
                     if unsigned {
                         if !(0..=65535).contains(&i) {
-                            return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                            return Err(DbError::Overflow);
                         }
                     } else if !(-32768..=32767).contains(&i) {
-                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                        return Err(DbError::Overflow);
                     }
                     ColumnValue::Integer(i)
                 }
                 ColumnType::MediumInt { unsigned, .. } => {
-                    let i = val.parse::<i32>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid MEDIUMINT"))?;
+                    let i = val.parse::<i32>().map_err(|_| DbError::ParseError("Invalid MEDIUMINT".into()))?;
                     if unsigned {
                         if !(0..=16_777_215).contains(&i) {
-                            return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                            return Err(DbError::Overflow);
                         }
                     } else if !(-8_388_608..=8_388_607).contains(&i) {
-                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                        return Err(DbError::Overflow);
                     }
                     ColumnValue::Integer(i)
                 }
                 ColumnType::Double { unsigned, .. } => {
-                    let f = val.parse::<f64>().map_err(|_| io::Error::new(io::ErrorKind::Other, "Invalid DOUBLE"))?;
+                    let f = val.parse::<f64>().map_err(|_| DbError::ParseError("Invalid DOUBLE".into()))?;
                     if unsigned && f < 0.0 {
-                        return Err(io::Error::new(io::ErrorKind::Other, "Value out of range"));
+                        return Err(DbError::Overflow);
                     }
                     ColumnValue::Double(f)
                 }
@@ -146,32 +138,32 @@ pub fn execute_update(
                     match crate::storage::row::parse_date(&val) {
                         Some(d) => ColumnValue::Date(d),
                         None => {
-                            return Err(io::Error::new(io::ErrorKind::Other, "Invalid DATE"));
+                            return Err(DbError::ParseError("Invalid DATE".into()));
                         }
                     }
                 }
                 ColumnType::DateTime => {
                     match crate::storage::row::parse_datetime(&val) {
                         Some(ts) => ColumnValue::DateTime(ts),
-                        None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid DATETIME")),
+                        None => return Err(DbError::ParseError("Invalid DATETIME".into())),
                     }
                 }
                 ColumnType::Timestamp => {
                     match crate::storage::row::parse_datetime(&val) {
                         Some(ts) => ColumnValue::Timestamp(ts),
-                        None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid TIMESTAMP")),
+                        None => return Err(DbError::ParseError("Invalid TIMESTAMP".into())),
                     }
                 }
                 ColumnType::Time => {
                     match crate::storage::row::parse_time(&val) {
                         Some(t) => ColumnValue::Time(t),
-                        None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid TIME")),
+                        None => return Err(DbError::ParseError("Invalid TIME".into())),
                     }
                 }
                 ColumnType::Year => {
                     match crate::storage::row::parse_year(&val) {
                         Some(y) => ColumnValue::Year(y),
-                        None => return Err(io::Error::new(io::ErrorKind::Other, "Invalid YEAR")),
+                        None => return Err(DbError::ParseError("Invalid YEAR".into())),
                     }
                 }
             };
@@ -255,7 +247,7 @@ pub fn execute_select_with_indexes(
     table_name: &str,
     selection: Option<Expr>,
     out: &mut Vec<Row>,
-) -> io::Result<bool> {
+) -> DbResult<bool> {
     let table_info = catalog.get_table(table_name)?.clone();
     let root_page = table_info.root_page;
     let columns = table_info.columns.clone();
@@ -316,7 +308,7 @@ pub fn execute_multi_join(
     plan: &crate::execution::plan::MultiJoinPlan,
     catalog: &mut Catalog,
     out: &mut Vec<Vec<String>>,
-) -> io::Result<()> {
+) -> DbResult<()> {
     use crate::sql::ast::evaluate_expression;
     let mut result_rows: Vec<std::collections::HashMap<String, ColumnValue>> = Vec::new();
 
@@ -403,7 +395,7 @@ pub fn execute_group_query(
     selection: Option<Expr>,
     out: &mut Vec<Vec<String>>,
     context: Option<&std::collections::HashMap<String, String>>,
-) -> io::Result<Vec<(String, ColumnType)>> {
+) -> DbResult<Vec<(String, ColumnType)>> {
     let mut rows = Vec::new();
     execute_select_with_indexes(catalog, table_name, None, &mut rows)?;
     let table_info = catalog.get_table(table_name)?.clone();
@@ -566,12 +558,12 @@ pub fn execute_group_query(
     Ok(header)
 }
 
-pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()> {
+pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> {
     match stmt {
         Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } => {
             let auto_cols: Vec<_> = columns.iter().filter(|c| c.auto_increment).collect();
             if auto_cols.len() > 1 {
-                return Err(io::Error::new(io::ErrorKind::Other, "Only one AUTO_INCREMENT column allowed per table"));
+                return Err(DbError::InvalidValue("Only one AUTO_INCREMENT column allowed per table".into()));
             }
             let cols: Vec<_> = columns
                 .into_iter()
@@ -583,7 +575,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                     if if_not_exists && e.to_string().contains("already exists") {
                         println!("Table {} already exists", table_name);
                     } else {
-                        return Err(e);
+                        return Err(DbError::from(e));
                     }
                 }
             }
@@ -607,21 +599,15 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             let mut vals = Vec::new();
             if let Some(cols) = col_list {
                 if values.len() != cols.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "INSERT column/value count mismatch: expected {} columns, got {} values",
-                            cols.len(),
-                            values.len()
-                        ),
-                    ));
+                    return Err(DbError::InvalidValue(format!(
+                        "INSERT column/value count mismatch: expected {} columns, got {} values",
+                        cols.len(),
+                        values.len()
+                    )));
                 }
                 for c in &cols {
                     if !columns.iter().any(|(n, _)| n == c) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            format!("Column '{}' does not exist in table '{}'", c, table_name),
-                        ));
+                        return Err(DbError::ColumnNotFound(c.clone()));
                     }
                 }
                 for (idx, (col_name, _)) in columns.iter().enumerate() {
@@ -646,7 +632,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                             } else if !table_info.not_null[idx] {
                                 vals.push("NULL".into());
                             } else {
-                                return Err(io::Error::new(io::ErrorKind::Other, format!("Cannot use DEFAULT for column '{}' - no default value defined", col_name)));
+                                return Err(DbError::InvalidValue(format!("Cannot use DEFAULT for column '{}' - no default value defined", col_name)));
                             }
                         } else {
                             vals.push(expr_to_string(expr));
@@ -661,20 +647,17 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                         } else if !table_info.not_null[idx] {
                             vals.push("NULL".into());
                         } else {
-                            return Err(io::Error::new(io::ErrorKind::Other, format!("Column '{}' requires a value or DEFAULT", col_name)));
+                            return Err(DbError::InvalidValue(format!("Column '{}' requires a value or DEFAULT", col_name)));
                         }
                     }
                 }
             } else {
                 if values.len() != columns.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "INSERT has wrong number of values: expected {}, got {}",
-                            columns.len(),
-                            values.len()
-                        ),
-                    ));
+                    return Err(DbError::InvalidValue(format!(
+                        "INSERT has wrong number of values: expected {}, got {}",
+                        columns.len(),
+                        values.len()
+                    )));
                 }
                 for (idx, expr) in values.iter().enumerate() {
                     let auto = table_info.auto_increment.get(idx).copied().unwrap_or(false);
@@ -696,7 +679,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
                         } else if !table_info.not_null[idx] {
                             vals.push("NULL".into());
                         } else {
-                            return Err(io::Error::new(io::ErrorKind::Other, format!(
+                                return Err(DbError::InvalidValue(format!(
                                     "Cannot use DEFAULT for column '{}' - no default value defined",
                                     columns[idx].0)));
                         }
@@ -707,7 +690,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             }
 
             let mut row_data = build_row_data(&vals, &columns)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| DbError::InvalidValue(e))?;
 
             let nn = NotNullConstraint;
             nn.validate_insert(catalog, &table_info, &mut row_data)?;
@@ -721,7 +704,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> io::Result<()
             let key = match row_data.0.get(0) {
                 Some(ColumnValue::Integer(i)) => *i,
                 _ => {
-                    return Err(io::Error::new(io::ErrorKind::Other, "First column must be an INTEGER key"));
+                    return Err(DbError::InvalidValue("First column must be an INTEGER key".into()));
                 }
             };
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
@@ -847,7 +830,7 @@ pub enum Projection {
 pub fn select_projection_indices(
     columns: &[(String, ColumnType)],
     projections: &[crate::sql::ast::SelectExpr],
-) -> io::Result<(Vec<Projection>, Vec<(String, ColumnType)>)> {
+) -> DbResult<(Vec<Projection>, Vec<(String, ColumnType)>)> {
     let use_all = projections.len() == 1 && matches!(projections[0], crate::sql::ast::SelectExpr::All);
     let mut idxs = Vec::new();
     let mut meta = Vec::new();
@@ -865,7 +848,7 @@ pub fn select_projection_indices(
                         idxs.push(Projection::Index(i));
                         meta.push((c, *ty));
                     } else {
-                        return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {c}")));
+                        return Err(DbError::ColumnNotFound(c.clone()));
                     }
                 }
                 crate::sql::ast::SelectExpr::Aggregate { func, column } => {
@@ -895,7 +878,7 @@ pub fn select_projection_indices(
 pub fn expand_join_projections(
     plan: &crate::execution::plan::MultiJoinPlan,
     catalog: &Catalog,
-) -> io::Result<Vec<String>> {
+) -> DbResult<Vec<String>> {
     use crate::sql::ast::SelectExpr;
     if plan.projections.len() == 1 && matches!(plan.projections[0], SelectExpr::All) {
         let mut list = Vec::new();
@@ -926,7 +909,7 @@ pub fn join_header(
     plan: &crate::execution::plan::MultiJoinPlan,
     catalog: &Catalog,
     projections: &[String],
-) -> io::Result<Vec<(String, ColumnType)>> {
+) -> DbResult<Vec<(String, ColumnType)>> {
     use std::collections::HashMap;
     let mut alias_map = HashMap::new();
     alias_map.insert(plan.base_table.clone(), plan.base_table.clone());
@@ -937,15 +920,15 @@ pub fn join_header(
     let mut out = Vec::new();
     for p in projections {
         let mut parts = p.split('.');
-        let alias = parts.next().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Bad column"))?;
-        let col = parts.next().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Bad column"))?;
-        let table = alias_map.get(alias).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Bad alias"))?;
+        let alias = parts.next().ok_or_else(|| DbError::ParseError("Bad column".into()))?;
+        let col = parts.next().ok_or_else(|| DbError::ParseError("Bad column".into()))?;
+        let table = alias_map.get(alias).ok_or_else(|| DbError::ParseError("Bad alias".into()))?;
         let info = catalog.get_table(table)?;
         let ty = info
             .columns
             .iter()
             .find(|(c, _)| c == col)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Column not found"))?
+            .ok_or_else(|| DbError::ColumnNotFound(col.to_string()))?
             .1;
         out.push((p.clone(), ty));
     }
@@ -956,7 +939,7 @@ fn evaluate_with_catalog(
     expr: &crate::sql::ast::Expr,
     values: &std::collections::HashMap<String, String>,
     catalog: &mut Catalog,
-) -> io::Result<bool> {
+) -> DbResult<bool> {
     use crate::sql::ast::Expr;
     match expr {
         Expr::Equals { left, right } => {
@@ -999,7 +982,7 @@ fn evaluate_with_catalog(
             let mut rows = Vec::new();
             let header = execute_select_statement(catalog, query, &mut rows, Some(values))?;
             if header.len() != 1 {
-                return Err(io::Error::new(io::ErrorKind::Other, "Subquery must return one column"));
+                return Err(DbError::InvalidValue("Subquery must return one column".into()));
             }
             let val = values.get(left).map(String::as_str).unwrap_or(left);
             for r in rows {
@@ -1032,14 +1015,14 @@ pub fn execute_select_statement(
     stmt: &crate::sql::ast::Statement,
     out: &mut Vec<Vec<String>>,
     context: Option<&std::collections::HashMap<String, String>>,
-) -> io::Result<Vec<(String, ColumnType)>> {
+) -> DbResult<Vec<(String, ColumnType)>> {
     use crate::sql::ast::{SelectExpr, TableRef};
     match stmt {
         crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
             if !joins.is_empty() {
-                return Err(io::Error::new(io::ErrorKind::Other, "Unsupported query"));
+                return Err(DbError::InvalidValue("Unsupported query".into()));
             }
-            let source = from.first().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Missing FROM"))?;
+            let source = from.first().ok_or_else(|| DbError::ParseError("Missing FROM".into()))?;
             match source {
                 TableRef::Named { name, alias } => {
                     if group_by.is_some() || columns.iter().any(|c| matches!(c, SelectExpr::Aggregate { .. })) {
@@ -1119,10 +1102,10 @@ pub fn execute_select_statement(
                                         idxs.push(i);
                                         header.push((c.clone(), *ty));
                                     } else {
-                                        return Err(io::Error::new(io::ErrorKind::Other, format!("Unknown column {c}")));
+                                        return Err(DbError::ColumnNotFound(c.clone()));
                                     }
                                 }
-                                _ => return Err(io::Error::new(io::ErrorKind::Other, "Unsupported projection")),
+                                _ => return Err(DbError::InvalidValue("Unsupported projection".into())),
                             }
                         }
                         for row in filtered {
@@ -1134,7 +1117,7 @@ pub fn execute_select_statement(
                 }
             }
         }
-        _ => Err(io::Error::new(io::ErrorKind::Other, "Not a SELECT")),
+        _ => Err(DbError::InvalidValue("Not a SELECT".into())),
     }
 }
 

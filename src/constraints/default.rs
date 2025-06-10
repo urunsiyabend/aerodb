@@ -1,12 +1,12 @@
-use std::io;
 use crate::sql::ast::Expr;
 use crate::storage::row::ColumnValue;
 use crate::sql::functions::FunctionEvaluator;
+use crate::error::{DbError, DbResult};
 
 pub struct DefaultConstraint;
 
 impl DefaultConstraint {
-    pub fn evaluate(expr: &Expr) -> io::Result<String> {
+    pub fn evaluate(expr: &Expr) -> DbResult<String> {
         match expr {
             Expr::Literal(s) => Ok(s.clone()),
             Expr::FunctionCall { name, args } => {
@@ -19,10 +19,10 @@ impl DefaultConstraint {
                     .collect::<Result<_, _>>()?;
                 match FunctionEvaluator::evaluate_function(name, &arg_vals) {
                     Ok(val) => Ok(val.to_string_value()),
-                    Err(_) => Err(io::Error::new(io::ErrorKind::Other, "function error")),
+                    Err(_) => Err(DbError::InvalidValue("function error".into())),
                 }
             }
-            _ => Err(io::Error::new(io::ErrorKind::Other, "unsupported default expression")),
+            _ => Err(DbError::InvalidValue("unsupported default expression".into())),
         }
     }
 }
@@ -32,7 +32,7 @@ use crate::storage::row::RowData;
 use super::Constraint;
 
 impl Constraint for DefaultConstraint {
-    fn validate_insert(&self, _catalog: &mut Catalog, _table: &TableInfo, _row: &mut RowData) -> io::Result<()> {
+    fn validate_insert(&self, _catalog: &mut Catalog, _table: &TableInfo, _row: &mut RowData) -> DbResult<()> {
         Ok(())
     }
 }

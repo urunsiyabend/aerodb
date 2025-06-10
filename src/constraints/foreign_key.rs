@@ -1,8 +1,8 @@
-use std::io;
 use crate::catalog::{Catalog, TableInfo};
 use crate::sql::ast::ForeignKey;
 use crate::storage::row::{RowData, ColumnValue};
 use crate::storage::btree::BTree;
+use crate::error::{DbError, DbResult};
 use super::Constraint;
 
 pub struct ForeignKeyConstraint<'a> {
@@ -10,7 +10,7 @@ pub struct ForeignKeyConstraint<'a> {
 }
 
 impl<'a> Constraint for ForeignKeyConstraint<'a> {
-    fn validate_insert(&self, catalog: &mut Catalog, table: &TableInfo, row: &mut RowData) -> io::Result<()> {
+    fn validate_insert(&self, catalog: &mut Catalog, table: &TableInfo, row: &mut RowData) -> DbResult<()> {
         for fk in self.fks {
             if fk.columns.is_empty() || fk.parent_columns.is_empty() {
                 continue;
@@ -19,24 +19,21 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
                 .columns
                 .iter()
                 .position(|(c, _)| c == &fk.columns[0])
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "FK column not found"))?;
+                .ok_or_else(|| DbError::ColumnNotFound(fk.columns[0].clone()))?;
             let child_val = match row.0[col_idx] {
                 ColumnValue::Integer(i) => i,
-                _ => return Err(io::Error::new(io::ErrorKind::Other, "FK column must be INTEGER")),
+                _ => return Err(DbError::InvalidValue("FK column must be INTEGER".into())),
             };
             let parent_root = catalog.get_table(&fk.parent_table)?.root_page;
             let mut parent_btree = BTree::open_root(&mut catalog.pager, parent_root)?;
             if parent_btree.find(child_val)?.is_none() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("FK violation: no {}.{} = {}", fk.parent_table, fk.parent_columns[0], child_val),
-                ));
+                return Err(DbError::ForeignKeyViolation(format!("{} {}", fk.parent_table, child_val)));
             }
         }
         Ok(())
     }
 
-    fn validate_delete(&self, catalog: &mut Catalog, table: &TableInfo, row: &RowData) -> io::Result<()> {
+    fn validate_delete(&self, catalog: &mut Catalog, table: &TableInfo, row: &RowData) -> DbResult<()> {
         let columns = &table.columns;
         let child_tables: Vec<_> = catalog.all_tables();
         for child in &child_tables {
@@ -76,10 +73,7 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
                                 catalog.update_catalog_root(&child.name, new_root_c)?;
                             }
                         } else {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Other,
-                                format!("Cannot delete {}: referenced by {}.{}", table.name, child.name, fk.columns[0]),
-                            ));
+                            return Err(DbError::ForeignKeyViolation(format!("Cannot delete {}: referenced by {}.{}", table.name, child.name, fk.columns[0])));
                         }
                     }
                 }
