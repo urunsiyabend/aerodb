@@ -14,12 +14,11 @@ fn having_basic_sum() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "sales".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "region".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "amount".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "region".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "amount".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let rows = vec![
         (1, "north", 50),
@@ -53,12 +52,11 @@ fn having_with_where() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "dept".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "active".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "dept".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "active".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let rows = vec![
         (1, "a", 1),
@@ -98,9 +96,8 @@ fn having_filters_all() {
     let mut catalog = setup_catalog(filename);
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
-        columns: vec![aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false}],
-        fks: Vec::new(),
-        if_not_exists: false,
+        columns: vec![aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     for i in 1..=3 {
         aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO t VALUES ({})", i)).unwrap()).unwrap();

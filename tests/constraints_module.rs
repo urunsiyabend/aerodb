@@ -21,6 +21,7 @@ fn not_null_constraint_fails_on_null() {
         default_values: vec![None],
         auto_increment: vec![false],
         fks: vec![],
+        primary_key: None,
     };
     let mut row = RowData(vec![ColumnValue::Null]);
     let mut catalog = setup_catalog("nn_fail.db");
@@ -48,12 +49,14 @@ fn foreign_key_constraint_detects_missing_parent() {
         default_values: vec![None],
         auto_increment: vec![false],
         fks: vec![],
+        primary_key: None,
     };
     catalog
         .create_table_with_fks(
             &parent.name,
             vec![("id".into(), ColumnType::Integer, false, None, false)],
             vec![],
+            None,
         )
         .unwrap();
     // child table info
@@ -65,12 +68,14 @@ fn foreign_key_constraint_detects_missing_parent() {
         default_values: vec![None],
         auto_increment: vec![false],
         fks: vec![ForeignKey { columns: vec!["pid".into()], parent_table: "p".into(), parent_columns: vec!["id".into()], on_delete: None, on_update: None }],
+        primary_key: None,
     };
     catalog
         .create_table_with_fks(
             &child.name,
             vec![("pid".into(), ColumnType::Integer, false, None, false)],
             child.fks.clone(),
+            None,
         )
         .unwrap();
     let mut row = RowData(vec![ColumnValue::Integer(1)]);

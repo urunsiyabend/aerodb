@@ -14,11 +14,10 @@ fn select_single_column() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'bob')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT name FROM users").unwrap();
@@ -49,11 +48,10 @@ fn select_two_columns() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false},
-            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false},
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(),
-        if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'bob')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT id, name FROM users").unwrap();

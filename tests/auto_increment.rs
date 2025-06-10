@@ -27,8 +27,8 @@ fn auto_increment_basic_insert() {
     let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
     let stmt = parse_statement("CREATE TABLE users (id INT NOT NULL AUTO_INCREMENT, name TEXT)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, if_not_exists } = stmt {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = stmt {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
     }
 
     handle_statement(&mut catalog, parse_statement("INSERT INTO users (name) VALUES ('Alice')").unwrap()).unwrap();
@@ -48,8 +48,8 @@ fn auto_increment_explicit_values() {
     let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
 
     let stmt = parse_statement("CREATE TABLE users (id INT NOT NULL AUTO_INCREMENT, name TEXT)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, if_not_exists } = stmt {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = stmt {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
     }
 
     handle_statement(&mut catalog, parse_statement("INSERT INTO users (id, name) VALUES (10, 'Charlie')").unwrap()).unwrap();
@@ -69,8 +69,8 @@ fn auto_increment_persists_after_restart() {
     {
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
         let stmt = parse_statement("CREATE TABLE users (id INT NOT NULL AUTO_INCREMENT, name TEXT)").unwrap();
-        if let Statement::CreateTable { table_name, columns, fks, if_not_exists } = stmt {
-            handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, if_not_exists }).unwrap();
+        if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = stmt {
+            handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
         }
         handle_statement(&mut catalog, parse_statement("INSERT INTO users (name) VALUES ('Alice')").unwrap()).unwrap();
         handle_statement(&mut catalog, parse_statement("INSERT INTO users (name) VALUES ('Bob')").unwrap()).unwrap();

@@ -58,6 +58,14 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
         auto_increment = true;
         parts.remove(pos);
     }
+    let mut primary_key = false;
+    if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("PRIMARY")) {
+        if pos + 1 < parts.len() && parts[pos + 1].eq_ignore_ascii_case("KEY") {
+            primary_key = true;
+            parts.remove(pos + 1);
+            parts.remove(pos);
+        }
+    }
     let type_str = parts.join(" ");
     let ctype = ColumnType::from_str(&type_str).ok_or_else(|| format!("Unknown type {}", type_str))?;
     if auto_increment {
@@ -69,7 +77,7 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
             return Err("AUTO_INCREMENT columns must be NOT NULL".into());
         }
     }
-    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, default_value, auto_increment })
+    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, default_value, auto_increment, primary_key })
 }
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
@@ -266,6 +274,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
 
             let mut columns: Vec<ColumnDef> = Vec::new();
             let mut fks = Vec::new();
+            let mut primary_key: Option<Vec<String>> = None;
             for chunk in split_top_level(inner) {
                 if chunk.to_uppercase().starts_with("FOREIGN KEY") {
                     let mut rest = chunk[11..].trim();
@@ -313,6 +322,17 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                         }
                     }
                     fks.push(ForeignKey { columns: cols, parent_table, parent_columns, on_delete, on_update });
+                } else if chunk.to_uppercase().starts_with("PRIMARY KEY") {
+                    let rest = chunk[11..].trim();
+                    if !rest.starts_with('(') || !rest.ends_with(')') {
+                        return Err("Expected column list after PRIMARY KEY".into());
+                    }
+                    let inner = &rest[1..rest.len()-1];
+                    let cols: Vec<String> = inner.split(',').map(|c| c.trim().to_string()).collect();
+                    if primary_key.is_some() {
+                        return Err("Multiple primary keys defined".into());
+                    }
+                    primary_key = Some(cols);
                 } else {
                     let col = parse_column_def(&chunk)?;
                     columns.push(col);
@@ -323,7 +343,15 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 return Err("At least one column required".to_string());
             }
 
-            Ok(Statement::CreateTable { table_name: name, columns, fks, if_not_exists })
+            let mut inline_pk: Vec<String> = columns.iter().filter(|c| c.primary_key).map(|c| c.name.clone()).collect();
+            if !inline_pk.is_empty() {
+                if primary_key.is_some() {
+                    return Err("Multiple primary keys defined".into());
+                }
+                primary_key = Some(inline_pk);
+            }
+
+            Ok(Statement::CreateTable { table_name: name, columns, fks, primary_key, if_not_exists })
         }
         "INSERT" => {
             if tokens.len() < 4 || !tokens[1].eq_ignore_ascii_case("INTO") {
