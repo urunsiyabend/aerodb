@@ -33,7 +33,7 @@ fn primary_key_duplicate_error() {
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1,'Alice')").unwrap()).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1,'Bob')").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::DuplicateKey(1))));
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn primary_key_null_error() {
         handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
     }
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (NULL,'Charlie')").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::NullViolation(_))));
 }
 
 #[test]
@@ -58,9 +58,9 @@ fn primary_key_composite() {
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1,1)").unwrap()).unwrap();
     let dup = handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1,1)").unwrap());
-    assert!(dup.is_err());
+    assert!(matches!(dup, Err(aerodb::error::DbError::DuplicateKey(1))));
     let null_err = handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1,NULL)").unwrap());
-    assert!(null_err.is_err());
+    assert!(matches!(null_err, Err(aerodb::error::DbError::NullViolation(_))));
 }
 
 #[test]

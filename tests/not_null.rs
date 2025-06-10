@@ -32,10 +32,10 @@ fn enforce_not_null() {
     handle_statement(&mut catalog, parse_statement("INSERT INTO persons VALUES (1, 'siyo', 'siyo', NULL)").unwrap()).unwrap();
     // invalid insert with NULL last_name
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO persons VALUES (2, NULL, 'siyo', 12)").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::NullViolation(_))));
     // invalid insert with NULL first_name
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO persons VALUES (3, 'siyo', NULL, 12)").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::NullViolation(_))));
 
     // verify stored row
     let mut out = Vec::new();

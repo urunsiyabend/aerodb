@@ -6,6 +6,7 @@ mod catalog;
 mod execution;
 mod transaction;
 mod constraints;
+mod error;
 
 use std::io::{self, Write};
 use log::{debug, info, warn};
@@ -17,6 +18,7 @@ use crate::catalog::Catalog;
 use crate::sql::parser::parse_statement;
 use crate::sql::ast::{Statement, Expr, expr_to_string};
 use crate::execution::{execute_delete, execute_select_with_indexes, handle_statement};
+use crate::error::DbError;
 
 // const DATABASE_FILE: &str = "data.aerodb";
 const DATABASE_FILE: &str = "data.aerodb";
@@ -50,7 +52,16 @@ fn main() -> io::Result<()> {
                     break;
                 }
                 if let Err(e) = handle_statement(&mut catalog, stmt) {
-                    warn!("Execution error: {}", e);
+                    match e {
+                        DbError::TableNotFound(t) => println!("Error: table '{}' not found", t),
+                        DbError::DuplicateKey(k) => println!("Error: duplicate primary key {}", k),
+                        DbError::Overflow => println!("Error: value out of range"),
+                        DbError::ParseError(m) | DbError::InvalidValue(m) => println!("Error: {}", m),
+                        DbError::ColumnNotFound(c) => println!("Error: column '{}' not found", c),
+                        DbError::NullViolation(c) => println!("Error: column '{}' cannot be NULL", c),
+                        DbError::ForeignKeyViolation(m) => println!("Error: {}", m),
+                        DbError::Io(err) => println!("IO error: {}", err),
+                    }
                 }
             }
             Err(e) => warn!("Parse error: {}", e),

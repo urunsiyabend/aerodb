@@ -30,9 +30,9 @@ fn smallint_range() {
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (-1)").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (70000)").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (123)").unwrap()).unwrap();
 }
 
@@ -48,9 +48,9 @@ fn mediumint_range() {
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (-9000000)").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (9000000)").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (100)").unwrap()).unwrap();
 }
 
@@ -67,7 +67,7 @@ fn double_unsigned() {
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, -1)").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, 12.34)").unwrap()).unwrap();
 }
 #[test]
@@ -94,7 +94,7 @@ fn date_validation() {
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, '2025-13-01')").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, '2025-12-01')").unwrap()).unwrap();
 }
 
@@ -111,7 +111,7 @@ fn datetime_validation() {
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, '2025-02-30 10:00:00')").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, '2025-06-08 12:34:56')").unwrap()).unwrap();
 }
 
@@ -128,7 +128,7 @@ fn time_validation() {
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, '839:00:00')").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, '12:30:45')").unwrap()).unwrap();
 }
 
@@ -145,6 +145,6 @@ fn year_validation() {
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (1, '1900')").unwrap());
-    assert!(res.is_err());
+    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (2, '2020')").unwrap()).unwrap();
 }
