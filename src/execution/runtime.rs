@@ -21,7 +21,7 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
                         let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
-                    if crate::sql::ast::evaluate_expression(expr, &values) {
+                    if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
                         collected.push(row);
                     }
                 } else {
@@ -181,7 +181,7 @@ pub fn execute_update(
                         let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
-                    if crate::sql::ast::evaluate_expression(expr, &values) {
+                    if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
                         collected.push(row);
                     }
                 } else {
@@ -294,7 +294,7 @@ pub fn execute_select_with_indexes(
                 let v = val.to_string_value();
                 values.insert(col.clone(), v);
             }
-            if crate::sql::ast::evaluate_expression(expr, &values) {
+            if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
                 out.push(row);
             }
         } else {
@@ -371,7 +371,7 @@ pub fn execute_multi_join(
             str_map.insert(k.clone(), s);
         }
         if let Some(ref pred) = plan.where_predicate {
-            if !evaluate_expression(pred, &str_map) {
+            if !matches!(evaluate_expression(pred, &str_map), ColumnValue::Boolean(true)) {
                 continue;
             }
         }
@@ -549,7 +549,7 @@ pub fn execute_group_query(
             }
         }
         if let Some(ref pred) = having {
-            if !crate::sql::ast::evaluate_expression(pred, &value_map) {
+            if !matches!(crate::sql::ast::evaluate_expression(pred, &value_map), ColumnValue::Boolean(true)) {
                 continue;
             }
         }
@@ -949,6 +949,52 @@ fn evaluate_with_catalog(
         Expr::NotEquals { left, right } => {
             Ok(values.get(left).map(String::as_str).unwrap_or(left)
                 != values.get(right).map(String::as_str).unwrap_or(right))
+        }
+        Expr::Add { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok(l + r != 0)
+        }
+        Expr::Subtract { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok(l - r != 0)
+        }
+        Expr::Multiply { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok(l * r != 0)
+        }
+        Expr::Divide { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(1);
+            if r == 0 { Ok(false) } else { Ok(l / r != 0) }
+        }
+        Expr::Modulo { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(1);
+            if r == 0 { Ok(false) } else { Ok(l % r != 0) }
+        }
+        Expr::BitwiseAnd { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok((l & r) != 0)
+        }
+        Expr::BitwiseOr { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok((l | r) != 0)
+        }
+        Expr::BitwiseXor { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok((l ^ r) != 0)
+        }
+        Expr::Between { expr, low, high } => {
+            let v = values.get(expr).map(String::as_str).unwrap_or(expr).parse::<f64>().unwrap_or(0.0);
+            let l = values.get(low).map(String::as_str).unwrap_or(low).parse::<f64>().unwrap_or(0.0);
+            let h = values.get(high).map(String::as_str).unwrap_or(high).parse::<f64>().unwrap_or(0.0);
+            Ok(v >= l && v <= h)
         }
         Expr::GreaterThan { left, right } => {
             let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);

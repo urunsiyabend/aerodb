@@ -77,6 +77,7 @@ fn main() -> io::Result<()> {
 mod tests {
     use super::*; // bring Catalog, Pager, BTree, etc. into scope
     use crate::sql::ast::evaluate_expression;
+    use crate::storage::row::ColumnValue;
     use crate::storage::row::ColumnType;
     use std::fs;
 
@@ -185,7 +186,7 @@ mod tests {
                         let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
-                    if evaluate_expression(where_predicate.as_ref().unwrap(), &values) {
+                    if matches!(evaluate_expression(where_predicate.as_ref().unwrap(), &values), ColumnValue::Boolean(true)) {
                         found.push(row);
                     }
                 }
