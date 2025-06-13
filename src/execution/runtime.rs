@@ -491,13 +491,26 @@ pub fn execute_group_query(
                         crate::sql::ast::AggFunc::Count => grows.len().to_string(),
                         crate::sql::ast::AggFunc::Sum => {
                             let idx = get_idx(column.as_ref().unwrap())?;
-                            let mut sum = 0i64;
-                            for r in &grows {
-                                if let ColumnValue::Integer(i) = r.data.0[idx] {
-                                    sum += i as i64;
+                            match table_info.columns[idx].1 {
+                                ColumnType::Double { .. } => {
+                                    let mut sum = 0.0;
+                                    for r in &grows {
+                                        if let ColumnValue::Double(f) = r.data.0[idx] {
+                                            sum += f;
+                                        }
+                                    }
+                                    sum.to_string()
+                                }
+                                _ => {
+                                    let mut sum = 0i64;
+                                    for r in &grows {
+                                        if let ColumnValue::Integer(i) = r.data.0[idx] {
+                                            sum += i as i64;
+                                        }
+                                    }
+                                    sum.to_string()
                                 }
                             }
-                            sum.to_string()
                         }
                         crate::sql::ast::AggFunc::Min => {
                             let idx = get_idx(column.as_ref().unwrap())?;
