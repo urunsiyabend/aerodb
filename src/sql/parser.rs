@@ -146,6 +146,60 @@ fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
             consumed = 3;
             Expr::NotEquals { left, right }
         }
+        "<>" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::NotEquals { left, right }
+        }
+        "+" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::Add { left, right }
+        }
+        "-" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::Subtract { left, right }
+        }
+        "*" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::Multiply { left, right }
+        }
+        "/" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::Divide { left, right }
+        }
+        "%" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::Modulo { left, right }
+        }
+        "&" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::BitwiseAnd { left, right }
+        }
+        "|" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::BitwiseOr { left, right }
+        }
+        "^" => {
+            let right = tokens[2].trim_end_matches(';').to_string();
+            consumed = 3;
+            Expr::BitwiseXor { left, right }
+        }
+        "BETWEEN" => {
+            if tokens.len() < 5 || !tokens[3].eq_ignore_ascii_case("AND") {
+                return Err("BETWEEN requires syntax: <expr> BETWEEN <low> AND <high>".into());
+            }
+            let low = tokens[2].to_string();
+            let high = tokens[4].trim_end_matches(';').to_string();
+            consumed = 5;
+            Expr::Between { expr: left, low, high }
+        }
         ">" => {
             let right = tokens[2].trim_end_matches(';').to_string();
             consumed = 3;
@@ -460,6 +514,15 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 } else if token.chars().all(|c| c.is_ascii_digit()) {
                     columns.push(crate::sql::ast::SelectExpr::Literal(token.to_string()));
                 } else {
+                    let parts: Vec<&str> = token.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        if let Ok((expr, used)) = parse_expression(&parts) {
+                            if used == parts.len() {
+                                columns.push(crate::sql::ast::SelectExpr::Expr(Box::new(expr)));
+                                continue;
+                            }
+                        }
+                    }
                     columns.push(crate::sql::ast::SelectExpr::Column(token.to_string()));
                 }
             }

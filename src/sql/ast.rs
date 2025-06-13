@@ -5,6 +5,15 @@ use crate::storage::row::ColumnType;
 pub enum Expr {
     Equals { left: String, right: String },
     NotEquals { left: String, right: String },
+    Add { left: String, right: String },
+    Subtract { left: String, right: String },
+    Multiply { left: String, right: String },
+    Divide { left: String, right: String },
+    Modulo { left: String, right: String },
+    BitwiseAnd { left: String, right: String },
+    BitwiseOr { left: String, right: String },
+    BitwiseXor { left: String, right: String },
+    Between { expr: String, low: String, high: String },
     GreaterThan { left: String, right: String },
     GreaterOrEquals { left: String, right: String },
     LessThan { left: String, right: String },
@@ -101,6 +110,7 @@ pub enum SelectExpr {
     All,
     Column(String),
     Aggregate { func: AggFunc, column: Option<String> },
+    Expr(Box<Expr>),
     Subquery(Box<Statement>),
     Literal(String),
 }
@@ -158,34 +168,96 @@ use std::collections::HashMap;
 /// Evaluate an expression against a map of column values. If an operand
 /// matches a column name, the corresponding value is used; otherwise the
 /// operand itself is treated as a literal string.
-pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> bool {
+use crate::storage::row::ColumnValue;
+
+pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> ColumnValue {
     fn get_value<'a>(token: &'a str, values: &'a HashMap<String, String>) -> &'a str {
         values.get(token).map(String::as_str).unwrap_or(token)
     }
 
     match expr {
-        Expr::Equals { left, right } => get_value(left, values) == get_value(right, values),
-        Expr::NotEquals { left, right } => get_value(left, values) != get_value(right, values),
+        Expr::Equals { left, right } => ColumnValue::Boolean(get_value(left, values) == get_value(right, values)),
+        Expr::NotEquals { left, right } => ColumnValue::Boolean(get_value(left, values) != get_value(right, values)),
+        Expr::Add { left, right } => {
+            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
+            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
+            ColumnValue::Integer(l + r)
+        }
+        Expr::Subtract { left, right } => {
+            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
+            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
+            ColumnValue::Integer(l - r)
+        }
+        Expr::Multiply { left, right } => {
+            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
+            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
+            ColumnValue::Integer(l * r)
+        }
+        Expr::Divide { left, right } => {
+            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
+            let r = get_value(right, values).parse::<i32>().unwrap_or(1);
+            if r == 0 { ColumnValue::Integer(0) } else { ColumnValue::Integer(l / r) }
+        }
+        Expr::Modulo { left, right } => {
+            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
+            let r = get_value(right, values).parse::<i32>().unwrap_or(1);
+            if r == 0 { ColumnValue::Integer(0) } else { ColumnValue::Integer(l % r) }
+        }
+        Expr::BitwiseAnd { left, right } => {
+            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
+            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
+            ColumnValue::Integer(l & r)
+        }
+        Expr::BitwiseOr { left, right } => {
+            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
+            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
+            ColumnValue::Integer(l | r)
+        }
+        Expr::BitwiseXor { left, right } => {
+            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
+            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
+            ColumnValue::Integer(l ^ r)
+        }
+        Expr::Between { expr: v, low, high } => {
+            let val = get_value(v, values).parse::<f64>().unwrap_or(0.0);
+            let l = get_value(low, values).parse::<f64>().unwrap_or(0.0);
+            let h = get_value(high, values).parse::<f64>().unwrap_or(0.0);
+            ColumnValue::Boolean(val >= l && val <= h)
+        }
         Expr::GreaterThan { left, right } => {
-            get_value(left, values).parse::<f64>().unwrap_or(0.0)
-                > get_value(right, values).parse::<f64>().unwrap_or(0.0)
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
+            ColumnValue::Boolean(l > r)
         }
         Expr::GreaterOrEquals { left, right } => {
-            get_value(left, values).parse::<f64>().unwrap_or(0.0)
-                >= get_value(right, values).parse::<f64>().unwrap_or(0.0)
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
+            ColumnValue::Boolean(l >= r)
         }
         Expr::LessThan { left, right } => {
-            get_value(left, values).parse::<f64>().unwrap_or(0.0)
-                < get_value(right, values).parse::<f64>().unwrap_or(0.0)
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
+            ColumnValue::Boolean(l < r)
         }
         Expr::LessOrEquals { left, right } => {
-            get_value(left, values).parse::<f64>().unwrap_or(0.0)
-                <= get_value(right, values).parse::<f64>().unwrap_or(0.0)
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
+            ColumnValue::Boolean(l <= r)
         }
-        Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } => false,
-        Expr::And(a, b) => evaluate_expression(a, values) && evaluate_expression(b, values),
-        Expr::Or(a, b) => evaluate_expression(a, values) || evaluate_expression(b, values),
-        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } | Expr::DefaultValue => false,
+        Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } => ColumnValue::Boolean(false),
+        Expr::And(a, b) => {
+            match (evaluate_expression(a, values), evaluate_expression(b, values)) {
+                (ColumnValue::Boolean(l), ColumnValue::Boolean(r)) => ColumnValue::Boolean(l && r),
+                _ => ColumnValue::Boolean(false),
+            }
+        }
+        Expr::Or(a, b) => {
+            match (evaluate_expression(a, values), evaluate_expression(b, values)) {
+                (ColumnValue::Boolean(l), ColumnValue::Boolean(r)) => ColumnValue::Boolean(l || r),
+                _ => ColumnValue::Boolean(false),
+            }
+        }
+        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } | Expr::DefaultValue => ColumnValue::Boolean(false),
     }
 }
 

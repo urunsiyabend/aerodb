@@ -21,7 +21,7 @@ pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option
                         let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
-                    if crate::sql::ast::evaluate_expression(expr, &values) {
+                    if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
                         collected.push(row);
                     }
                 } else {
@@ -181,7 +181,7 @@ pub fn execute_update(
                         let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
-                    if crate::sql::ast::evaluate_expression(expr, &values) {
+                    if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
                         collected.push(row);
                     }
                 } else {
@@ -294,7 +294,7 @@ pub fn execute_select_with_indexes(
                 let v = val.to_string_value();
                 values.insert(col.clone(), v);
             }
-            if crate::sql::ast::evaluate_expression(expr, &values) {
+            if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
                 out.push(row);
             }
         } else {
@@ -371,7 +371,7 @@ pub fn execute_multi_join(
             str_map.insert(k.clone(), s);
         }
         if let Some(ref pred) = plan.where_predicate {
-            if !evaluate_expression(pred, &str_map) {
+            if !matches!(evaluate_expression(pred, &str_map), ColumnValue::Boolean(true)) {
                 continue;
             }
         }
@@ -457,6 +457,9 @@ pub fn execute_group_query(
             crate::sql::ast::SelectExpr::Literal(val) => {
                 let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
                 header.push((val.clone(), ty));
+            }
+            crate::sql::ast::SelectExpr::Expr(_) => {
+                header.push(("EXPR".into(), ColumnType::Integer));
             }
         }
     }
@@ -546,10 +549,20 @@ pub fn execute_group_query(
                 crate::sql::ast::SelectExpr::Literal(val) => {
                     result_row.push(val.clone());
                 }
+                crate::sql::ast::SelectExpr::Expr(expr) => {
+                    let map = table_info
+                        .columns
+                        .iter()
+                        .zip(grows[0].data.0.iter())
+                        .map(|((c, _), v)| (c.clone(), v.to_string_value()))
+                        .collect::<std::collections::HashMap<_, _>>();
+                    let val = crate::sql::ast::evaluate_expression(expr, &map).to_string_value();
+                    result_row.push(val);
+                }
             }
         }
         if let Some(ref pred) = having {
-            if !crate::sql::ast::evaluate_expression(pred, &value_map) {
+            if !matches!(crate::sql::ast::evaluate_expression(pred, &value_map), ColumnValue::Boolean(true)) {
                 continue;
             }
         }
@@ -751,19 +764,24 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                         println!("{}", format_values(&row));
                     }
                 } else {
-                    let table_info = catalog.get_table(&from_table)?;
+                    let table_info = catalog.get_table(&from_table)?.clone();
                     let (idxs, meta) = select_projection_indices(&table_info.columns, &columns)?;
                     println!("{}", format_header(&meta));
                     let mut results = Vec::new();
                     execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
                     for row in results {
                         let vals = row_to_strings(&row);
+                        let mut val_map = std::collections::HashMap::new();
+                        for ((c, _), v) in table_info.columns.iter().zip(vals.iter()) {
+                            val_map.insert(c.clone(), v.clone());
+                        }
                         let projected: Vec<_> = idxs
                             .iter()
                             .map(|p| match p {
                                 Projection::Index(i) => vals[*i].clone(),
                                 Projection::Literal(s) => s.clone(),
                                 Projection::Subquery(_) => String::new(),
+                                Projection::Expr(expr) => crate::sql::ast::evaluate_expression(expr, &val_map).to_string_value(),
                             })
                             .collect();
                         println!("{}", format_values(&projected));
@@ -825,6 +843,7 @@ pub enum Projection {
     Index(usize),
     Literal(String),
     Subquery(Box<crate::sql::ast::Statement>),
+    Expr(Box<crate::sql::ast::Expr>),
 }
 
 pub fn select_projection_indices(
@@ -868,6 +887,10 @@ pub fn select_projection_indices(
                     let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
                     meta.push((val.clone(), ty));
                     idxs.push(Projection::Literal(val.clone()));
+                }
+                crate::sql::ast::SelectExpr::Expr(expr) => {
+                    meta.push(("EXPR".into(), ColumnType::Integer));
+                    idxs.push(Projection::Expr(expr.clone()));
                 }
             }
         }
@@ -949,6 +972,52 @@ fn evaluate_with_catalog(
         Expr::NotEquals { left, right } => {
             Ok(values.get(left).map(String::as_str).unwrap_or(left)
                 != values.get(right).map(String::as_str).unwrap_or(right))
+        }
+        Expr::Add { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok(l + r != 0)
+        }
+        Expr::Subtract { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok(l - r != 0)
+        }
+        Expr::Multiply { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok(l * r != 0)
+        }
+        Expr::Divide { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(1);
+            if r == 0 { Ok(false) } else { Ok(l / r != 0) }
+        }
+        Expr::Modulo { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(1);
+            if r == 0 { Ok(false) } else { Ok(l % r != 0) }
+        }
+        Expr::BitwiseAnd { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok((l & r) != 0)
+        }
+        Expr::BitwiseOr { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok((l | r) != 0)
+        }
+        Expr::BitwiseXor { left, right } => {
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            Ok((l ^ r) != 0)
+        }
+        Expr::Between { expr, low, high } => {
+            let v = values.get(expr).map(String::as_str).unwrap_or(expr).parse::<f64>().unwrap_or(0.0);
+            let l = values.get(low).map(String::as_str).unwrap_or(low).parse::<f64>().unwrap_or(0.0);
+            let h = values.get(high).map(String::as_str).unwrap_or(high).parse::<f64>().unwrap_or(0.0);
+            Ok(v >= l && v <= h)
         }
         Expr::GreaterThan { left, right } => {
             let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
@@ -1059,6 +1128,10 @@ pub fn execute_select_statement(
                                     let mut inner_rows = Vec::new();
                                     execute_select_statement(catalog, q, &mut inner_rows, Some(&map))?;
                                     let val = inner_rows.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
+                                    projected.push(val);
+                                }
+                                Projection::Expr(expr) => {
+                                    let val = crate::sql::ast::evaluate_expression(expr, &map).to_string_value();
                                     projected.push(val);
                                 }
                             }
