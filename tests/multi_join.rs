@@ -46,7 +46,7 @@ fn join_two_tables() {
     let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id").unwrap();
     if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
         let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, joins, projections: columns, where_predicate };
+        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
         let mut results = Vec::new();
         execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
         assert_eq!(results.len(), 3);
@@ -93,7 +93,7 @@ fn join_three_tables() {
     let stmt = parse_statement("SELECT a.v, b.w, c.x FROM a JOIN b ON a.id = b.a_id JOIN c ON b.id = c.b_id").unwrap();
     if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
         let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, joins, projections: columns, where_predicate };
+        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
         let mut results = Vec::new();
         execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
         assert_eq!(results.len(), 2);
@@ -129,7 +129,7 @@ fn join_with_where() {
     let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id WHERE a.v = av1").unwrap();
     if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
         let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, joins, projections: columns, where_predicate };
+        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
         let mut results = Vec::new();
         execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
         assert_eq!(results.len(), 1);

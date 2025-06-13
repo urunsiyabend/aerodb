@@ -12,7 +12,7 @@ fn parse_select_add_expr() {
     let stmt = parse_statement("SELECT val + 5 FROM numbers").unwrap();
     if let Statement::Select { columns, .. } = stmt {
         match &columns[0] {
-            SelectExpr::Expr(expr_box) => match **expr_box {
+            SelectExpr { expr: aerodb::sql::ast::SelectItem::Expr(expr_box), .. } => match **expr_box {
                 Expr::Add { ref left, ref right } => {
                     assert_eq!(left, "val");
                     assert_eq!(right, "5");

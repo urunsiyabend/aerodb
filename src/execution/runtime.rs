@@ -319,8 +319,9 @@ pub fn execute_multi_join(
         let mut cursor = tree.scan_all_rows();
         while let Some(row) = cursor.next() {
             let mut map = std::collections::HashMap::new();
+            let alias = plan.base_alias.as_deref().unwrap_or(&plan.base_table);
             for ((c, _), v) in base_info.columns.iter().zip(row.data.0.iter()) {
-                map.insert(format!("{}.{c}", plan.base_table), v.clone());
+                map.insert(format!("{alias}.{c}"), v.clone());
             }
             result_rows.push(map);
         }
@@ -447,29 +448,31 @@ pub fn execute_group_query(
     }
 
     let mut header = Vec::new();
+    use crate::sql::ast::SelectItem;
     for expr in projections {
-        match expr {
-            crate::sql::ast::SelectExpr::Column(c) => {
+        match &expr.expr {
+            SelectItem::Column(c) => {
                 let idx = get_idx(c)?;
-                header.push((c.clone(), table_info.columns[idx].1));
+                header.push((expr.alias.clone().unwrap_or(c.clone()), table_info.columns[idx].1));
             }
-            crate::sql::ast::SelectExpr::Aggregate { func, column } => {
-                header.push((format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into())), ColumnType::Integer));
+            SelectItem::Aggregate { func, column } => {
+                let name = format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into()));
+                header.push((expr.alias.clone().unwrap_or(name), ColumnType::Integer));
             }
-            crate::sql::ast::SelectExpr::All => {
+            SelectItem::All => {
                 for (c, ty) in &table_info.columns {
                     header.push((c.clone(), *ty));
                 }
             }
-            crate::sql::ast::SelectExpr::Subquery(_) => {
-                header.push(("SUBQUERY".into(), ColumnType::Text));
+            SelectItem::Subquery(_) => {
+                header.push((expr.alias.clone().unwrap_or("SUBQUERY".into()), ColumnType::Text));
             }
-            crate::sql::ast::SelectExpr::Literal(val) => {
+            SelectItem::Literal(val) => {
                 let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
-                header.push((val.clone(), ty));
+                header.push((expr.alias.clone().unwrap_or_else(|| val.clone()), ty));
             }
-            crate::sql::ast::SelectExpr::Expr(_) => {
-                header.push(("EXPR".into(), ColumnType::Integer));
+            SelectItem::Expr(_) => {
+                header.push((expr.alias.clone().unwrap_or("EXPR".into()), ColumnType::Integer));
             }
         }
     }
@@ -478,15 +481,15 @@ pub fn execute_group_query(
         let mut result_row = Vec::new();
         let mut value_map = std::collections::HashMap::new();
         for expr in projections {
-            match expr {
-                crate::sql::ast::SelectExpr::Column(c) => {
+            match &expr.expr {
+                SelectItem::Column(c) => {
                     let idx = get_idx(c)?;
                     let val = &grows[0].data.0[idx];
                     let s = val.to_string_value();
                     value_map.insert(c.clone(), s.clone());
                     result_row.push(s);
                 }
-                crate::sql::ast::SelectExpr::Aggregate { func, column } => {
+                SelectItem::Aggregate { func, column } => {
                     let val = match func {
                         crate::sql::ast::AggFunc::Count => grows.len().to_string(),
                         crate::sql::ast::AggFunc::Sum => {
@@ -545,10 +548,10 @@ pub fn execute_group_query(
                         }
                     };
                     let name = format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into()));
-                    value_map.insert(name, val.clone());
+                    value_map.insert(expr.alias.clone().unwrap_or(name.clone()), val.clone());
                     result_row.push(val);
                 }
-                crate::sql::ast::SelectExpr::All => {
+                SelectItem::All => {
                     for (i, _) in &table_info.columns {
                         let idx = get_idx(i)?;
                         let v = &grows[0].data.0[idx];
@@ -557,7 +560,7 @@ pub fn execute_group_query(
                         result_row.push(s);
                     }
                 }
-                crate::sql::ast::SelectExpr::Subquery(sub) => {
+                SelectItem::Subquery(sub) => {
                     let mut inner_rows = Vec::new();
                     let mut ctx = std::collections::HashMap::new();
                     for ((c, _), v) in table_info.columns.iter().zip(grows[0].data.0.iter()) {
@@ -569,10 +572,10 @@ pub fn execute_group_query(
                     // subqueries are not referenced by HAVING expressions
                     result_row.push(val);
                 }
-                crate::sql::ast::SelectExpr::Literal(val) => {
+                SelectItem::Literal(val) => {
                     result_row.push(val.clone());
                 }
-                crate::sql::ast::SelectExpr::Expr(expr) => {
+                SelectItem::Expr(expr) => {
                     let map = table_info
                         .columns
                         .iter()
@@ -755,7 +758,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
         }
         Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
             let has_subquery = from.iter().any(|t| matches!(t, crate::sql::ast::TableRef::Subquery { .. }))
-                || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Subquery(_)))
+                || columns.iter().any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Subquery(_)))
                 || where_predicate.as_ref().map_or(false, |e| expr_has_subquery(e));
             if has_subquery {
                 let stmt = crate::sql::ast::Statement::Select {
@@ -779,7 +782,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 _ => unreachable!(),
             };
             if joins.is_empty() {
-                if group_by.is_some() || columns.iter().any(|c| matches!(c, crate::sql::ast::SelectExpr::Aggregate { .. })) {
+                if group_by.is_some() || columns.iter().any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Aggregate { .. })) {
                     let mut results = Vec::new();
                     let header = execute_group_query(catalog, &from_table, &columns, group_by.as_deref(), having.clone(), where_predicate, &mut results, None)?;
                     println!("{}", format_header(&header));
@@ -811,7 +814,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     }
                 }
             } else {
-                let plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, joins, projections: columns.clone(), where_predicate };
+                let plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, base_alias: None, joins, projections: columns.clone(), where_predicate };
                 let projections = expand_join_projections(&plan, catalog)?;
                 let header_meta = join_header(&plan, catalog, &projections)?;
                 println!("{}", format_header(&header_meta));
@@ -873,7 +876,8 @@ pub fn select_projection_indices(
     columns: &[(String, ColumnType)],
     projections: &[crate::sql::ast::SelectExpr],
 ) -> DbResult<(Vec<Projection>, Vec<(String, ColumnType)>)> {
-    let use_all = projections.len() == 1 && matches!(projections[0], crate::sql::ast::SelectExpr::All);
+    use crate::sql::ast::SelectItem;
+    let use_all = projections.len() == 1 && matches!(projections[0].expr, SelectItem::All);
     let mut idxs = Vec::new();
     let mut meta = Vec::new();
     if use_all {
@@ -883,36 +887,39 @@ pub fn select_projection_indices(
         }
     } else {
         for p in projections {
-            match p {
-                crate::sql::ast::SelectExpr::Column(col) => {
+            match &p.expr {
+                SelectItem::Column(col) => {
                     let c = col.split('.').last().unwrap_or(col).to_string();
                     if let Some((i, (_, ty))) = columns.iter().enumerate().find(|(_, (name, _))| name == &c) {
                         idxs.push(Projection::Index(i));
-                        meta.push((c, *ty));
+                        let name = p.alias.clone().unwrap_or(c);
+                        meta.push((name, *ty));
                     } else {
                         return Err(DbError::ColumnNotFound(c.clone()));
                     }
                 }
-                crate::sql::ast::SelectExpr::Aggregate { func, column } => {
-                    meta.push((format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into())), ColumnType::Integer));
+                SelectItem::Aggregate { func, column } => {
+                    let name = format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into()));
+                    let header = p.alias.clone().unwrap_or(name);
+                    meta.push((header, ColumnType::Integer));
                 }
-                crate::sql::ast::SelectExpr::All => {
+                SelectItem::All => {
                     for (i, (n, ty)) in columns.iter().enumerate() {
                         idxs.push(Projection::Index(i));
                         meta.push((n.clone(), *ty));
                     }
                 }
-                crate::sql::ast::SelectExpr::Subquery(q) => {
-                    meta.push(("SUBQUERY".into(), ColumnType::Text));
+                SelectItem::Subquery(q) => {
+                    meta.push((p.alias.clone().unwrap_or("SUBQUERY".into()), ColumnType::Text));
                     idxs.push(Projection::Subquery(q.clone()));
                 }
-                crate::sql::ast::SelectExpr::Literal(val) => {
+                SelectItem::Literal(val) => {
                     let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
-                    meta.push((val.clone(), ty));
+                    meta.push((p.alias.clone().unwrap_or_else(|| val.clone()), ty));
                     idxs.push(Projection::Literal(val.clone()));
                 }
-                crate::sql::ast::SelectExpr::Expr(expr) => {
-                    meta.push(("EXPR".into(), ColumnType::Integer));
+                SelectItem::Expr(expr) => {
+                    meta.push((p.alias.clone().unwrap_or("EXPR".into()), ColumnType::Integer));
                     idxs.push(Projection::Expr(expr.clone()));
                 }
             }
@@ -925,12 +932,13 @@ pub fn expand_join_projections(
     plan: &crate::execution::plan::MultiJoinPlan,
     catalog: &Catalog,
 ) -> DbResult<Vec<String>> {
-    use crate::sql::ast::SelectExpr;
-    if plan.projections.len() == 1 && matches!(plan.projections[0], SelectExpr::All) {
+    use crate::sql::ast::{SelectExpr, SelectItem};
+    if plan.projections.len() == 1 && matches!(plan.projections[0].expr, SelectItem::All) {
         let mut list = Vec::new();
         let base_info = catalog.get_table(&plan.base_table)?;
+        let base_alias = plan.base_alias.as_deref().unwrap_or(&plan.base_table);
         for (c, _) in &base_info.columns {
-            list.push(format!("{}.{}", plan.base_table, c));
+            list.push(format!("{base_alias}.{}", c));
         }
         for jc in &plan.joins {
             let alias = jc.alias.as_ref().unwrap_or(&jc.table);
@@ -943,7 +951,7 @@ pub fn expand_join_projections(
     } else {
         let mut out = Vec::new();
         for p in &plan.projections {
-            if let SelectExpr::Column(c) = p {
+            if let SelectItem::Column(c) = &p.expr {
                 out.push(c.clone());
             }
         }
@@ -958,7 +966,8 @@ pub fn join_header(
 ) -> DbResult<Vec<(String, ColumnType)>> {
     use std::collections::HashMap;
     let mut alias_map = HashMap::new();
-    alias_map.insert(plan.base_table.clone(), plan.base_table.clone());
+    let base_alias = plan.base_alias.as_ref().unwrap_or(&plan.base_table);
+    alias_map.insert(base_alias.clone(), plan.base_table.clone());
     for jc in &plan.joins {
         alias_map.insert(jc.alias.clone().unwrap_or_else(|| jc.table.clone()), jc.table.clone());
     }
@@ -1108,7 +1117,7 @@ pub fn execute_select_statement(
     out: &mut Vec<Vec<String>>,
     context: Option<&std::collections::HashMap<String, String>>,
 ) -> DbResult<Vec<(String, ColumnType)>> {
-    use crate::sql::ast::{SelectExpr, TableRef};
+    use crate::sql::ast::{SelectExpr, SelectItem, TableRef};
     match stmt {
         crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
             if !joins.is_empty() {
@@ -1117,7 +1126,7 @@ pub fn execute_select_statement(
             let source = from.first().ok_or_else(|| DbError::ParseError("Missing FROM".into()))?;
             match source {
                 TableRef::Named { name, alias } => {
-                    if group_by.is_some() || columns.iter().any(|c| matches!(c, SelectExpr::Aggregate { .. })) {
+                    if group_by.is_some() || columns.iter().any(|c| matches!(c.expr, SelectItem::Aggregate { .. })) {
                         return execute_group_query(catalog, name, columns, group_by.as_deref(), having.clone(), where_predicate.clone(), out, context);
                     }
                     let info = catalog.get_table(name)?.clone();
@@ -1185,18 +1194,19 @@ pub fn execute_select_statement(
                         }
                         filtered.push(row);
                     }
-                    if columns.len() == 1 && matches!(columns[0], SelectExpr::All) {
+                    if columns.len() == 1 && matches!(columns[0].expr, SelectItem::All) {
                         out.extend(filtered.clone());
                         Ok(inner_header)
                     } else {
                         let mut header = Vec::new();
                         let mut idxs = Vec::new();
                         for expr in columns {
-                            match expr {
-                                SelectExpr::Column(c) => {
-                                    if let Some((i, (_, ty))) = inner_header.iter().enumerate().find(|(_, (n, _))| n == c) {
+                            match &expr.expr {
+                                SelectItem::Column(c) => {
+                                    let base = c.split('.').last().unwrap_or(c);
+                                    if let Some((i, (_, ty))) = inner_header.iter().enumerate().find(|(_, (n, _))| n == base) {
                                         idxs.push(i);
-                                        header.push((c.clone(), *ty));
+                                        header.push((expr.alias.clone().unwrap_or(base.to_string()), *ty));
                                     } else {
                                         return Err(DbError::ColumnNotFound(c.clone()));
                                     }

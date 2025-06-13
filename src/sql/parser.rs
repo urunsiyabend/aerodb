@@ -482,49 +482,69 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             let col_str = col_tokens.join(" ");
             for part in split_top_level(&col_str) {
                 let token = part.trim().trim_end_matches(',');
-                let upper = token.to_uppercase();
-                if token == "*" {
-                    columns.push(crate::sql::ast::SelectExpr::All);
-                } else if token.starts_with('(') {
-                    let end = token.rfind(')').ok_or("Unclosed subquery")?;
-                    let inner = &token[1..end];
+                let mut expr_part = token.trim();
+                let mut alias: Option<String> = None;
+                if let Some(pos) = token.to_uppercase().rfind(" AS ") {
+                    expr_part = token[..pos].trim();
+                    alias = Some(token[pos + 4..].trim().to_string());
+                } else if let Some(pos) = token.rfind(' ') {
+                    let potential = token[pos + 1..].trim();
+                    if !potential.contains('(')
+                        && !token.trim_end().ends_with(')')
+                        && !token[..pos].chars().any(|ch| "+-*/%".contains(ch))
+                    {
+                        alias = Some(potential.trim_end_matches(';').to_string());
+                        expr_part = token[..pos].trim();
+                    }
+                }
+                let upper = expr_part.to_uppercase();
+                let item = if expr_part == "*" {
+                    crate::sql::ast::SelectItem::All
+                } else if expr_part.starts_with('(') {
+                    let end = expr_part.rfind(')').ok_or("Unclosed subquery")?;
+                    let inner = &expr_part[1..end];
                     let sub = parse_statement(inner)?;
-                    columns.push(crate::sql::ast::SelectExpr::Subquery(Box::new(sub)));
+                    crate::sql::ast::SelectItem::Subquery(Box::new(sub))
                 } else if upper.starts_with("SELECT") {
-                    let sub = parse_statement(token)?;
-                    columns.push(crate::sql::ast::SelectExpr::Subquery(Box::new(sub)));
+                    let sub = parse_statement(expr_part)?;
+                    crate::sql::ast::SelectItem::Subquery(Box::new(sub))
                 } else if upper.starts_with("COUNT(") {
-                    let inner = token[6..token.len() - 1].trim();
+                    let inner = expr_part[6..expr_part.len() - 1].trim();
                     let col = if inner == "*" { None } else { Some(inner.to_string()) };
-                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Count, column: col });
+                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Count, column: col }
                 } else if upper.starts_with("SUM(") {
-                    let inner = token[4..token.len() - 1].trim().to_string();
-                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Sum, column: Some(inner) });
+                    let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
+                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Sum, column: Some(inner) }
                 } else if upper.starts_with("AVG(") {
-                    let inner = token[4..token.len() - 1].trim().to_string();
-                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Avg, column: Some(inner) });
+                    let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
+                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Avg, column: Some(inner) }
                 } else if upper.starts_with("MIN(") {
-                    let inner = token[4..token.len() - 1].trim().to_string();
-                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Min, column: Some(inner) });
+                    let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
+                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Min, column: Some(inner) }
                 } else if upper.starts_with("MAX(") {
-                    let inner = token[4..token.len() - 1].trim().to_string();
-                    columns.push(crate::sql::ast::SelectExpr::Aggregate { func: crate::sql::ast::AggFunc::Max, column: Some(inner) });
-                } else if token.starts_with("'") && token.ends_with("'") {
-                    columns.push(crate::sql::ast::SelectExpr::Literal(token[1..token.len()-1].to_string()));
-                } else if token.chars().all(|c| c.is_ascii_digit()) {
-                    columns.push(crate::sql::ast::SelectExpr::Literal(token.to_string()));
+                    let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
+                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Max, column: Some(inner) }
+                } else if expr_part.starts_with("'") && expr_part.ends_with("'") {
+                    crate::sql::ast::SelectItem::Literal(expr_part[1..expr_part.len()-1].to_string())
+                } else if expr_part.chars().all(|c| c.is_ascii_digit()) {
+                    crate::sql::ast::SelectItem::Literal(expr_part.to_string())
                 } else {
-                    let parts: Vec<&str> = token.split_whitespace().collect();
+                    let parts: Vec<&str> = expr_part.split_whitespace().collect();
                     if parts.len() >= 3 {
                         if let Ok((expr, used)) = parse_expression(&parts) {
                             if used == parts.len() {
-                                columns.push(crate::sql::ast::SelectExpr::Expr(Box::new(expr)));
-                                continue;
+                                crate::sql::ast::SelectItem::Expr(Box::new(expr))
+                            } else {
+                                crate::sql::ast::SelectItem::Column(expr_part.to_string())
                             }
+                        } else {
+                            crate::sql::ast::SelectItem::Column(expr_part.to_string())
                         }
+                    } else {
+                        crate::sql::ast::SelectItem::Column(expr_part.to_string())
                     }
-                    columns.push(crate::sql::ast::SelectExpr::Column(token.to_string()));
-                }
+                };
+                columns.push(crate::sql::ast::SelectExpr { expr: item, alias });
             }
             if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("FROM") {
                 return Err("Expected FROM".into());
@@ -546,17 +566,31 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 let inner = sub_tokens.trim_start_matches('(').trim_end_matches(')');
                 let substmt = parse_statement(inner)?;
                 idx = end + 1;
-                if idx + 1 >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("AS") {
-                    return Err("Subquery in FROM requires AS <alias>".into());
+                let mut alias = None;
+                if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("AS") {
+                    if idx + 1 >= tokens.len() { return Err("Subquery in FROM requires alias".into()); }
+                    alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
+                    idx += 2;
+                } else if idx < tokens.len() {
+                    alias = Some(tokens[idx].trim_end_matches(';').to_string());
+                    idx += 1;
+                } else {
+                    return Err("Subquery in FROM requires alias".into());
                 }
-                let alias = tokens[idx + 1].trim_end_matches(';').to_string();
-                idx += 2;
+                let alias = alias.unwrap();
                 from.push(crate::sql::ast::TableRef::Subquery { query: Box::new(substmt), alias });
             } else {
                 let table = tokens[idx].trim_end_matches(';').to_string();
                 idx += 1;
                 let mut alias = None;
-                if idx < tokens.len()
+                if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("AS") {
+                    if idx + 1 < tokens.len() {
+                        alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
+                        idx += 2;
+                    } else {
+                        return Err("Expected alias after AS".into());
+                    }
+                } else if idx < tokens.len()
                     && !tokens[idx].eq_ignore_ascii_case("JOIN")
                     && !tokens[idx].eq_ignore_ascii_case("WHERE")
                     && !tokens[idx].eq_ignore_ascii_case("GROUP")
@@ -577,9 +611,14 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 let table = tokens[idx].trim_end_matches(';').to_string();
                 idx += 1;
                 let mut alias = None;
-                if idx + 1 < tokens.len() && tokens[idx].eq_ignore_ascii_case("AS") {
-                    alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
-                    idx += 2;
+                if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("AS") {
+                    if idx + 1 < tokens.len() {
+                        alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
+                        idx += 2;
+                    } else { return Err("Expected alias after AS".into()); }
+                } else if idx < tokens.len() && !tokens[idx].eq_ignore_ascii_case("ON") {
+                    alias = Some(tokens[idx].trim_end_matches(';').to_string());
+                    idx += 1;
                 }
                 if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("ON") {
                     return Err("Expected ON in JOIN".into());
