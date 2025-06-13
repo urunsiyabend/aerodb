@@ -548,7 +548,11 @@ pub fn execute_group_query(
                         }
                     };
                     let name = format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into()));
-                    value_map.insert(expr.alias.clone().unwrap_or(name.clone()), val.clone());
+                    let key = expr.alias.clone().unwrap_or(name.clone());
+                    value_map.insert(key, val.clone());
+                    if expr.alias.is_some() {
+                        value_map.insert(name, val.clone());
+                    }
                     result_row.push(val);
                 }
                 SelectItem::All => {
