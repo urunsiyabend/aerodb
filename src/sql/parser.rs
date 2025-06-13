@@ -463,7 +463,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             Ok(Statement::Insert { table_name: table, columns, values: vals })
         }
         "SELECT" => {
-            if tokens.len() < 4 {
+            if tokens.len() < 2 {
                 return Err("Incomplete SELECT".into());
             }
 
@@ -481,7 +481,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             }
             let col_str = col_tokens.join(" ");
             for part in split_top_level(&col_str) {
-                let token = part.trim().trim_end_matches(',');
+                let token = part.trim().trim_end_matches(',').trim_end_matches(';');
                 let mut expr_part = token.trim();
                 let mut alias: Option<String> = None;
                 if let Some(pos) = token.to_uppercase().rfind(" AS ") {
@@ -524,6 +524,8 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 } else if upper.starts_with("MAX(") {
                     let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
                     crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Max, column: Some(inner) }
+                } else if upper == "CURRENT_TIMESTAMP" || upper == "CURRENT_TIMESTAMP()" {
+                    crate::sql::ast::SelectItem::Expr(Box::new(crate::sql::ast::Expr::FunctionCall { name: "CURRENT_TIMESTAMP".into(), args: Vec::new() }))
                 } else if expr_part.starts_with("'") && expr_part.ends_with("'") {
                     crate::sql::ast::SelectItem::Literal(expr_part[1..expr_part.len()-1].to_string())
                 } else if expr_part.chars().all(|c| c.is_ascii_digit()) {
@@ -546,7 +548,13 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 };
                 columns.push(crate::sql::ast::SelectExpr { expr: item, alias });
             }
-            if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("FROM") {
+            if idx >= tokens.len() {
+                if columns.iter().any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Column(_) | crate::sql::ast::SelectItem::All | crate::sql::ast::SelectItem::Aggregate { .. })) {
+                    return Err("Column without table".into());
+                }
+                return Ok(Statement::Select { columns, from: Vec::new(), joins: Vec::new(), where_predicate: None, group_by: None, having: None });
+            }
+            if !tokens[idx].eq_ignore_ascii_case("FROM") {
                 return Err("Expected FROM".into());
             }
             idx += 1;

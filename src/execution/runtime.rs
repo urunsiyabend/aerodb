@@ -781,6 +781,23 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 }
                 return Ok(());
             }
+            if from.is_empty() {
+                let stmt = crate::sql::ast::Statement::Select {
+                    columns: columns.clone(),
+                    from: Vec::new(),
+                    joins: Vec::new(),
+                    where_predicate: None,
+                    group_by: None,
+                    having: None,
+                };
+                let mut results = Vec::new();
+                let header = execute_select_statement(catalog, &stmt, &mut results, None)?;
+                println!("{}", format_header(&header));
+                for row in results {
+                    println!("{}", format_values(&row));
+                }
+                return Ok(());
+            }
             let (from_table, base_alias) = match from.first().unwrap() {
                 crate::sql::ast::TableRef::Named { name, alias } => {
                     (name.clone(), alias.clone())
@@ -1124,8 +1141,42 @@ pub fn execute_select_statement(
     context: Option<&std::collections::HashMap<String, String>>,
 ) -> DbResult<Vec<(String, ColumnType)>> {
     use crate::sql::ast::{SelectExpr, SelectItem, TableRef};
+    use crate::storage::row::ColumnType;
     match stmt {
         crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
+            if from.is_empty() {
+                if !joins.is_empty() || where_predicate.is_some() || group_by.is_some() || having.is_some() {
+                    return Err(DbError::InvalidValue("Unsupported query".into()));
+                }
+                let mut row = Vec::new();
+                let mut header = Vec::new();
+                for expr in columns {
+                    match &expr.expr {
+                        SelectItem::Literal(v) => {
+                            let name = expr.alias.clone().unwrap_or_else(|| v.clone());
+                            let ty = if v.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
+                            header.push((name, ty));
+                            row.push(v.clone());
+                        }
+                        SelectItem::Expr(e) => {
+                            let val = crate::sql::ast::evaluate_expression(e, &std::collections::HashMap::new()).to_string_value();
+                            header.push((expr.alias.clone().unwrap_or("EXPR".into()), ColumnType::Double { precision: 8, scale: 2, unsigned: false }));
+                            row.push(val);
+                        }
+                        SelectItem::Subquery(q) => {
+                            let mut inner = Vec::new();
+                            let inner_header = execute_select_statement(catalog, q, &mut inner, context)?;
+                            let val = inner.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
+                            let ty = inner_header.get(0).map(|(_, t)| *t).unwrap_or(ColumnType::Text);
+                            header.push((expr.alias.clone().unwrap_or("SUBQUERY".into()), ty));
+                            row.push(val);
+                        }
+                        _ => return Err(DbError::InvalidValue("Unsupported projection".into())),
+                    }
+                }
+                out.push(row);
+                return Ok(header);
+            }
             if !joins.is_empty() {
                 return Err(DbError::InvalidValue("Unsupported query".into()));
             }

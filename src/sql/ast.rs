@@ -250,6 +250,13 @@ pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> Col
             let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
             ColumnValue::Boolean(l <= r)
         }
+        Expr::FunctionCall { name, args } => {
+            let arg_vals: Vec<ColumnValue> = args.iter().map(|a| evaluate_expression(a, values)).collect();
+            match crate::sql::functions::FunctionEvaluator::evaluate_function(name, &arg_vals) {
+                Ok(v) => v,
+                Err(_) => ColumnValue::Null,
+            }
+        }
         Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } => ColumnValue::Boolean(false),
         Expr::And(a, b) => {
             match (evaluate_expression(a, values), evaluate_expression(b, values)) {
