@@ -111,3 +111,29 @@ fn having_filters_all() {
         assert!(out.is_empty());
     } else { panic!("expected select") }
 }
+#[test]
+fn having_sum_double() {
+    let filename = "test_having_double.db";
+    let mut catalog = setup_catalog(filename);
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "orders".into(),
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "total".into(), col_type: ColumnType::Double { precision: 10, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (2, 2, 20)").unwrap()).unwrap();
+    let stmt = parse_statement("SELECT user_id, SUM(TOTAL) FROM orders GROUP BY user_id HAVING SUM(TOTAL) > 100;").unwrap();
+    if let Statement::Select { columns, from, group_by, having: Some(have), .. } = stmt {
+        let table = match from.first().unwrap() {
+            aerodb::sql::ast::TableRef::Named { name, .. } => name,
+            _ => panic!("expected table"),
+        };
+        let mut out = Vec::new();
+        let header = execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), Some(have), None, &mut out, None).unwrap();
+        assert_eq!(format_header(&header), "user_id INTEGER | SUM(TOTAL) INTEGER");
+        assert!(out.is_empty());
+    } else { panic!("expected select") }
+}
