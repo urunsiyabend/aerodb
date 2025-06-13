@@ -791,7 +791,8 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     having: None,
                 };
                 let mut results = Vec::new();
-                let _header = execute_select_statement(catalog, &stmt, &mut results, None)?;
+                let header = execute_select_statement(catalog, &stmt, &mut results, None)?;
+                println!("{}", format_header(&header));
                 for row in results {
                     println!("{}", format_values(&row));
                 }

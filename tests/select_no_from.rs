@@ -16,7 +16,7 @@ fn select_literal() {
         let mut out = Vec::new();
         let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(out, vec![vec!["1".to_string()]]);
-        assert_eq!(header.len(), 1);
+        assert_eq!(format_header(&header), "1 INTEGER");
     } else { panic!("expected select") }
 }
 
@@ -69,4 +69,25 @@ fn select_with_from() {
 fn select_column_without_from() {
     let res = parse_statement("SELECT id");
     assert!(res.is_err());
+}
+
+#[test]
+fn repl_output_includes_header() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let tmp = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aerodb"))
+        .current_dir(&tmp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let input = b"SELECT 1;\n.exit\n";
+        child.stdin.as_mut().unwrap().write_all(input).unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    let output = String::from_utf8_lossy(&out.stdout);
+    assert!(output.contains("1 INTEGER"));
+    assert!(output.lines().any(|l| l.trim() == "1"));
 }
