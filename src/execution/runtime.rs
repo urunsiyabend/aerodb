@@ -404,7 +404,17 @@ pub fn execute_group_query(
     let mut col_pos = std::collections::HashMap::new();
     for (i, (c, _)) in table_info.columns.iter().enumerate() {
         col_pos.insert(c.clone(), i);
+        col_pos.insert(c.to_uppercase(), i);
     }
+    let mut get_idx = |name: &str| -> DbResult<usize> {
+        col_pos
+            .get(name)
+            .copied()
+            .or_else(|| {
+                name.rsplit('.').next().and_then(|n| col_pos.get(n).copied())
+            })
+            .ok_or_else(|| DbError::ColumnNotFound(name.to_string()))
+    };
     for row in rows {
         let mut values = std::collections::HashMap::new();
         if let Some(ctx) = context {
@@ -424,12 +434,12 @@ pub fn execute_group_query(
             }
         }
         let key = if let Some(gb) = group_by {
-            gb.iter()
-                .map(|c| {
-                    let idx = col_pos[c];
-                    row.data.0[idx].to_string_value()
-                })
-                .collect()
+            let mut parts = Vec::new();
+            for c in gb {
+                let idx = get_idx(c)?;
+                parts.push(row.data.0[idx].to_string_value());
+            }
+            parts
         } else {
             Vec::new()
         };
@@ -440,7 +450,7 @@ pub fn execute_group_query(
     for expr in projections {
         match expr {
             crate::sql::ast::SelectExpr::Column(c) => {
-                let idx = col_pos[c];
+                let idx = get_idx(c)?;
                 header.push((c.clone(), table_info.columns[idx].1));
             }
             crate::sql::ast::SelectExpr::Aggregate { func, column } => {
@@ -470,7 +480,7 @@ pub fn execute_group_query(
         for expr in projections {
             match expr {
                 crate::sql::ast::SelectExpr::Column(c) => {
-                    let idx = col_pos[c];
+                    let idx = get_idx(c)?;
                     let val = &grows[0].data.0[idx];
                     let s = val.to_string_value();
                     value_map.insert(c.clone(), s.clone());
@@ -480,17 +490,30 @@ pub fn execute_group_query(
                     let val = match func {
                         crate::sql::ast::AggFunc::Count => grows.len().to_string(),
                         crate::sql::ast::AggFunc::Sum => {
-                            let idx = col_pos[column.as_ref().unwrap()];
-                            let mut sum = 0i64;
-                            for r in &grows {
-                                if let ColumnValue::Integer(i) = r.data.0[idx] {
-                                    sum += i as i64;
+                            let idx = get_idx(column.as_ref().unwrap())?;
+                            match table_info.columns[idx].1 {
+                                ColumnType::Double { .. } => {
+                                    let mut sum = 0.0;
+                                    for r in &grows {
+                                        if let ColumnValue::Double(f) = r.data.0[idx] {
+                                            sum += f;
+                                        }
+                                    }
+                                    sum.to_string()
+                                }
+                                _ => {
+                                    let mut sum = 0i64;
+                                    for r in &grows {
+                                        if let ColumnValue::Integer(i) = r.data.0[idx] {
+                                            sum += i as i64;
+                                        }
+                                    }
+                                    sum.to_string()
                                 }
                             }
-                            sum.to_string()
                         }
                         crate::sql::ast::AggFunc::Min => {
-                            let idx = col_pos[column.as_ref().unwrap()];
+                            let idx = get_idx(column.as_ref().unwrap())?;
                             let mut min_val: Option<i32> = None;
                             for r in &grows {
                                 if let ColumnValue::Integer(i) = r.data.0[idx] {
@@ -500,7 +523,7 @@ pub fn execute_group_query(
                             min_val.unwrap_or(0).to_string()
                         }
                         crate::sql::ast::AggFunc::Max => {
-                            let idx = col_pos[column.as_ref().unwrap()];
+                            let idx = get_idx(column.as_ref().unwrap())?;
                             let mut max_val: Option<i32> = None;
                             for r in &grows {
                                 if let ColumnValue::Integer(i) = r.data.0[idx] {
@@ -510,7 +533,7 @@ pub fn execute_group_query(
                             max_val.unwrap_or(0).to_string()
                         }
                         crate::sql::ast::AggFunc::Avg => {
-                            let idx = col_pos[column.as_ref().unwrap()];
+                            let idx = get_idx(column.as_ref().unwrap())?;
                             let mut sum = 0i64;
                             for r in &grows {
                                 if let ColumnValue::Integer(i) = r.data.0[idx] {
@@ -527,7 +550,7 @@ pub fn execute_group_query(
                 }
                 crate::sql::ast::SelectExpr::All => {
                     for (i, _) in &table_info.columns {
-                        let idx = col_pos[i];
+                        let idx = get_idx(i)?;
                         let v = &grows[0].data.0[idx];
                         let s = v.to_string_value();
                         value_map.insert(i.clone(), s.clone());
