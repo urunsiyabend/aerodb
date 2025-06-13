@@ -921,7 +921,7 @@ pub fn select_projection_indices(
                     idxs.push(Projection::Literal(val.clone()));
                 }
                 SelectItem::Expr(expr) => {
-                    meta.push((p.alias.clone().unwrap_or("EXPR".into()), ColumnType::Integer));
+                    meta.push((p.alias.clone().unwrap_or("EXPR".into()), ColumnType::Double { precision: 8, scale: 2, unsigned: false }));
                     idxs.push(Projection::Expr(expr.clone()));
                 }
             }
@@ -1008,29 +1008,29 @@ fn evaluate_with_catalog(
                 != values.get(right).map(String::as_str).unwrap_or(right))
         }
         Expr::Add { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
-            Ok(l + r != 0)
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            Ok((l + r) != 0.0)
         }
         Expr::Subtract { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
-            Ok(l - r != 0)
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            Ok((l - r) != 0.0)
         }
         Expr::Multiply { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
-            Ok(l * r != 0)
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            Ok((l * r) != 0.0)
         }
         Expr::Divide { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(1);
-            if r == 0 { Ok(false) } else { Ok(l / r != 0) }
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(1.0);
+            if r == 0.0 { Ok(false) } else { Ok((l / r) != 0.0) }
         }
         Expr::Modulo { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(1);
-            if r == 0 { Ok(false) } else { Ok(l % r != 0) }
+            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
+            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(1.0);
+            if r == 0.0 { Ok(false) } else { Ok((l % r) != 0.0) }
         }
         Expr::BitwiseAnd { left, right } => {
             let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);

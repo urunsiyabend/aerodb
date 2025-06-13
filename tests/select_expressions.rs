@@ -44,3 +44,23 @@ fn execute_select_add_expr() {
         assert_eq!(out, vec![vec![String::from("15")]]);
     } else { panic!("expected select") }
 }
+#[test]
+fn execute_select_mul_double_expr() {
+    let filename = "test_select_mul_double_expr.db";
+    let mut catalog = setup_catalog(filename);
+    handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "orders".into(),
+        columns: vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "total".into(), col_type: ColumnType::Double { precision: 8, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1, 20.0)").unwrap()).unwrap();
+    let stmt = parse_statement("SELECT id, total * 1.05 FROM orders WHERE id = 1").unwrap();
+    if let Statement::Select { .. } = stmt {
+        let mut out = Vec::new();
+        let _header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
+        assert_eq!(out, vec![vec![String::from("1"), String::from("21")]]);
+    } else { panic!("expected select") }
+}

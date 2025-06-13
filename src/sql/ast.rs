@@ -185,29 +185,29 @@ pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> Col
         Expr::Equals { left, right } => ColumnValue::Boolean(get_value(left, values) == get_value(right, values)),
         Expr::NotEquals { left, right } => ColumnValue::Boolean(get_value(left, values) != get_value(right, values)),
         Expr::Add { left, right } => {
-            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
-            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
-            ColumnValue::Integer(l + r)
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
+            ColumnValue::Double(l + r)
         }
         Expr::Subtract { left, right } => {
-            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
-            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
-            ColumnValue::Integer(l - r)
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
+            ColumnValue::Double(l - r)
         }
         Expr::Multiply { left, right } => {
-            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
-            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
-            ColumnValue::Integer(l * r)
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
+            ColumnValue::Double(l * r)
         }
         Expr::Divide { left, right } => {
-            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
-            let r = get_value(right, values).parse::<i32>().unwrap_or(1);
-            if r == 0 { ColumnValue::Integer(0) } else { ColumnValue::Integer(l / r) }
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(1.0);
+            if r == 0.0 { ColumnValue::Double(0.0) } else { ColumnValue::Double(l / r) }
         }
         Expr::Modulo { left, right } => {
-            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
-            let r = get_value(right, values).parse::<i32>().unwrap_or(1);
-            if r == 0 { ColumnValue::Integer(0) } else { ColumnValue::Integer(l % r) }
+            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
+            let r = get_value(right, values).parse::<f64>().unwrap_or(1.0);
+            if r == 0.0 { ColumnValue::Double(0.0) } else { ColumnValue::Double(l % r) }
         }
         Expr::BitwiseAnd { left, right } => {
             let l = get_value(left, values).parse::<i32>().unwrap_or(0);

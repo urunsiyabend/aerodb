@@ -45,12 +45,12 @@ fn evaluate_addition_nonzero() {
     let expr = Expr::Add { left: "2".into(), right: "3".into() };
     assert_eq!(
         aerodb::sql::ast::evaluate_expression(&expr, &HashMap::new()),
-        ColumnValue::Integer(5)
+        ColumnValue::Double(5.0)
     );
     let expr2 = Expr::Add { left: "2".into(), right: "-2".into() };
     assert_eq!(
         aerodb::sql::ast::evaluate_expression(&expr2, &HashMap::new()),
-        ColumnValue::Integer(0)
+        ColumnValue::Double(0.0)
     );
 }
 
@@ -59,7 +59,7 @@ fn evaluate_multiplication_value() {
     let expr = Expr::Multiply { left: "4".into(), right: "5".into() };
     assert_eq!(
         aerodb::sql::ast::evaluate_expression(&expr, &HashMap::new()),
-        ColumnValue::Integer(20)
+        ColumnValue::Double(20.0)
     );
 }
 
@@ -68,7 +68,7 @@ fn evaluate_division_value() {
     let expr = Expr::Divide { left: "10".into(), right: "2".into() };
     assert_eq!(
         aerodb::sql::ast::evaluate_expression(&expr, &HashMap::new()),
-        ColumnValue::Integer(5)
+        ColumnValue::Double(5.0)
     );
 }
 
@@ -77,7 +77,7 @@ fn evaluate_modulo_value() {
     let expr = Expr::Modulo { left: "10".into(), right: "3".into() };
     assert_eq!(
         aerodb::sql::ast::evaluate_expression(&expr, &HashMap::new()),
-        ColumnValue::Integer(1)
+        ColumnValue::Double(1.0)
     );
 }
 
