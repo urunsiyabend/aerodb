@@ -35,3 +35,36 @@ fn insert_with_function_defaults() {
     } else { panic!("expected datetime"); }
 }
 
+#[test]
+fn current_timestamp_with_parentheses() {
+    let filename = "test_paren_default.db";
+    let mut catalog = setup_catalog(filename);
+    handle_statement(
+        &mut catalog,
+        parse_statement(
+            "CREATE TABLE logs (id INTEGER, last_login DATETIME DEFAULT CURRENT_TIMESTAMP())",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    handle_statement(
+        &mut catalog,
+        parse_statement("INSERT INTO logs (id) VALUES (1)").unwrap(),
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    execute_select_with_indexes(
+        &mut catalog,
+        "logs",
+        Some(aerodb::sql::ast::Expr::Equals { left: "id".into(), right: "1".into() }),
+        &mut out,
+    )
+    .unwrap();
+    if let ColumnValue::DateTime(ts) = out[0].data.0[1] {
+        let now = chrono::Local::now().timestamp();
+        assert!((ts - now).abs() <= 5);
+    } else {
+        panic!("expected datetime");
+    }
+}
+
