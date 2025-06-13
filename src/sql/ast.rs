@@ -106,13 +106,19 @@ impl AggFunc {
 }
 
 #[derive(Debug, Clone)]
-pub enum SelectExpr {
+pub enum SelectItem {
     All,
     Column(String),
     Aggregate { func: AggFunc, column: Option<String> },
     Expr(Box<Expr>),
     Subquery(Box<Statement>),
     Literal(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectExpr {
+    pub expr: SelectItem,
+    pub alias: Option<String>,
 }
 pub type Predicate = Expr;
 

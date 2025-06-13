@@ -181,7 +181,7 @@ fn execute_exists_constant() {
 fn parse_select_subquery() {
     let stmt = parse_statement("SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.user_id = users.id) FROM users").unwrap();
     if let Statement::Select { columns, .. } = stmt {
-        assert!(matches!(columns[1], SelectExpr::Subquery(_)));
+        assert!(matches!(columns[1].expr, aerodb::sql::ast::SelectItem::Subquery(_)));
     } else { panic!("expected select"); }
 }
 

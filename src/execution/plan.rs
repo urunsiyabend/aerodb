@@ -46,6 +46,7 @@ pub enum PlanNode {
 #[derive(Debug, Clone)]
 pub struct MultiJoinPlan {
     pub base_table: String,
+    pub base_alias: Option<String>,
     pub joins: Vec<JoinClause>,
     pub projections: Vec<SelectExpr>,
     pub where_predicate: Option<Predicate>,
@@ -63,8 +64,8 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
             PlanNode::Insert { table_name, values }
         }
         Statement::Select { columns, from, joins, where_predicate, group_by: _, having: _ } => {
-            let table_name = match from.first().unwrap() {
-                crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
+            let (table_name, base_alias) = match from.first().unwrap() {
+                crate::sql::ast::TableRef::Named { name, alias } => (name.clone(), alias.clone()),
                 _ => return PlanNode::Select { table_name: String::new(), selection: None, limit: None, offset: None, order_by: None },
             };
             if joins.is_empty() {
@@ -78,6 +79,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
             } else {
                 PlanNode::MultiJoin(MultiJoinPlan {
                     base_table: table_name,
+                    base_alias,
                     joins,
                     projections: columns,
                     where_predicate,
