@@ -458,6 +458,9 @@ pub fn execute_group_query(
                 let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
                 header.push((val.clone(), ty));
             }
+            crate::sql::ast::SelectExpr::Expr(_) => {
+                header.push(("EXPR".into(), ColumnType::Integer));
+            }
         }
     }
 
@@ -545,6 +548,16 @@ pub fn execute_group_query(
                 }
                 crate::sql::ast::SelectExpr::Literal(val) => {
                     result_row.push(val.clone());
+                }
+                crate::sql::ast::SelectExpr::Expr(expr) => {
+                    let map = table_info
+                        .columns
+                        .iter()
+                        .zip(grows[0].data.0.iter())
+                        .map(|((c, _), v)| (c.clone(), v.to_string_value()))
+                        .collect::<std::collections::HashMap<_, _>>();
+                    let val = crate::sql::ast::evaluate_expression(expr, &map).to_string_value();
+                    result_row.push(val);
                 }
             }
         }
@@ -751,19 +764,24 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                         println!("{}", format_values(&row));
                     }
                 } else {
-                    let table_info = catalog.get_table(&from_table)?;
+                    let table_info = catalog.get_table(&from_table)?.clone();
                     let (idxs, meta) = select_projection_indices(&table_info.columns, &columns)?;
                     println!("{}", format_header(&meta));
                     let mut results = Vec::new();
                     execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
                     for row in results {
                         let vals = row_to_strings(&row);
+                        let mut val_map = std::collections::HashMap::new();
+                        for ((c, _), v) in table_info.columns.iter().zip(vals.iter()) {
+                            val_map.insert(c.clone(), v.clone());
+                        }
                         let projected: Vec<_> = idxs
                             .iter()
                             .map(|p| match p {
                                 Projection::Index(i) => vals[*i].clone(),
                                 Projection::Literal(s) => s.clone(),
                                 Projection::Subquery(_) => String::new(),
+                                Projection::Expr(expr) => crate::sql::ast::evaluate_expression(expr, &val_map).to_string_value(),
                             })
                             .collect();
                         println!("{}", format_values(&projected));
@@ -825,6 +843,7 @@ pub enum Projection {
     Index(usize),
     Literal(String),
     Subquery(Box<crate::sql::ast::Statement>),
+    Expr(Box<crate::sql::ast::Expr>),
 }
 
 pub fn select_projection_indices(
@@ -868,6 +887,10 @@ pub fn select_projection_indices(
                     let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
                     meta.push((val.clone(), ty));
                     idxs.push(Projection::Literal(val.clone()));
+                }
+                crate::sql::ast::SelectExpr::Expr(expr) => {
+                    meta.push(("EXPR".into(), ColumnType::Integer));
+                    idxs.push(Projection::Expr(expr.clone()));
                 }
             }
         }
@@ -1105,6 +1128,10 @@ pub fn execute_select_statement(
                                     let mut inner_rows = Vec::new();
                                     execute_select_statement(catalog, q, &mut inner_rows, Some(&map))?;
                                     let val = inner_rows.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
+                                    projected.push(val);
+                                }
+                                Projection::Expr(expr) => {
+                                    let val = crate::sql::ast::evaluate_expression(expr, &map).to_string_value();
                                     projected.push(val);
                                 }
                             }

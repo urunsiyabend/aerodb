@@ -514,6 +514,15 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 } else if token.chars().all(|c| c.is_ascii_digit()) {
                     columns.push(crate::sql::ast::SelectExpr::Literal(token.to_string()));
                 } else {
+                    let parts: Vec<&str> = token.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        if let Ok((expr, used)) = parse_expression(&parts) {
+                            if used == parts.len() {
+                                columns.push(crate::sql::ast::SelectExpr::Expr(Box::new(expr)));
+                                continue;
+                            }
+                        }
+                    }
                     columns.push(crate::sql::ast::SelectExpr::Column(token.to_string()));
                 }
             }

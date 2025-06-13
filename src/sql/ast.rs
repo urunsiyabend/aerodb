@@ -110,6 +110,7 @@ pub enum SelectExpr {
     All,
     Column(String),
     Aggregate { func: AggFunc, column: Option<String> },
+    Expr(Box<Expr>),
     Subquery(Box<Statement>),
     Literal(String),
 }
