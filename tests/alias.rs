@@ -129,3 +129,30 @@ fn subquery_alias() {
     } else { panic!("expected select") }
 }
 
+#[test]
+fn handle_statement_join_alias() {
+    let filename = "test_handle_alias.db";
+    let mut catalog = setup_catalog(filename);
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "employees".into(),
+        columns: vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "first_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "departments".into(),
+        columns: vec![
+            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO employees VALUES (1, 'John', 1)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO departments VALUES (1, 'Sales')").unwrap()).unwrap();
+    let stmt = parse_statement("SELECT e.first_name, d.department_name FROM employees AS e JOIN departments d ON e.department_id = d.department_id").unwrap();
+    assert!(aerodb::execution::handle_statement(&mut catalog, stmt).is_ok());
+}
+

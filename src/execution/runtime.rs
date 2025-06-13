@@ -777,8 +777,10 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 }
                 return Ok(());
             }
-            let from_table = match from.first().unwrap() {
-                crate::sql::ast::TableRef::Named { name, .. } => name.clone(),
+            let (from_table, base_alias) = match from.first().unwrap() {
+                crate::sql::ast::TableRef::Named { name, alias } => {
+                    (name.clone(), alias.clone())
+                }
                 _ => unreachable!(),
             };
             if joins.is_empty() {
@@ -814,7 +816,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     }
                 }
             } else {
-                let plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, base_alias: None, joins, projections: columns.clone(), where_predicate };
+                let plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, base_alias, joins, projections: columns.clone(), where_predicate };
                 let projections = expand_join_projections(&plan, catalog)?;
                 let header_meta = join_header(&plan, catalog, &projections)?;
                 println!("{}", format_header(&header_meta));
