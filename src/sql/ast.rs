@@ -285,7 +285,7 @@ pub fn expr_to_string(expr: &Expr) -> String {
 
 pub fn parse_default_expr(s: &str) -> Expr {
     let upper = s.to_ascii_uppercase();
-    if upper == "CURRENT_TIMESTAMP" {
+    if upper == "CURRENT_TIMESTAMP" || upper == "CURRENT_TIMESTAMP()" {
         Expr::FunctionCall { name: "CURRENT_TIMESTAMP".into(), args: Vec::new() }
     } else if upper == "GETDATE()" {
         Expr::FunctionCall { name: "GETDATE".into(), args: Vec::new() }
