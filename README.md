@@ -77,6 +77,10 @@ DROP TABLE users;
 
 `DROP INDEX` removes the specified index from the catalog so new queries fall back to full table scans when appropriate.
 
+## Transactions
+
+By default every statement is executed in its own transaction unless you wrap multiple statements in an explicit `BEGIN ... COMMIT` block.
+
 ## Project Structure
 
 - `src/` – Rust source code for the database engine.

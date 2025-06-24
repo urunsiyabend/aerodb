@@ -146,6 +146,10 @@ impl Pager {
         self.num_pages
     }
 
+    pub fn transaction_active(&self) -> bool {
+        self.transaction_active
+    }
+
     pub fn begin_transaction(&mut self, _name: Option<String>) -> io::Result<()> {
         self.transaction_active = true;
         self.dirty_pages.clear();

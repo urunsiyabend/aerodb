@@ -195,6 +195,10 @@ impl Catalog {
         self.reload_tables()
     }
 
+    pub fn transaction_active(&self) -> bool {
+        self.pager.transaction_active()
+    }
+
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
     pub fn create_table(&mut self, name: &str, columns: Vec<(String, ColumnType)>) -> io::Result<()> {
