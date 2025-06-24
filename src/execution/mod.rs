@@ -25,6 +25,9 @@ pub fn execute_plan(plan: PlanNode /*, btree: &mut storage::BTree */) {
                 index_name, table_name, column_name
             );
         }
+        PlanNode::DropIndex { name } => {
+            println!("Planning drop index {}", name);
+        }
         PlanNode::Select { table_name, selection, .. } => {
             println!("Executing: Select from {} where {:?}", table_name, selection);
             // In future: if let Some(row) = btree.find(key).unwrap() { ... }

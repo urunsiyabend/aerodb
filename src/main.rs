@@ -58,6 +58,7 @@ fn main() -> io::Result<()> {
                         DbError::Overflow => println!("Error: value out of range"),
                         DbError::ParseError(m) | DbError::InvalidValue(m) => println!("Error: {}", m),
                         DbError::ColumnNotFound(c) => println!("Error: column '{}' not found", c),
+                        DbError::NotFound(m) => println!("Error: {}", m),
                         DbError::NullViolation(c) => println!("Error: column '{}' cannot be NULL", c),
                         DbError::ForeignKeyViolation(m) => println!("Error: {}", m),
                         DbError::Io(err) => println!("IO error: {}", err),

@@ -686,22 +686,32 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             Ok(Statement::Select { columns, from, joins, where_predicate, group_by, having })
         }
         "DROP" => {
-            if tokens.len() < 3 || !tokens[1].eq_ignore_ascii_case("TABLE") {
-                return Err("Usage: DROP TABLE <name>".to_string());
+            if tokens.len() < 3 {
+                return Err("Usage: DROP TABLE <name> | DROP INDEX <name>".to_string());
             }
-            let mut idx = 2;
-            let mut if_exists = false;
-            if tokens.get(idx).map(|s| s.to_uppercase()) == Some("IF".to_string())
-                && tokens.get(idx + 1).map(|s| s.to_uppercase()) == Some("EXISTS".to_string())
-            {
-                if_exists = true;
-                idx += 2;
+            if tokens[1].eq_ignore_ascii_case("TABLE") {
+                let mut idx = 2;
+                let mut if_exists = false;
+                if tokens.get(idx).map(|s| s.to_uppercase()) == Some("IF".to_string())
+                    && tokens.get(idx + 1).map(|s| s.to_uppercase()) == Some("EXISTS".to_string())
+                {
+                    if_exists = true;
+                    idx += 2;
+                }
+                if idx >= tokens.len() {
+                    return Err("Usage: DROP TABLE <name>".to_string());
+                }
+                let table = tokens[idx].trim_end_matches(';').to_string();
+                Ok(Statement::DropTable { table_name: table, if_exists })
+            } else if tokens[1].eq_ignore_ascii_case("INDEX") {
+                if tokens.len() < 3 {
+                    return Err("Usage: DROP INDEX <name>".to_string());
+                }
+                let name = tokens[2].trim_end_matches(';').to_string();
+                Ok(Statement::DropIndex { name })
+            } else {
+                Err("Usage: DROP TABLE <name>".to_string())
             }
-            if idx >= tokens.len() {
-                return Err("Usage: DROP TABLE <name>".to_string());
-            }
-            let table = tokens[idx].trim_end_matches(';').to_string();
-            Ok(Statement::DropTable { table_name: table, if_exists })
         }
         "DELETE" => {
             if tokens.len() < 5 || !tokens[1].eq_ignore_ascii_case("FROM") || !tokens[3].eq_ignore_ascii_case("WHERE") {

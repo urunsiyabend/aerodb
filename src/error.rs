@@ -19,6 +19,8 @@ pub enum DbError {
     InvalidValue(String),
     #[error("foreign key violation: {0}")]
     ForeignKeyViolation(String),
+    #[error("{0} not found")]
+    NotFound(String),
     #[error(transparent)]
     Io(#[from] io::Error),
 }

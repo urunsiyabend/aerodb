@@ -305,6 +305,15 @@ impl Catalog {
         Ok(())
     }
 
+    pub fn drop_index(&mut self, name: &str) -> io::Result<bool> {
+        if self.indexes.remove(name).is_some() {
+            // In the future pages belonging to the index would be freed here
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     fn insert_index_value(index_tree: &mut BTree, value: ColumnValue, row_key: i32) -> io::Result<u32> {
         let hash = Catalog::hash_value(&value);
         if let Some(mut existing) = index_tree.find(hash)? {
@@ -490,10 +499,24 @@ impl Catalog {
         self.tables.values().cloned().collect()
     }
 
+    pub fn all_indexes(&self) -> Vec<IndexInfo> {
+        self.indexes.values().cloned().collect()
+    }
+
     /// Drop a table if it exists. Returns true if the table was removed.
     pub fn drop_table(&mut self, name: &str) -> io::Result<bool> {
         if !self.tables.contains_key(name) {
             return Ok(false);
+        }
+
+        let index_names: Vec<String> = self
+            .indexes
+            .values()
+            .filter(|idx| idx.table_name == name)
+            .map(|idx| idx.name.clone())
+            .collect();
+        for idx in index_names {
+            self.drop_index(&idx)?;
         }
 
         // Find catalog row key corresponding to this table

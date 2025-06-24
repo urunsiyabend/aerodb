@@ -633,6 +633,13 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             catalog.create_index(&index_name, &table_name, &column_name)?;
             println!("Index {} created", index_name);
         }
+        Statement::DropIndex { name } => {
+            if catalog.drop_index(&name)? {
+                println!("Index {} dropped", name);
+            } else {
+                return Err(DbError::NotFound(format!("index '{}' not found", name)));
+            }
+        }
         Statement::Insert { table_name, columns: col_list, values } => {
             let table_info = catalog.get_table(&table_name)?.clone();
             let root_page = table_info.root_page;

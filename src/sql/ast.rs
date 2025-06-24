@@ -136,6 +136,9 @@ pub enum Statement {
         table_name: String,
         column_name: String,
     },
+    DropIndex {
+        name: String,
+    },
     DropTable {
         table_name: String,
         if_exists: bool,
