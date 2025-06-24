@@ -19,7 +19,7 @@ fn char_column_basic() {
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "items".into(), columns: None, values: vec![Expr::Literal("1".into()), Expr::Literal("A".into())] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "items".into(), columns: None, rows: vec![vec![Expr::Literal("1".into()), Expr::Literal("A".into())]] }).unwrap();
     let stmt = parse_statement("SELECT code FROM items").unwrap();
     if let Statement::Select { columns, from, .. } = stmt {
         let table = match from.first().unwrap() { TableRef::Named { name, .. } => name, _ => panic!("expected table") };
@@ -51,7 +51,7 @@ fn char_column_validate_length() {
         Statement::Insert {
             table_name: "items".into(),
             columns: None,
-            values: vec![Expr::Literal("2".into()), Expr::Literal("SASASDADSA".into())],
+            rows: vec![vec![Expr::Literal("2".into()), Expr::Literal("SASASDADSA".into())]],
         },
     );
     assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));

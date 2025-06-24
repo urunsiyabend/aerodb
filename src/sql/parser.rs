@@ -439,28 +439,36 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             idx += 1;
             if idx >= tokens.len() { return Err("Missing values".into()); }
             let rest_tokens = tokens[idx..].join(" ");
-            let rest = rest_tokens.trim();
-            if !rest.starts_with('(') || !rest.ends_with(')') {
-                return Err("Values must be in parentheses".to_string());
+            let rest = rest_tokens.trim().trim_end_matches(';');
+            let tuple_strs = split_top_level(rest);
+            if tuple_strs.is_empty() { return Err("Missing values".into()); }
+
+            let mut rows = Vec::new();
+            for tup in tuple_strs {
+                let tup = tup.trim();
+                if !tup.starts_with('(') || !tup.ends_with(')') {
+                    return Err("Values must be in parentheses".to_string());
+                }
+                let inner = &tup[1..tup.len()-1];
+                let vals: Vec<Expr> = split_top_level(inner)
+                    .into_iter()
+                    .map(|s| {
+                        let v = s.trim();
+                        if v.eq_ignore_ascii_case("DEFAULT") {
+                            Expr::DefaultValue
+                        } else if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+                            Expr::Literal(v[1..v.len()-1].to_string())
+                        } else {
+                            Expr::Literal(v.to_string())
+                        }
+                    })
+                    .collect();
+                if vals.is_empty() {
+                    return Err("At least one value required".to_string());
+                }
+                rows.push(vals);
             }
-            let inner = &rest[1..rest.len() - 1];
-            let vals: Vec<Expr> = split_top_level(inner)
-                .into_iter()
-                .map(|s| {
-                    let v = s.trim();
-                    if v.eq_ignore_ascii_case("DEFAULT") {
-                        Expr::DefaultValue
-                    } else if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
-                        Expr::Literal(v[1..v.len()-1].to_string())
-                    } else {
-                        Expr::Literal(v.to_string())
-                    }
-                })
-                .collect();
-            if vals.is_empty() {
-                return Err("At least one value required".to_string());
-            }
-            Ok(Statement::Insert { table_name: table, columns, values: vals })
+            Ok(Statement::Insert { table_name: table, columns, rows })
         }
         "SELECT" => {
             if tokens.len() < 2 {

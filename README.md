@@ -48,6 +48,14 @@ INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');
 SELECT * FROM users;
 ```
 
+### Inserting Data
+
+Rows can be inserted individually or in bulk:
+
+```sql
+INSERT INTO tbl [(col,...)] VALUES (v1,...), (v2,...);
+```
+
 The resulting output will list all inserted rows. See the `tests/` directory for additional query examples.
 
 ## Schema Changes

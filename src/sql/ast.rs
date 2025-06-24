@@ -146,7 +146,7 @@ pub enum Statement {
     Insert {
         table_name: String,
         columns: Option<Vec<String>>, // None for unqualified
-        values: Vec<Expr>,
+        rows: Vec<Vec<Expr>>, // one or more tuples of values
     },
     Select {
         columns: Vec<SelectExpr>,
