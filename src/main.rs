@@ -7,6 +7,7 @@ mod execution;
 mod transaction;
 mod constraints;
 mod error;
+mod planner;
 
 use std::io::{self, Write};
 use log::{debug, info, warn};
@@ -58,6 +59,7 @@ fn main() -> io::Result<()> {
                         DbError::Overflow => println!("Error: value out of range"),
                         DbError::ParseError(m) | DbError::InvalidValue(m) => println!("Error: {}", m),
                         DbError::ColumnNotFound(c) => println!("Error: column '{}' not found", c),
+                        DbError::GroupByMismatch(c) => println!("Error: column '{}' must appear in GROUP BY or be aggregated", c),
                         DbError::NotFound(m) => println!("Error: {}", m),
                         DbError::NullViolation(c) => println!("Error: column '{}' cannot be NULL", c),
                         DbError::ForeignKeyViolation(m) => println!("Error: {}", m),
