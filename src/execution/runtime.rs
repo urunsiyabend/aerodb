@@ -5,6 +5,7 @@ use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
 use std::collections::HashMap;
 use crate::error::{DbError, DbResult};
+use crate::planner::aggregate;
 
 pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> DbResult<usize> {
     if let Ok(table_info) = catalog.get_table(table_name).map(Clone::clone) {
@@ -558,6 +559,7 @@ pub fn execute_group_query(
     let mut rows = Vec::new();
     execute_select_with_indexes(catalog, table_name, None, &mut rows)?;
     let table_info = catalog.get_table(table_name)?.clone();
+    aggregate::validate_group_by(projections, group_by, having.as_ref(), &table_info.columns)?;
 
     let mut groups: std::collections::HashMap<Vec<String>, Vec<crate::storage::row::Row>> = std::collections::HashMap::new();
     let mut col_pos = std::collections::HashMap::new();

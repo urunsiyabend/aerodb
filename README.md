@@ -58,6 +58,12 @@ INSERT INTO tbl [(col,...)] VALUES (v1,...), (v2,...);
 
 The resulting output will list all inserted rows. See the `tests/` directory for additional query examples.
 
+## Query Language
+
+### GROUP BY
+
+AeroDB now enforces standard SQL grouping rules: every selected column must be aggregated or listed in GROUP BY.
+
 ## Schema Changes
 
 The engine supports basic DDL operations:

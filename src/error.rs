@@ -19,6 +19,8 @@ pub enum DbError {
     InvalidValue(String),
     #[error("foreign key violation: {0}")]
     ForeignKeyViolation(String),
+    #[error("column '{0}' must appear in the GROUP BY clause or be used in an aggregate function")]
+    GroupByMismatch(String),
     #[error("{0} not found")]
     NotFound(String),
     #[error(transparent)]
