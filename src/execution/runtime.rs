@@ -254,7 +254,6 @@ pub fn execute_insert(
     let columns_meta = table_info.columns.clone();
     let fks = table_info.fks.clone();
 
-    catalog.begin_transaction(None)?;
     let mut inserted = 0usize;
     let mut result: DbResult<()> = Ok(());
 
@@ -392,12 +391,9 @@ pub fn execute_insert(
     }
 
     if result.is_ok() {
-        catalog.commit_transaction()?;
         Ok(inserted)
     } else {
-        let err = result.unwrap_err();
-        catalog.rollback_transaction()?;
-        Err(err)
+        Err(result.unwrap_err())
     }
 }
 
