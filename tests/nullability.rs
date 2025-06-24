@@ -10,8 +10,8 @@ fn setup_catalog(filename: &str) -> Catalog {
 #[test]
 fn parse_insert_null() {
     let stmt = parse_statement("INSERT INTO users VALUES (1, NULL)").unwrap();
-    if let Statement::Insert { values, .. } = stmt {
-        assert!(matches!(values[1], Expr::Literal(ref v) if v == "NULL"));
+    if let Statement::Insert { rows, .. } = stmt {
+        assert!(matches!(rows[0][1], Expr::Literal(ref v) if v == "NULL"));
     } else { panic!("expected insert"); }
 }
 

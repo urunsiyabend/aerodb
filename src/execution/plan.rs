@@ -63,8 +63,12 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
         Statement::CreateIndex { index_name, table_name, column_name } => {
             PlanNode::CreateIndex { index_name, table_name, column_name }
         }
-        Statement::Insert { table_name, values, .. } => {
-            PlanNode::Insert { table_name, values }
+        Statement::Insert { table_name, rows, .. } => {
+            if let Some(first) = rows.into_iter().next() {
+                PlanNode::Insert { table_name, values: first }
+            } else {
+                PlanNode::Insert { table_name, values: Vec::new() }
+            }
         }
         Statement::Select { columns, from, joins, where_predicate, group_by: _, having: _ } => {
             let (table_name, base_alias) = match from.first().unwrap() {

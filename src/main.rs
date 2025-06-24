@@ -457,9 +457,9 @@ mod tests {
     fn parse_insert_quotes_numbers() {
         let stmt = parse_statement("INSERT INTO t VALUES (1, 'foo', 42)").unwrap();
         match stmt {
-            Statement::Insert { columns, values, .. } => {
+            Statement::Insert { columns, rows, .. } => {
                 assert!(columns.is_none());
-                let lit: Vec<String> = values.iter().map(|e| match e { Expr::Literal(s) => s.clone(), _ => String::new() }).collect();
+                let lit: Vec<String> = rows[0].iter().map(|e| match e { Expr::Literal(s) => s.clone(), _ => String::new() }).collect();
                 assert_eq!(lit, vec!["1", "foo", "42"]);
             }
             _ => panic!("Expected insert"),
@@ -594,12 +594,12 @@ mod tests {
             .unwrap();
 
         for i in 1..=3 {
-            let values = vec![Expr::Literal(i.to_string()), Expr::Literal(format!("user{}", i))];
-            let stmt = Statement::Insert { table_name: "users".into(), columns: None, values };
+            let row = vec![Expr::Literal(i.to_string()), Expr::Literal(format!("user{}", i))];
+            let stmt = Statement::Insert { table_name: "users".into(), columns: None, rows: vec![row.clone()] };
             match stmt {
-                Statement::Insert { table_name, values, .. } => {
+                Statement::Insert { table_name, rows, .. } => {
                     let table_info = catalog.get_table(&table_name).unwrap();
-                    let lit: Vec<String> = values.iter().map(|e| expr_to_string(e)).collect();
+                    let lit: Vec<String> = rows[0].iter().map(|e| expr_to_string(e)).collect();
                     let row_data = build_row_data(&lit, &table_info.columns).unwrap();
                     let key = match row_data.0[0] {
                         ColumnValue::Integer(k) => k,
@@ -864,7 +864,7 @@ mod tests {
         };
         handle_statement(&mut catalog, create).unwrap();
 
-        let insert = Statement::Insert { table_name: "users".into(), columns: None, values: vec![Expr::Literal("1".into()), Expr::Literal("bob".into())] };
+        let insert = Statement::Insert { table_name: "users".into(), columns: None, rows: vec![vec![Expr::Literal("1".into()), Expr::Literal("bob".into())]] };
         handle_statement(&mut catalog, insert).unwrap();
 
         let root_page = catalog.get_table("users").unwrap().root_page;
@@ -918,7 +918,7 @@ mod tests {
             let insert = Statement::Insert {
                 table_name: "users".into(),
                 columns: None,
-                values: vec![Expr::Literal(i.to_string()), Expr::Literal(format!("user{}", i))],
+                rows: vec![vec![Expr::Literal(i.to_string()), Expr::Literal(format!("user{}", i))]],
             };
             handle_statement(&mut catalog, insert).unwrap();
         }
@@ -993,7 +993,7 @@ mod tests {
             .unwrap();
 
         catalog.begin_transaction(Some("t1".into())).unwrap();
-        let insert = Statement::Insert { table_name: "items".into(), columns: None, values: vec![Expr::Literal("1".into())] };
+        let insert = Statement::Insert { table_name: "items".into(), columns: None, rows: vec![vec![Expr::Literal("1".into())]] };
         handle_statement(&mut catalog, insert).unwrap();
         catalog.commit_transaction().unwrap();
 
@@ -1017,9 +1017,9 @@ mod tests {
             )
             .unwrap();
 
-        let insert = Statement::Insert { table_name: "users".into(), columns: None, values: vec![Expr::Literal("1".into()), Expr::Literal("user1".into())] };
+        let insert = Statement::Insert { table_name: "users".into(), columns: None, rows: vec![vec![Expr::Literal("1".into()), Expr::Literal("user1".into())]] };
         handle_statement(&mut catalog, insert).unwrap();
-        let insert2 = Statement::Insert { table_name: "users".into(), columns: None, values: vec![Expr::Literal("2".into()), Expr::Literal("user2".into())] };
+        let insert2 = Statement::Insert { table_name: "users".into(), columns: None, rows: vec![vec![Expr::Literal("2".into()), Expr::Literal("user2".into())]] };
         handle_statement(&mut catalog, insert2).unwrap();
 
         catalog.begin_transaction(None).unwrap();
@@ -1057,7 +1057,7 @@ mod tests {
             .unwrap();
 
         catalog.begin_transaction(Some("t1".into())).unwrap();
-        let insert = Statement::Insert { table_name: "items".into(), columns: None, values: vec![Expr::Literal("1".into())] };
+        let insert = Statement::Insert { table_name: "items".into(), columns: None, rows: vec![vec![Expr::Literal("1".into())]] };
         handle_statement(&mut catalog, insert).unwrap();
         catalog.rollback_transaction().unwrap();
 
@@ -1082,7 +1082,7 @@ mod tests {
             .unwrap();
 
         catalog.begin_transaction(None).unwrap();
-        let insert = Statement::Insert { table_name: "items".into(), columns: None, values: vec![Expr::Literal("1".into())] };
+        let insert = Statement::Insert { table_name: "items".into(), columns: None, rows: vec![vec![Expr::Literal("1".into())]] };
         handle_statement(&mut catalog, insert).unwrap();
         catalog.rollback_transaction().unwrap();
 
@@ -1111,7 +1111,7 @@ mod tests {
             let insert = Statement::Insert {
                 table_name: "items".into(),
                 columns: None,
-                values: vec![Expr::Literal(i.to_string())],
+                rows: vec![vec![Expr::Literal(i.to_string())]],
             };
             handle_statement(&mut catalog, insert).unwrap();
         }

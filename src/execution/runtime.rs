@@ -242,6 +242,164 @@ pub fn execute_update(
     Ok(0)
 }
 
+pub fn execute_insert(
+    catalog: &mut Catalog,
+    table_name: &str,
+    columns: Option<Vec<String>>,
+    rows: Vec<Vec<Expr>>,
+) -> DbResult<usize> {
+    let table_info = catalog.get_table(table_name)?.clone();
+    let root_page = table_info.root_page;
+    let columns_meta = table_info.columns.clone();
+    let fks = table_info.fks.clone();
+
+    catalog.begin_transaction(None)?;
+    let mut inserted = 0usize;
+    let mut result: DbResult<()> = Ok(());
+
+    for row_vals in rows {
+        if let Err(e) = (|| {
+            let mut vals = Vec::new();
+            if let Some(ref cols) = columns {
+                if row_vals.len() != cols.len() {
+                    return Err(DbError::InvalidValue(format!(
+                        "INSERT column/value count mismatch: expected {} columns, got {} values",
+                        cols.len(),
+                        row_vals.len()
+                    )));
+                }
+                for c in cols {
+                    if !columns_meta.iter().any(|(n, _)| n == c) {
+                        return Err(DbError::ColumnNotFound(c.clone()));
+                    }
+                }
+                for (idx, (col_name, _)) in columns_meta.iter().enumerate() {
+                    let auto = table_info.auto_increment.get(idx).copied().unwrap_or(false);
+                    if let Some(pos) = cols.iter().position(|c| c == col_name) {
+                        let expr = &row_vals[pos];
+                        if auto {
+                            if matches!(expr, Expr::DefaultValue) {
+                                let seq = format!("{}_{}", table_name, col_name);
+                                let next = catalog.next_sequence_value(&seq)?;
+                                vals.push(next.to_string());
+                            } else {
+                                let s = expr_to_string(expr);
+                                if let Ok(v) = s.parse::<i64>() {
+                                    catalog.update_sequence_current(&format!("{}_{}", table_name, col_name), v)?;
+                                }
+                                vals.push(s);
+                            }
+                        } else if matches!(expr, Expr::DefaultValue) {
+                            if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                                vals.push(DefaultConstraint::evaluate(def)?);
+                            } else if !table_info.not_null[idx] {
+                                vals.push("NULL".into());
+                            } else {
+                                return Err(DbError::InvalidValue(format!(
+                                    "Cannot use DEFAULT for column '{}' - no default value defined",
+                                    col_name
+                                )));
+                            }
+                        } else {
+                            vals.push(expr_to_string(expr));
+                        }
+                    } else {
+                        if auto {
+                            let seq = format!("{}_{}", table_name, col_name);
+                            let next = catalog.next_sequence_value(&seq)?;
+                            vals.push(next.to_string());
+                        } else if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                            vals.push(DefaultConstraint::evaluate(def)?);
+                        } else if !table_info.not_null[idx] {
+                            vals.push("NULL".into());
+                        } else {
+                            return Err(DbError::InvalidValue(format!("Column '{}' requires a value or DEFAULT", col_name)));
+                        }
+                    }
+                }
+            } else {
+                if row_vals.len() != columns_meta.len() {
+                    return Err(DbError::InvalidValue(format!(
+                        "INSERT has wrong number of values: expected {}, got {}",
+                        columns_meta.len(),
+                        row_vals.len()
+                    )));
+                }
+                for (idx, expr) in row_vals.iter().enumerate() {
+                    let auto = table_info.auto_increment.get(idx).copied().unwrap_or(false);
+                    if auto {
+                        if matches!(expr, Expr::DefaultValue) {
+                            let seq = format!("{}_{}", table_name, columns_meta[idx].0);
+                            let next = catalog.next_sequence_value(&seq)?;
+                            vals.push(next.to_string());
+                        } else {
+                            let s = expr_to_string(expr);
+                            if let Ok(v) = s.parse::<i64>() {
+                                catalog.update_sequence_current(&format!("{}_{}", table_name, columns_meta[idx].0), v)?;
+                            }
+                            vals.push(s);
+                        }
+                    } else if matches!(expr, Expr::DefaultValue) {
+                        if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                            vals.push(DefaultConstraint::evaluate(def)?);
+                        } else if !table_info.not_null[idx] {
+                            vals.push("NULL".into());
+                        } else {
+                            return Err(DbError::InvalidValue(format!(
+                                "Cannot use DEFAULT for column '{}' - no default value defined",
+                                columns_meta[idx].0
+                            )));
+                        }
+                    } else {
+                        vals.push(expr_to_string(expr));
+                    }
+                }
+            }
+
+            let mut row_data = build_row_data(&vals, &columns_meta)
+                .map_err(|e| DbError::InvalidValue(e))?;
+
+            let nn = NotNullConstraint;
+            nn.validate_insert(catalog, &table_info, &mut row_data)?;
+
+            let fk_cons = ForeignKeyConstraint { fks: &fks };
+            fk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
+            if let Some(ref pk_cols) = table_info.primary_key {
+                let pk_cons = PrimaryKeyConstraint { columns: pk_cols };
+                pk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
+            }
+            let key = match row_data.0.get(0) {
+                Some(ColumnValue::Integer(i)) => *i,
+                _ => {
+                    return Err(DbError::InvalidValue("First column must be an INTEGER key".into()));
+                }
+            };
+            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
+            table_btree.insert(key, row_data.clone())?;
+            let new_root = table_btree.root_page();
+            drop(table_btree);
+            if new_root != root_page {
+                catalog.get_table_mut(table_name)?.root_page = new_root;
+            }
+            catalog.insert_into_indexes(table_name, &row_data)?;
+            inserted += 1;
+            Ok(())
+        })() {
+            result = Err(e);
+            break;
+        }
+    }
+
+    if result.is_ok() {
+        catalog.commit_transaction()?;
+        Ok(inserted)
+    } else {
+        let err = result.unwrap_err();
+        catalog.rollback_transaction()?;
+        Err(err)
+    }
+}
+
 pub fn execute_select_with_indexes(
     catalog: &mut Catalog,
     table_name: &str,
@@ -640,132 +798,8 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 return Err(DbError::NotFound(format!("index '{}' not found", name)));
             }
         }
-        Statement::Insert { table_name, columns: col_list, values } => {
-            let table_info = catalog.get_table(&table_name)?.clone();
-            let root_page = table_info.root_page;
-            let columns = table_info.columns.clone();
-            let fks = table_info.fks.clone();
-
-            let mut vals = Vec::new();
-            if let Some(cols) = col_list {
-                if values.len() != cols.len() {
-                    return Err(DbError::InvalidValue(format!(
-                        "INSERT column/value count mismatch: expected {} columns, got {} values",
-                        cols.len(),
-                        values.len()
-                    )));
-                }
-                for c in &cols {
-                    if !columns.iter().any(|(n, _)| n == c) {
-                        return Err(DbError::ColumnNotFound(c.clone()));
-                    }
-                }
-                for (idx, (col_name, _)) in columns.iter().enumerate() {
-                    let auto = table_info.auto_increment.get(idx).copied().unwrap_or(false);
-                    if let Some(pos) = cols.iter().position(|c| c == col_name) {
-                        let expr = &values[pos];
-                        if auto {
-                            if matches!(expr, Expr::DefaultValue) {
-                                let seq = format!("{}_{}", table_name, col_name);
-                                let next = catalog.next_sequence_value(&seq)?;
-                                vals.push(next.to_string());
-                            } else {
-                                let s = expr_to_string(expr);
-                                if let Ok(v) = s.parse::<i64>() {
-                                    catalog.update_sequence_current(&format!("{}_{}", table_name, col_name), v)?;
-                                }
-                                vals.push(s);
-                            }
-                        } else if matches!(expr, Expr::DefaultValue) {
-                            if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
-                                vals.push(DefaultConstraint::evaluate(def)?);
-                            } else if !table_info.not_null[idx] {
-                                vals.push("NULL".into());
-                            } else {
-                                return Err(DbError::InvalidValue(format!("Cannot use DEFAULT for column '{}' - no default value defined", col_name)));
-                            }
-                        } else {
-                            vals.push(expr_to_string(expr));
-                        }
-                    } else {
-                        if auto {
-                            let seq = format!("{}_{}", table_name, col_name);
-                            let next = catalog.next_sequence_value(&seq)?;
-                            vals.push(next.to_string());
-                        } else if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
-                            vals.push(DefaultConstraint::evaluate(def)?);
-                        } else if !table_info.not_null[idx] {
-                            vals.push("NULL".into());
-                        } else {
-                            return Err(DbError::InvalidValue(format!("Column '{}' requires a value or DEFAULT", col_name)));
-                        }
-                    }
-                }
-            } else {
-                if values.len() != columns.len() {
-                    return Err(DbError::InvalidValue(format!(
-                        "INSERT has wrong number of values: expected {}, got {}",
-                        columns.len(),
-                        values.len()
-                    )));
-                }
-                for (idx, expr) in values.iter().enumerate() {
-                    let auto = table_info.auto_increment.get(idx).copied().unwrap_or(false);
-                    if auto {
-                        if matches!(expr, Expr::DefaultValue) {
-                            let seq = format!("{}_{}", table_name, columns[idx].0);
-                            let next = catalog.next_sequence_value(&seq)?;
-                            vals.push(next.to_string());
-                        } else {
-                            let s = expr_to_string(expr);
-                            if let Ok(v) = s.parse::<i64>() {
-                                catalog.update_sequence_current(&format!("{}_{}", table_name, columns[idx].0), v)?;
-                            }
-                            vals.push(s);
-                        }
-                    } else if matches!(expr, Expr::DefaultValue) {
-                        if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
-                            vals.push(DefaultConstraint::evaluate(def)?);
-                        } else if !table_info.not_null[idx] {
-                            vals.push("NULL".into());
-                        } else {
-                                return Err(DbError::InvalidValue(format!(
-                                    "Cannot use DEFAULT for column '{}' - no default value defined",
-                                    columns[idx].0)));
-                        }
-                    } else {
-                        vals.push(expr_to_string(expr));
-                    }
-                }
-            }
-
-            let mut row_data = build_row_data(&vals, &columns)
-                .map_err(|e| DbError::InvalidValue(e))?;
-
-            let nn = NotNullConstraint;
-            nn.validate_insert(catalog, &table_info, &mut row_data)?;
-
-            let fk_cons = ForeignKeyConstraint { fks: &fks };
-            fk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
-            if let Some(ref pk_cols) = table_info.primary_key {
-                let pk_cons = PrimaryKeyConstraint { columns: pk_cols };
-                pk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
-            }
-            let key = match row_data.0.get(0) {
-                Some(ColumnValue::Integer(i)) => *i,
-                _ => {
-                    return Err(DbError::InvalidValue("First column must be an INTEGER key".into()));
-                }
-            };
-            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
-            table_btree.insert(key, row_data.clone())?;
-            let new_root = table_btree.root_page();
-            drop(table_btree);
-            if new_root != root_page {
-                catalog.get_table_mut(&table_name)?.root_page = new_root;
-            }
-            catalog.insert_into_indexes(&table_name, &row_data)?;
-            println!("1 row inserted");
+        Statement::Insert { table_name, columns: col_list, rows } => {
+            execute_insert(catalog, &table_name, col_list, rows)?;
         }
         Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
             let has_subquery = from.iter().any(|t| matches!(t, crate::sql::ast::TableRef::Subquery { .. }))
