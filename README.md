@@ -50,6 +50,19 @@ SELECT * FROM users;
 
 The resulting output will list all inserted rows. See the `tests/` directory for additional query examples.
 
+## Schema Changes
+
+The engine supports basic DDL operations:
+
+```sql
+CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT);
+CREATE INDEX idx_name ON users(name);
+DROP INDEX idx_name;
+DROP TABLE users;
+```
+
+`DROP INDEX` removes the specified index from the catalog so new queries fall back to full table scans when appropriate.
+
 ## Project Structure
 
 - `src/` – Rust source code for the database engine.
