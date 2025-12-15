@@ -84,6 +84,7 @@ pub struct ColumnDef {
     pub default_value: Option<Expr>,
     pub auto_increment: bool,
     pub primary_key: bool,
+    pub unique: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +130,7 @@ pub enum Statement {
         columns: Vec<ColumnDef>,
         fks: Vec<ForeignKey>,
         primary_key: Option<Vec<String>>,
+        unique_constraints: Vec<Vec<String>>,
         if_not_exists: bool,
     },
     CreateIndex {

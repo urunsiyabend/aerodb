@@ -66,6 +66,11 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
             parts.remove(pos);
         }
     }
+    let mut unique = false;
+    if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("UNIQUE")) {
+        unique = true;
+        parts.remove(pos);
+    }
     let type_str = parts.join(" ");
     let ctype = ColumnType::from_str(&type_str).ok_or_else(|| format!("Unknown type {}", type_str))?;
     if auto_increment {
@@ -77,7 +82,7 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
             return Err("AUTO_INCREMENT columns must be NOT NULL".into());
         }
     }
-    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, default_value, auto_increment, primary_key })
+    Ok(ColumnDef { name: name.to_string(), col_type: ctype, not_null, default_value, auto_increment, primary_key, unique })
 }
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
@@ -329,6 +334,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             let mut columns: Vec<ColumnDef> = Vec::new();
             let mut fks = Vec::new();
             let mut primary_key: Option<Vec<String>> = None;
+            let mut unique_constraints: Vec<Vec<String>> = Vec::new();
             for chunk in split_top_level(inner) {
                 if chunk.to_uppercase().starts_with("FOREIGN KEY") {
                     let mut rest = chunk[11..].trim();
@@ -387,6 +393,14 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                         return Err("Multiple primary keys defined".into());
                     }
                     primary_key = Some(cols);
+                } else if chunk.to_uppercase().starts_with("UNIQUE") {
+                    let rest = chunk[6..].trim();
+                    if !rest.starts_with('(') || !rest.ends_with(')') {
+                        return Err("Expected column list after UNIQUE".into());
+                    }
+                    let inner = &rest[1..rest.len()-1];
+                    let cols: Vec<String> = inner.split(',').map(|c| c.trim().to_string()).collect();
+                    unique_constraints.push(cols);
                 } else {
                     let col = parse_column_def(&chunk)?;
                     columns.push(col);
@@ -405,7 +419,14 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 primary_key = Some(inline_pk);
             }
 
-            Ok(Statement::CreateTable { table_name: name, columns, fks, primary_key, if_not_exists })
+            // Collect inline UNIQUE constraints from column definitions
+            for col in &columns {
+                if col.unique {
+                    unique_constraints.push(vec![col.name.clone()]);
+                }
+            }
+
+            Ok(Statement::CreateTable { table_name: name, columns, fks, primary_key, unique_constraints, if_not_exists })
         }
         "INSERT" => {
             if tokens.len() < 4 || !tokens[1].eq_ignore_ascii_case("INTO") {

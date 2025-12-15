@@ -1,6 +1,6 @@
 use crate::catalog::Catalog;
 use crate::sql::ast::{Statement, Expr, expr_to_string};
-use crate::constraints::{Constraint, not_null::NotNullConstraint, foreign_key::ForeignKeyConstraint, default::DefaultConstraint, primary_key::PrimaryKeyConstraint};
+use crate::constraints::{Constraint, not_null::NotNullConstraint, foreign_key::ForeignKeyConstraint, default::DefaultConstraint, primary_key::PrimaryKeyConstraint, unique::UniqueConstraint};
 use crate::storage::btree::BTree;
 use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
 use std::collections::HashMap;
@@ -195,6 +195,7 @@ pub fn execute_update(
 
         if !rows_to_update.is_empty() {
             let count = rows_to_update.len();
+            let table_info_for_validation = catalog.get_table(table_name)?.clone();
             struct UpdateOp {
                 old_key: i32,
                 new_key: i32,
@@ -211,6 +212,50 @@ pub fn execute_update(
                     ColumnValue::Integer(i) => i,
                     _ => row.key,
                 };
+
+                // Validate UNIQUE constraints for updated data
+                // We need to check if the new data violates uniqueness with other rows (excluding the current row)
+                for unique_cols in &table_info_for_validation.unique_constraints {
+                    let mut has_null = false;
+                    for col in unique_cols {
+                        if let Some(idx) = table_info_for_validation.columns.iter().position(|(c, _)| c == col) {
+                            if matches!(new_data.0[idx], ColumnValue::Null) {
+                                has_null = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Skip if any column is NULL
+                    if !has_null {
+                        let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
+                        let mut cursor = scan_tree.scan_all_rows();
+                        while let Some(existing) = cursor.next() {
+                            // Skip the current row being updated
+                            if existing.key == row.key {
+                                continue;
+                            }
+
+                            let mut all_match = true;
+                            for col in unique_cols {
+                                if let Some(idx) = table_info_for_validation.columns.iter().position(|(c, _)| c == col) {
+                                    if existing.data.0[idx] != new_data.0[idx] {
+                                        all_match = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if all_match {
+                                let column_names = unique_cols.join(", ");
+                                return Err(DbError::UniqueViolation(column_names));
+                            }
+                        }
+                        drop(cursor);
+                        drop(scan_tree);
+                    }
+                }
+
                 ops.push(UpdateOp {
                     old_key: row.key,
                     new_key,
@@ -368,6 +413,12 @@ pub fn execute_insert(
             if let Some(ref pk_cols) = table_info.primary_key {
                 let pk_cons = PrimaryKeyConstraint { columns: pk_cols };
                 pk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
+            }
+
+            // Validate UNIQUE constraints
+            for unique_cols in &table_info.unique_constraints {
+                let unique_cons = UniqueConstraint { columns: unique_cols };
+                unique_cons.validate_insert(catalog, &table_info, &mut row_data)?;
             }
             let key = match row_data.0.get(0) {
                 Some(ColumnValue::Integer(i)) => *i,
@@ -763,7 +814,7 @@ pub fn execute_group_query(
 
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> {
     match stmt {
-        Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } => {
+        Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } => {
             let auto_cols: Vec<_> = columns.iter().filter(|c| c.auto_increment).collect();
             if auto_cols.len() > 1 {
                 return Err(DbError::InvalidValue("Only one AUTO_INCREMENT column allowed per table".into()));
@@ -772,7 +823,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 .into_iter()
                 .map(|c| (c.name.clone(), c.col_type, c.not_null, c.default_value, c.auto_increment))
                 .collect();
-            match catalog.create_table_with_fks(&table_name, cols.clone(), fks, primary_key.clone()) {
+            match catalog.create_table_with_fks(&table_name, cols.clone(), fks, primary_key.clone(), unique_constraints) {
                 Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(cargo test:*)",
+      "Bash(cmd /c \"cargo test unique_constraints --no-fail-fast 2>&1\")",
+      "Bash(where cargo:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

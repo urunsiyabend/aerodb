@@ -11,6 +11,8 @@ pub enum DbError {
     DuplicateKey(i32),
     #[error("null value in column '{0}' violates not-null constraint")]
     NullViolation(String),
+    #[error("duplicate key value violates unique constraint on column(s): {0}")]
+    UniqueViolation(String),
     #[error("value out of range")]
     Overflow,
     #[error("parse error: {0}")]

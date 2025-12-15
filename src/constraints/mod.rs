@@ -2,6 +2,7 @@ pub mod not_null;
 pub mod default;
 pub mod foreign_key;
 pub mod primary_key;
+pub mod unique;
 
 use crate::catalog::{Catalog, TableInfo};
 use crate::storage::row::RowData;

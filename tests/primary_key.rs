@@ -13,8 +13,8 @@ fn primary_key_happy_path() {
     let filename = "pk_basic.db";
     let mut catalog = setup_catalog(filename);
     let create = parse_statement("CREATE TABLE users (id INT PRIMARY KEY, name TEXT)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = create {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } = create {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists }).unwrap();
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1,'Alice')").unwrap()).unwrap();
     let mut rows = Vec::new();
@@ -28,8 +28,8 @@ fn primary_key_duplicate_error() {
     let filename = "pk_dup.db";
     let mut catalog = setup_catalog(filename);
     let create = parse_statement("CREATE TABLE users (id INT PRIMARY KEY, name TEXT)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = create {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } = create {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists }).unwrap();
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1,'Alice')").unwrap()).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1,'Bob')").unwrap());
@@ -41,8 +41,8 @@ fn primary_key_null_error() {
     let filename = "pk_null.db";
     let mut catalog = setup_catalog(filename);
     let create = parse_statement("CREATE TABLE users (id INT PRIMARY KEY, name TEXT)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = create {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } = create {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists }).unwrap();
     }
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (NULL,'Charlie')").unwrap());
     assert!(matches!(res, Err(aerodb::error::DbError::NullViolation(_))));
@@ -53,8 +53,8 @@ fn primary_key_composite() {
     let filename = "pk_comp.db";
     let mut catalog = setup_catalog(filename);
     let create = parse_statement("CREATE TABLE orders (order_id INT, item_id INT, PRIMARY KEY(order_id, item_id))").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = create {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } = create {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists }).unwrap();
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1,1)").unwrap()).unwrap();
     let dup = handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1,1)").unwrap());

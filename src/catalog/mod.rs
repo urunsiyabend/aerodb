@@ -7,7 +7,7 @@ use crate::storage::pager::Pager;
 use crate::storage::page::PAGE_SIZE;
 use crate::sql::ast::{Expr};
 
-/// In‐memory representation of a table’s metadata.
+/// In‐memory representation of a table's metadata.
 #[derive(Debug, Clone)]
 pub struct TableInfo {
     pub name: String,
@@ -18,6 +18,7 @@ pub struct TableInfo {
     pub auto_increment: Vec<bool>,
     pub fks: Vec<crate::sql::ast::ForeignKey>,
     pub primary_key: Option<Vec<String>>,
+    pub unique_constraints: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,10 +78,10 @@ impl Catalog {
             let mut catalog_btree = BTree::open_root(&mut pager, 1)?;
             let mut cursor = catalog_btree.scan_all_rows();
             while let Some(blob_row) = cursor.next() {
-                let (table_name, root_page, columns, not_null, defaults, auto_inc, fks, pk) = Self::deserialize_catalog_row(&blob_row)?;
+                let (table_name, root_page, columns, not_null, defaults, auto_inc, fks, pk, unique_constraints) = Self::deserialize_catalog_row(&blob_row)?;
                 tables.insert(
                     table_name.clone(),
-                    TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks, auto_increment: auto_inc, primary_key: if pk.is_empty() { None } else { Some(pk) } },
+                    TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks, auto_increment: auto_inc, primary_key: if pk.is_empty() { None } else { Some(pk) }, unique_constraints },
                 );
             }
         }
@@ -104,10 +105,10 @@ impl Catalog {
         let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
         let mut cursor = catalog_btree.scan_all_rows();
         while let Some(blob_row) = cursor.next() {
-            let (table_name, root_page, columns, not_null, defaults, auto_inc, fks, pk) = Self::deserialize_catalog_row(&blob_row)?;
+            let (table_name, root_page, columns, not_null, defaults, auto_inc, fks, pk, unique_constraints) = Self::deserialize_catalog_row(&blob_row)?;
             self.tables.insert(
                 table_name.clone(),
-                TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks, auto_increment: auto_inc, primary_key: if pk.is_empty() { None } else { Some(pk) } },
+                TableInfo { name: table_name, root_page, columns, not_null, default_values: defaults, fks, auto_increment: auto_inc, primary_key: if pk.is_empty() { None } else { Some(pk) }, unique_constraints },
             );
         }
         // reload sequences
@@ -124,7 +125,7 @@ impl Catalog {
     }
 
     pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
-        let (target_key, columns, not_null, defaults, ai_vec, fks, pk_cols) = {
+        let (target_key, columns, not_null, defaults, ai_vec, fks, pk_cols, uc_vec) = {
             let mut tree = BTree::open_root(&mut self.pager, 1)?;
             let mut cursor = tree.scan_all_rows();
             let mut found = None;
@@ -134,8 +135,9 @@ impl Catalog {
             let mut def_vec = Vec::new();
             let mut ai_vec = Vec::new();
             let mut pk_vec = Vec::new();
+            let mut uc_vec = Vec::new();
             while let Some(row) = cursor.next() {
-                let (tbl, _rp, c, nn, def, ai, f, pk) = Self::deserialize_catalog_row(&row)?;
+                let (tbl, _rp, c, nn, def, ai, f, pk, uc) = Self::deserialize_catalog_row(&row)?;
                 if tbl == name {
                     found = Some(row.key);
                     cols = c;
@@ -144,10 +146,11 @@ impl Catalog {
                     ai_vec = ai;
                     fk_vec = f;
                     pk_vec = pk;
+                    uc_vec = uc;
                     break;
                 }
             }
-            (found, cols, nn_vec, def_vec, ai_vec, fk_vec, pk_vec)
+            (found, cols, nn_vec, def_vec, ai_vec, fk_vec, pk_vec, uc_vec)
         };
 
         if let Some(key) = target_key {
@@ -161,7 +164,7 @@ impl Catalog {
                 .zip(ai_vec.iter().cloned())
                 .map(|((((n, t), nn), d), a)| (n, t, nn, d, a))
                 .collect();
-            tree.insert(key, Self::serialize_catalog_row(name, new_root, &cols, &fks, &pk_cols))?;
+            tree.insert(key, Self::serialize_catalog_row(name, new_root, &cols, &fks, &pk_cols, &uc_vec))?;
             let new_root_page = tree.root_page();
             if new_root_page != 1 {
                 let src_buf = {
@@ -199,10 +202,10 @@ impl Catalog {
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
     pub fn create_table(&mut self, name: &str, columns: Vec<(String, ColumnType)>) -> io::Result<()> {
         let cols_with_nn: Vec<_> = columns.into_iter().map(|(n,t)| (n,t,false,None,false)).collect();
-        self.create_table_with_fks(name, cols_with_nn, Vec::new(), None)
+        self.create_table_with_fks(name, cols_with_nn, Vec::new(), None, Vec::new())
     }
 
-    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<Expr>, bool)>, fks: Vec<crate::sql::ast::ForeignKey>, primary_key: Option<Vec<String>>) -> io::Result<()> {
+    pub fn create_table_with_fks(&mut self, name: &str, columns: Vec<(String, ColumnType, bool, Option<Expr>, bool)>, fks: Vec<crate::sql::ast::ForeignKey>, primary_key: Option<Vec<String>>, unique_constraints: Vec<Vec<String>>) -> io::Result<()> {
         if self.tables.contains_key(name) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -223,7 +226,7 @@ impl Catalog {
 
         // Build the catalog row payload: [name_len][name][root_page][num_columns][col1_len][col1]...
         let pk_cols = primary_key.clone().unwrap_or_default();
-        let blob_data = Self::serialize_catalog_row(name, new_root, &columns, &fks, &pk_cols);
+        let blob_data = Self::serialize_catalog_row(name, new_root, &columns, &fks, &pk_cols, &unique_constraints);
 
         // Use a synthetic key = (current number of tables + 1)
         let key = (self.tables.len() as i32) + 1;
@@ -245,7 +248,7 @@ impl Catalog {
         }
         self.tables.insert(
             name.to_string(),
-            TableInfo { name: name.to_string(), root_page: new_root, columns: cols, not_null, default_values: defaults, fks, auto_increment: auto_inc, primary_key },
+            TableInfo { name: name.to_string(), root_page: new_root, columns: cols, not_null, default_values: defaults, fks, auto_increment: auto_inc, primary_key, unique_constraints },
         );
         Ok(())
     }
@@ -525,7 +528,7 @@ impl Catalog {
             let mut cursor = catalog_btree.scan_all_rows();
             let mut found = None;
             while let Some(row) = cursor.next() {
-                let (table_name, _rp, _cols, _nn, _defaults, _ai, _fks, _) = Self::deserialize_catalog_row(&row)?;
+                let (table_name, _rp, _cols, _nn, _defaults, _ai, _fks, _, _) = Self::deserialize_catalog_row(&row)?;
                 if table_name == name {
                     found = Some(row.key);
                     break;
@@ -563,12 +566,15 @@ impl Catalog {
     /// [u32 name_len][name_bytes][u32 root_page][u16 num_columns]
     /// for each column: [u32 col_len][col_bytes]
     /// then [u16 num_fks] followed by each foreign key description
+    /// then primary key columns
+    /// then unique constraints
     fn serialize_catalog_row(
         name: &str,
         root_page: u32,
         columns: &[(String, ColumnType, bool, Option<Expr>, bool)],
         fks: &[crate::sql::ast::ForeignKey],
         pk: &[String],
+        unique_constraints: &[Vec<String>],
     ) -> RowData {
         let mut vals = Vec::new();
         vals.push(ColumnValue::Text(name.to_string()));
@@ -628,11 +634,19 @@ impl Catalog {
         for c in pk {
             vals.push(ColumnValue::Text(c.clone()));
         }
+        // Serialize unique constraints
+        vals.push(ColumnValue::Integer(unique_constraints.len() as i32));
+        for uc in unique_constraints {
+            vals.push(ColumnValue::Integer(uc.len() as i32));
+            for col in uc {
+                vals.push(ColumnValue::Text(col.clone()));
+            }
+        }
         RowData(vals)
     }
 
-    /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>, Vec<ForeignKey>).
-    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<bool>, Vec<Option<Expr>>, Vec<bool>, Vec<crate::sql::ast::ForeignKey>, Vec<String>)> {
+    /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>, Vec<ForeignKey>, pk, unique_constraints).
+    fn deserialize_catalog_row(row: &Row) -> io::Result<(String, u32, Vec<(String, ColumnType)>, Vec<bool>, Vec<Option<Expr>>, Vec<bool>, Vec<crate::sql::ast::ForeignKey>, Vec<String>, Vec<Vec<String>>)> {
         let values = &row.data.0;
         if values.len() < 3 {
             return Err(io::Error::new(io::ErrorKind::Other, "catalog row too short"));
@@ -782,7 +796,25 @@ impl Catalog {
                 idx += 1;
             }
         }
-        Ok((name, root_page, columns, not_null, defaults, auto_inc, fks, pk_cols))
+        // Deserialize unique constraints (may not exist in older catalog entries)
+        let num_unique = match values.get(idx) { Some(ColumnValue::Integer(i)) => *i as usize, _ => 0 };
+        idx += 1;
+        let mut unique_constraints = Vec::new();
+        for _ in 0..num_unique {
+            let uc_len = match values.get(idx) { Some(ColumnValue::Integer(i)) => *i as usize, _ => 0 };
+            idx += 1;
+            let mut uc_cols = Vec::new();
+            for _ in 0..uc_len {
+                if let Some(ColumnValue::Text(c)) = values.get(idx) {
+                    uc_cols.push(c.clone());
+                    idx += 1;
+                }
+            }
+            if !uc_cols.is_empty() {
+                unique_constraints.push(uc_cols);
+            }
+        }
+        Ok((name, root_page, columns, not_null, defaults, auto_inc, fks, pk_cols, unique_constraints))
     }
 
     fn serialize_sequence_row(name: &str, current: i64, start: i64, increment: i64) -> RowData {

@@ -17,8 +17,8 @@ fn multi_value_insert_happy_path() {
     let filename = "multi_insert_happy.db";
     let mut catalog = setup_catalog(filename);
     let create = parse_statement("CREATE TABLE nums (n INTEGER PRIMARY KEY)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = create {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } = create {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists }).unwrap();
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO nums VALUES (1), (2), (3)").unwrap()).unwrap();
     let mut rows = Vec::new();
@@ -31,8 +31,8 @@ fn multi_value_insert_rollback_on_error() {
     let filename = "multi_insert_rollback.db";
     let mut catalog = setup_catalog(filename);
     let create = parse_statement("CREATE TABLE nums (n INTEGER PRIMARY KEY)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = create {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } = create {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists }).unwrap();
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO nums VALUES (1), (2), (3)").unwrap()).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO nums VALUES (4), (4), (5)").unwrap());
@@ -47,8 +47,8 @@ fn multi_value_insert_column_list() {
     let filename = "multi_insert_cols.db";
     let mut catalog = setup_catalog(filename);
     let create = parse_statement("CREATE TABLE nums (n INTEGER PRIMARY KEY)").unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = create {
-        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } = create {
+        handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists }).unwrap();
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO nums (n) VALUES (6), (7)").unwrap()).unwrap();
     let mut rows = Vec::new();

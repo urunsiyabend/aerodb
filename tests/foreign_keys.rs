@@ -13,9 +13,9 @@ fn foreign_key_basic() {
     let create_users = Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false, unique: false}
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, unique_constraints: Vec::new(), if_not_exists: false,
     };
     aerodb::execution::handle_statement(&mut catalog, create_users).unwrap();
 
@@ -24,9 +24,9 @@ fn foreign_key_basic() {
         "CREATE TABLE orders (id INTEGER, user_id INTEGER, FOREIGN KEY (user_id) REFERENCES users (id))",
     )
     .unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = stmt {
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists } = stmt {
         assert_eq!(fks.len(), 1);
-        aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, unique_constraints, if_not_exists }).unwrap();
     } else { panic!("expected create table") }
 
     // insert a user id=1
@@ -59,9 +59,9 @@ fn foreign_key_on_delete_cascade() {
     let create_users = Statement::CreateTable {
         table_name: "users".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false, unique: false}
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, unique_constraints: Vec::new(), if_not_exists: false,
     };
     aerodb::execution::handle_statement(&mut catalog, create_users).unwrap();
 
