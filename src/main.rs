@@ -411,12 +411,17 @@ mod tests {
     #[test]
     fn parse_select_limit_offset_order() {
         let stmt =
-            parse_statement("SELECT * FROM nums LIMIT 5 OFFSET 2 ORDER BY id DESC").unwrap();
+            parse_statement("SELECT * FROM nums ORDER BY id DESC LIMIT 5 OFFSET 2").unwrap();
         match stmt {
-            Statement::Select { from, .. } => {
+            Statement::Select { from, order_by, limit, offset, .. } => {
                 if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
                     assert_eq!(name, "nums");
                 } else { panic!("expected named table") }
+                assert_eq!(limit, Some(5));
+                assert_eq!(offset, Some(2));
+                let order_by = order_by.expect("expected order by");
+                assert_eq!(order_by.column, "id");
+                assert!(order_by.descending);
             }
             _ => panic!("Expected select statement"),
         }
@@ -426,30 +431,55 @@ mod tests {
     fn parse_order_by_variants() {
         let stmt = parse_statement("SELECT * FROM users ORDER BY id").unwrap();
         match stmt {
-            Statement::Select { from, .. } => {
+            Statement::Select { from, order_by, .. } => {
                 if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
                     assert_eq!(name, "users");
                 } else { panic!("expected named table") }
+                let order_by = order_by.expect("expected order by");
+                assert_eq!(order_by.column, "id");
+                assert!(!order_by.descending);
             }
             _ => panic!("Expected select"),
         }
 
         let stmt = parse_statement("SELECT * FROM users ORDER BY id ASC").unwrap();
         match stmt {
-            Statement::Select { from, .. } => {
+            Statement::Select { from, order_by, .. } => {
                 if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
                     assert_eq!(name, "users");
                 } else { panic!("expected named table") }
+                let order_by = order_by.expect("expected order by");
+                assert_eq!(order_by.column, "id");
+                assert!(!order_by.descending);
             }
             _ => panic!("Expected select"),
         }
 
         let stmt = parse_statement("SELECT * FROM users ORDER BY id DESC").unwrap();
         match stmt {
-            Statement::Select { from, .. } => {
+            Statement::Select { from, order_by, .. } => {
                 if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
                     assert_eq!(name, "users");
                 } else { panic!("expected named table") }
+                let order_by = order_by.expect("expected order by");
+                assert_eq!(order_by.column, "id");
+                assert!(order_by.descending);
+            }
+            _ => panic!("Expected select"),
+        }
+    }
+
+    #[test]
+    fn parse_limit_offset_without_order() {
+        let stmt = parse_statement("SELECT * FROM users LIMIT 3 OFFSET 1").unwrap();
+        match stmt {
+            Statement::Select { from, order_by, limit, offset, .. } => {
+                if let Some(crate::sql::ast::TableRef::Named { name, .. }) = from.first() {
+                    assert_eq!(name, "users");
+                } else { panic!("expected named table") }
+                assert!(order_by.is_none());
+                assert_eq!(limit, Some(3));
+                assert_eq!(offset, Some(1));
             }
             _ => panic!("Expected select"),
         }

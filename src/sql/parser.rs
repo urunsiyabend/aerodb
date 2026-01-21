@@ -560,7 +560,17 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 if columns.iter().any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Column(_) | crate::sql::ast::SelectItem::All | crate::sql::ast::SelectItem::Aggregate { .. })) {
                     return Err("Column without table".into());
                 }
-                return Ok(Statement::Select { columns, from: Vec::new(), joins: Vec::new(), where_predicate: None, group_by: None, having: None });
+                return Ok(Statement::Select {
+                    columns,
+                    from: Vec::new(),
+                    joins: Vec::new(),
+                    where_predicate: None,
+                    group_by: None,
+                    having: None,
+                    order_by: None,
+                    limit: None,
+                    offset: None,
+                });
             }
             if !tokens[idx].eq_ignore_ascii_case("FROM") {
                 return Err("Expected FROM".into());
@@ -691,7 +701,70 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 idx += consumed + 1;
             }
 
-            Ok(Statement::Select { columns, from, joins, where_predicate, group_by, having })
+            let mut order_by = None;
+            if idx + 1 < tokens.len()
+                && tokens[idx].eq_ignore_ascii_case("ORDER")
+                && tokens[idx + 1].eq_ignore_ascii_case("BY")
+            {
+                idx += 2;
+                if idx >= tokens.len() {
+                    return Err("Expected column after ORDER BY".into());
+                }
+                let column = tokens[idx].trim_end_matches(',').trim_end_matches(';');
+                if tokens[idx].ends_with(',') {
+                    return Err("Only one ORDER BY column is supported".into());
+                }
+                let mut descending = false;
+                idx += 1;
+                if idx < tokens.len() {
+                    let keyword = tokens[idx].trim_end_matches(';');
+                    if keyword.eq_ignore_ascii_case("DESC") {
+                        descending = true;
+                        idx += 1;
+                    } else if keyword.eq_ignore_ascii_case("ASC") {
+                        idx += 1;
+                    }
+                }
+                if idx < tokens.len() {
+                    let keyword = tokens[idx].trim_end_matches(';');
+                    if !keyword.eq_ignore_ascii_case("LIMIT") && !keyword.eq_ignore_ascii_case("OFFSET") {
+                        return Err("Unexpected token after ORDER BY clause".into());
+                    }
+                }
+                if column.is_empty() {
+                    return Err("Expected column after ORDER BY".into());
+                }
+                if column.contains(',') {
+                    return Err("Unexpected token after ORDER BY clause".into());
+                }
+                order_by = Some(OrderBy { column: column.to_string(), descending });
+            }
+
+            let mut limit = None;
+            if idx < tokens.len() && tokens[idx].trim_end_matches(';').eq_ignore_ascii_case("LIMIT") {
+                idx += 1;
+                if idx >= tokens.len() {
+                    return Err("Expected value after LIMIT".into());
+                }
+                let raw = tokens[idx].trim_end_matches(';');
+                let value = raw.parse::<usize>().map_err(|_| "Invalid LIMIT value".to_string())?;
+                limit = Some(value);
+                idx += 1;
+            }
+
+            let mut offset = None;
+            if idx < tokens.len() && tokens[idx].trim_end_matches(';').eq_ignore_ascii_case("OFFSET") {
+                idx += 1;
+                if idx >= tokens.len() {
+                    return Err("Expected value after OFFSET".into());
+                }
+                let raw = tokens[idx].trim_end_matches(';');
+                let value = raw.parse::<usize>().map_err(|_| "Invalid OFFSET value".to_string())?;
+                offset = Some(value);
+                idx += 1;
+            }
+
+            Ok(Statement::Select { columns, from, joins, where_predicate, group_by, having, order_by, limit, offset })
         }
         "DROP" => {
             if tokens.len() < 3 {

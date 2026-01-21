@@ -70,7 +70,7 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
                 PlanNode::Insert { table_name, values: Vec::new() }
             }
         }
-        Statement::Select { columns, from, joins, where_predicate, group_by: _, having: _ } => {
+        Statement::Select { columns, from, joins, where_predicate, order_by, limit, offset, group_by: _, having: _ } => {
             let (table_name, base_alias) = match from.first().unwrap() {
                 crate::sql::ast::TableRef::Named { name, alias } => (name.clone(), alias.clone()),
                 _ => return PlanNode::Select { table_name: String::new(), selection: None, limit: None, offset: None, order_by: None },
@@ -79,9 +79,9 @@ pub fn plan_statement(stmt: Statement) -> PlanNode {
                 PlanNode::Select {
                     table_name,
                     selection: where_predicate,
-                    limit: None,
-                    offset: None,
-                    order_by: None,
+                    limit,
+                    offset,
+                    order_by,
                 }
             } else {
                 PlanNode::MultiJoin(MultiJoinPlan {
