@@ -28,7 +28,7 @@ pub enum Expr {
     FunctionCall { name: String, args: Vec<Expr> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OrderBy {
     pub column: String,
     pub descending: bool,
@@ -155,6 +155,9 @@ pub enum Statement {
         where_predicate: Option<Predicate>,
         group_by: Option<Vec<String>>,
         having: Option<Predicate>,
+        order_by: Option<OrderBy>,
+        limit: Option<usize>,
+        offset: Option<usize>,
     },
     Delete {
         table_name: String,

@@ -799,7 +799,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
         Statement::Insert { table_name, columns: col_list, rows } => {
             execute_insert(catalog, &table_name, col_list, rows)?;
         }
-        Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
+        Statement::Select { columns, from, joins, where_predicate, group_by, having, order_by, limit, offset } => {
             let has_subquery = from.iter().any(|t| matches!(t, crate::sql::ast::TableRef::Subquery { .. }))
                 || columns.iter().any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Subquery(_)))
                 || where_predicate.as_ref().map_or(false, |e| expr_has_subquery(e));
@@ -811,6 +811,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     where_predicate: where_predicate.clone(),
                     group_by: group_by.clone(),
                     having: having.clone(),
+                    order_by: order_by.clone(),
+                    limit,
+                    offset,
                 };
                 let mut results = Vec::new();
                 let header = execute_select_statement(catalog, &stmt, &mut results, None)?;
@@ -828,6 +831,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     where_predicate: None,
                     group_by: None,
                     having: None,
+                    order_by: order_by.clone(),
+                    limit,
+                    offset,
                 };
                 let mut results = Vec::new();
                 let header = execute_select_statement(catalog, &stmt, &mut results, None)?;
@@ -1182,9 +1188,16 @@ pub fn execute_select_statement(
     use crate::sql::ast::{SelectExpr, SelectItem, TableRef};
     use crate::storage::row::ColumnType;
     match stmt {
-        crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by, having } => {
+        crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by, having, order_by, limit, offset } => {
             if from.is_empty() {
-                if !joins.is_empty() || where_predicate.is_some() || group_by.is_some() || having.is_some() {
+                if !joins.is_empty()
+                    || where_predicate.is_some()
+                    || group_by.is_some()
+                    || having.is_some()
+                    || order_by.is_some()
+                    || limit.is_some()
+                    || offset.is_some()
+                {
                     return Err(DbError::InvalidValue("Unsupported query".into()));
                 }
                 let mut row = Vec::new();
