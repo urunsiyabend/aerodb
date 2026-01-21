@@ -466,6 +466,7 @@ pub fn execute_multi_join(
 ) -> DbResult<()> {
     use crate::sql::ast::evaluate_expression;
     let mut result_rows: Vec<std::collections::HashMap<String, ColumnValue>> = Vec::new();
+    let mut result_columns = Vec::new();
 
     // base table scan
     {
@@ -479,6 +480,10 @@ pub fn execute_multi_join(
                 map.insert(format!("{alias}.{c}"), v.clone());
             }
             result_rows.push(map);
+        }
+        let alias = plan.base_alias.as_deref().unwrap_or(&plan.base_table);
+        for (c, _) in base_info.columns.iter() {
+            result_columns.push(format!("{alias}.{c}"));
         }
     }
 
@@ -500,23 +505,63 @@ pub fn execute_multi_join(
         };
 
         let mut new_rows = Vec::new();
+        let mut matched_right = vec![false; rows.len()];
+        let right_columns: Vec<String> = info.columns.iter().map(|(c, _)| format!("{alias}.{c}")).collect();
+
         for left in &result_rows {
-            let key = left.get(&format!("{}.{}", jc.left_table, jc.left_column));
-            if let Some(key_val) = key {
-                for r in &rows {
-                    if let Some(rv) = r.get(&format!("{alias}.{}", jc.right_column)) {
-                        if rv == key_val {
-                            let mut merged = left.clone();
-                            for (k, v) in r {
-                                merged.insert(k.clone(), v.clone());
+            let mut matched_left = false;
+            for (idx_row, r) in rows.iter().enumerate() {
+                let mut candidate = left.clone();
+                for (k, v) in r {
+                    candidate.insert(k.clone(), v.clone());
+                }
+                let matches = match jc.join_type {
+                    crate::sql::ast::JoinType::Cross => true,
+                    _ => {
+                        if let Some(ref predicate) = jc.predicate {
+                            let mut str_map = std::collections::HashMap::new();
+                            for (k, v) in &candidate {
+                                str_map.insert(k.clone(), v.to_string_value());
                             }
-                            new_rows.push(merged);
+                            matches!(evaluate_expression(predicate, &str_map), ColumnValue::Boolean(true))
+                        } else {
+                            true
                         }
                     }
+                };
+                if matches {
+                    matched_left = true;
+                    matched_right[idx_row] = true;
+                    new_rows.push(candidate);
                 }
             }
+            if !matched_left && matches!(jc.join_type, crate::sql::ast::JoinType::Left | crate::sql::ast::JoinType::Full) {
+                let mut merged = left.clone();
+                for col in &right_columns {
+                    merged.insert(col.clone(), ColumnValue::Null);
+                }
+                new_rows.push(merged);
+            }
         }
+
+        if matches!(jc.join_type, crate::sql::ast::JoinType::Right | crate::sql::ast::JoinType::Full) {
+            for (idx_row, r) in rows.iter().enumerate() {
+                if matched_right[idx_row] {
+                    continue;
+                }
+                let mut merged = std::collections::HashMap::new();
+                for col in &result_columns {
+                    merged.insert(col.clone(), ColumnValue::Null);
+                }
+                for (k, v) in r {
+                    merged.insert(k.clone(), v.clone());
+                }
+                new_rows.push(merged);
+            }
+        }
+
         result_rows = new_rows;
+        result_columns.extend(right_columns);
     }
 
     let projections = expand_join_projections(plan, catalog)?;

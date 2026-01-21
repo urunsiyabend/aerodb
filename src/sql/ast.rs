@@ -51,11 +51,19 @@ pub struct ForeignKey {
 
 #[derive(Debug, Clone)]
 pub struct JoinClause {
+    pub join_type: JoinType,
     pub table: String,
     pub alias: Option<String>,
-    pub left_table: String,
-    pub left_column: String,
-    pub right_column: String,
+    pub predicate: Option<Expr>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum JoinType {
+    Inner,
+    Left,
+    Right,
+    Full,
+    Cross,
 }
 
 #[derive(Debug, Clone)]

@@ -137,3 +137,114 @@ fn join_with_where() {
     } else { panic!("expected select") }
 }
 
+#[test]
+fn left_join_preserves_left_rows() {
+    let filename = "test_left_join.db";
+    let mut catalog = setup_catalog(filename);
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "a".into(),
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "b".into(),
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (10, 1)").unwrap()).unwrap();
+
+    let stmt = parse_statement("SELECT a.id, b.id FROM a LEFT JOIN b ON a.id = b.a_id").unwrap();
+    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
+        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
+        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+        let mut results = Vec::new();
+        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.contains(&vec![String::from("1"), String::from("10")]));
+        assert!(results.contains(&vec![String::from("2"), String::from("NULL")]));
+    } else { panic!("expected select") }
+}
+
+#[test]
+fn right_join_preserves_right_rows() {
+    let filename = "test_right_join.db";
+    let mut catalog = setup_catalog(filename);
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "a".into(),
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "b".into(),
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+            aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (10, 1)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (11, 3)").unwrap()).unwrap();
+
+    let stmt = parse_statement("SELECT a.id, b.id FROM a RIGHT JOIN b ON a.id = b.a_id").unwrap();
+    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
+        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
+        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+        let mut results = Vec::new();
+        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.contains(&vec![String::from("1"), String::from("10")]));
+        assert!(results.contains(&vec![String::from("NULL"), String::from("11")]));
+    } else { panic!("expected select") }
+}
+
+#[test]
+fn cross_join_and_non_equality_predicate() {
+    let filename = "test_cross_join.db";
+    let mut catalog = setup_catalog(filename);
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "a".into(),
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
+        table_name: "b".into(),
+        columns: vec![
+            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
+        ],
+        fks: Vec::new(), primary_key: None, if_not_exists: false,
+    }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (10)").unwrap()).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (11)").unwrap()).unwrap();
+
+    let stmt = parse_statement("SELECT a.id, b.id FROM a CROSS JOIN b").unwrap();
+    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
+        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
+        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+        let mut results = Vec::new();
+        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        assert_eq!(results.len(), 4);
+    } else { panic!("expected select") }
+
+    let stmt = parse_statement("SELECT a.id, b.id FROM a JOIN b ON a.id >= b.id").unwrap();
+    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
+        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
+        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+        let mut results = Vec::new();
+        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        assert_eq!(results.len(), 0);
+    } else { panic!("expected select") }
+}
