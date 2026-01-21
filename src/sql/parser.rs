@@ -618,6 +618,11 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     }
                 } else if idx < tokens.len()
                     && !tokens[idx].eq_ignore_ascii_case("JOIN")
+                    && !tokens[idx].eq_ignore_ascii_case("INNER")
+                    && !tokens[idx].eq_ignore_ascii_case("LEFT")
+                    && !tokens[idx].eq_ignore_ascii_case("RIGHT")
+                    && !tokens[idx].eq_ignore_ascii_case("FULL")
+                    && !tokens[idx].eq_ignore_ascii_case("CROSS")
                     && !tokens[idx].eq_ignore_ascii_case("WHERE")
                     && !tokens[idx].eq_ignore_ascii_case("GROUP")
                     && !tokens[idx].eq_ignore_ascii_case("ORDER")
@@ -629,8 +634,73 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 from.push(crate::sql::ast::TableRef::Named { name: table, alias });
             }
             let mut joins = Vec::new();
-            while idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("JOIN") {
-                idx += 1;
+            let is_join_boundary = |token: &str| {
+                token.eq_ignore_ascii_case("JOIN")
+                    || token.eq_ignore_ascii_case("INNER")
+                    || token.eq_ignore_ascii_case("LEFT")
+                    || token.eq_ignore_ascii_case("RIGHT")
+                    || token.eq_ignore_ascii_case("FULL")
+                    || token.eq_ignore_ascii_case("CROSS")
+                    || token.eq_ignore_ascii_case("ON")
+                    || token.eq_ignore_ascii_case("WHERE")
+                    || token.eq_ignore_ascii_case("GROUP")
+                    || token.eq_ignore_ascii_case("ORDER")
+                    || token.eq_ignore_ascii_case("HAVING")
+                    || token.eq_ignore_ascii_case("LIMIT")
+                    || token.eq_ignore_ascii_case("OFFSET")
+            };
+            while idx < tokens.len() {
+                let join_type = if tokens[idx].eq_ignore_ascii_case("JOIN") {
+                    idx += 1;
+                    crate::sql::ast::JoinType::Inner
+                } else if tokens[idx].eq_ignore_ascii_case("INNER") {
+                    idx += 1;
+                    if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("JOIN") {
+                        return Err("Expected JOIN after INNER".into());
+                    }
+                    idx += 1;
+                    crate::sql::ast::JoinType::Inner
+                } else if tokens[idx].eq_ignore_ascii_case("LEFT") {
+                    idx += 1;
+                    if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("OUTER") {
+                        idx += 1;
+                    }
+                    if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("JOIN") {
+                        return Err("Expected JOIN after LEFT".into());
+                    }
+                    idx += 1;
+                    crate::sql::ast::JoinType::Left
+                } else if tokens[idx].eq_ignore_ascii_case("RIGHT") {
+                    idx += 1;
+                    if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("OUTER") {
+                        idx += 1;
+                    }
+                    if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("JOIN") {
+                        return Err("Expected JOIN after RIGHT".into());
+                    }
+                    idx += 1;
+                    crate::sql::ast::JoinType::Right
+                } else if tokens[idx].eq_ignore_ascii_case("FULL") {
+                    idx += 1;
+                    if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("OUTER") {
+                        idx += 1;
+                    }
+                    if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("JOIN") {
+                        return Err("Expected JOIN after FULL".into());
+                    }
+                    idx += 1;
+                    crate::sql::ast::JoinType::Full
+                } else if tokens[idx].eq_ignore_ascii_case("CROSS") {
+                    idx += 1;
+                    if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("JOIN") {
+                        return Err("Expected JOIN after CROSS".into());
+                    }
+                    idx += 1;
+                    crate::sql::ast::JoinType::Cross
+                } else {
+                    break;
+                };
+
                 if idx >= tokens.len() {
                     return Err("Expected table after JOIN".into());
                 }
@@ -642,34 +712,45 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                         alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
                         idx += 2;
                     } else { return Err("Expected alias after AS".into()); }
-                } else if idx < tokens.len() && !tokens[idx].eq_ignore_ascii_case("ON") {
+                } else if idx < tokens.len() && !is_join_boundary(tokens[idx]) {
                     alias = Some(tokens[idx].trim_end_matches(';').to_string());
                     idx += 1;
                 }
-                if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("ON") {
-                    return Err("Expected ON in JOIN".into());
-                }
-                idx += 1;
-                if idx + 2 >= tokens.len() {
-                    return Err("Incomplete JOIN condition".into());
-                }
-                let left = tokens[idx];
-                idx += 1;
-                if tokens[idx] != "=" {
-                    return Err("Expected '=' in JOIN".into());
-                }
-                idx += 1;
-                let right = tokens[idx].trim_end_matches(';');
-                idx += 1;
 
-                let mut lp = left.split('.');
-                let left_table = lp.next().ok_or("Invalid left side in JOIN")?.to_string();
-                let left_column = lp.next().ok_or("Invalid left side in JOIN")?.to_string();
-                let mut rp = right.split('.');
-                let _right_table = rp.next().ok_or("Invalid right side in JOIN")?;
-                let right_column = rp.next().ok_or("Invalid right side in JOIN")?.to_string();
+                let predicate = if matches!(join_type, crate::sql::ast::JoinType::Cross) {
+                    if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("ON") {
+                        return Err("CROSS JOIN does not support ON".into());
+                    }
+                    None
+                } else {
+                    if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("ON") {
+                        return Err("Expected ON in JOIN".into());
+                    }
+                    idx += 1;
+                    let mut end = idx;
+                    let mut depth = 0i32;
+                    while end < tokens.len() {
+                        let token = tokens[end];
+                        depth += token.matches('(').count() as i32;
+                        depth -= token.matches(')').count() as i32;
+                        if depth == 0 && is_join_boundary(token) {
+                            break;
+                        }
+                        end += 1;
+                    }
+                    if end == idx {
+                        return Err("Incomplete JOIN condition".into());
+                    }
+                    let slice = &tokens[idx..end];
+                    let (expr, consumed) = parse_expression(slice)?;
+                    if consumed != slice.len() {
+                        return Err("Invalid JOIN condition".into());
+                    }
+                    idx = end;
+                    Some(expr)
+                };
 
-                joins.push(crate::sql::ast::JoinClause { table, alias, left_table, left_column, right_column });
+                joins.push(crate::sql::ast::JoinClause { join_type, table, alias, predicate });
             }
 
             let mut where_predicate = None;
