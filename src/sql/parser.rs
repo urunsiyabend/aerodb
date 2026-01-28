@@ -1,5 +1,102 @@
-use crate::sql::ast::{Expr, Statement, OrderBy, ForeignKey, Action, ColumnDef, Literal};
+use crate::sql::ast::{Expr, Statement, OrderBy, ForeignKey, Action, ColumnDef};
 use crate::storage::row::ColumnType;
+
+fn tokenize(input: &str) -> Result<Vec<String>, String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quote: Option<char> = None;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if let Some(quote) = in_quote {
+            current.push(ch);
+            if ch == quote {
+                in_quote = None;
+                tokens.push(current.clone());
+                current.clear();
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+                in_quote = Some(ch);
+                current.push(ch);
+            }
+            c if c.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+            }
+            ';' => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+            }
+            '(' | ')' | ',' => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+                tokens.push(ch.to_string());
+            }
+            '<' | '>' | '!' => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+                let mut op = ch.to_string();
+                if let Some(&next) = chars.peek() {
+                    if (ch == '<' && (next == '=' || next == '>'))
+                        || (ch == '>' && next == '=')
+                        || (ch == '!' && next == '=')
+                    {
+                        op.push(next);
+                        chars.next();
+                    }
+                }
+                tokens.push(op);
+            }
+            '+' | '-' => {
+                if current.is_empty() {
+                    if let Some(&next) = chars.peek() {
+                        if next.is_ascii_digit() {
+                            current.push(ch);
+                            continue;
+                        }
+                    }
+                }
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+                tokens.push(ch.to_string());
+            }
+            '=' | '*' | '/' | '%' | '&' | '|' | '^' => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+                tokens.push(ch.to_string());
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if in_quote.is_some() {
+        return Err("Unterminated quoted string or identifier".to_string());
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    Ok(tokens)
+}
 
 fn split_top_level(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
@@ -22,12 +119,125 @@ fn split_top_level(s: &str) -> Vec<String> {
     parts
 }
 
+fn split_top_level_tokens(tokens: &[String]) -> Vec<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut current = Vec::new();
+    let mut depth = 0;
+    for token in tokens {
+        match token.as_str() {
+            "(" => {
+                depth += 1;
+                current.push(token.clone());
+            }
+            ")" => {
+                depth -= 1;
+                current.push(token.clone());
+            }
+            "," if depth == 0 => {
+                if !current.is_empty() {
+                    parts.push(current);
+                    current = Vec::new();
+                }
+            }
+            _ => current.push(token.clone()),
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+fn unquote_token(token: &str) -> &str {
+    if (token.starts_with('"') && token.ends_with('"')) || (token.starts_with('\'') && token.ends_with('\'')) {
+        &token[1..token.len() - 1]
+    } else {
+        token
+    }
+}
+
+fn is_identifier_token(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    if token.starts_with('"') {
+        return true;
+    }
+    if token.starts_with('\'') {
+        return false;
+    }
+    token.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+}
+
+fn is_operator_token(token: &str) -> bool {
+    matches!(
+        token.to_uppercase().as_str(),
+        "=" | "!=" | "<>" | "<" | "<=" | ">" | ">=" | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "IN" | "BETWEEN"
+    )
+}
+
+fn join_tokens(tokens: &[String]) -> String {
+    let mut out = String::new();
+    let mut prev: Option<&str> = None;
+    for token in tokens {
+        let token_str = token.as_str();
+        let needs_space = match prev {
+            None => false,
+            Some(prev_token) => {
+                if prev_token == "(" || token_str == "(" {
+                    false
+                } else if token_str == ")" || token_str == "," {
+                    false
+                } else if prev_token == "," {
+                    true
+                } else if is_operator_token(prev_token) || is_operator_token(token_str) {
+                    true
+                } else {
+                    true
+                }
+            }
+        };
+        if needs_space {
+            out.push(' ');
+        }
+        out.push_str(token_str);
+        prev = Some(token_str);
+    }
+    out
+}
+
+fn join_type_tokens(tokens: &[String]) -> String {
+    let mut out = String::new();
+    let mut prev: Option<&str> = None;
+    for token in tokens {
+        let token_str = token.as_str();
+        let needs_space = match prev {
+            None => false,
+            Some(prev_token) => {
+                if token_str == ")" || token_str == "," {
+                    false
+                } else if prev_token == "(" || prev_token == "," {
+                    false
+                } else {
+                    true
+                }
+            }
+        };
+        if needs_space {
+            out.push(' ');
+        }
+        out.push_str(token_str);
+        prev = Some(token_str);
+    }
+    out
+}
+
 fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
-    let mut parts: Vec<&str> = chunk.split_whitespace().collect();
+    let mut parts: Vec<String> = tokenize(chunk)?;
     if parts.len() < 2 {
         return Err("Column definitions must be <name> <type>".to_string());
     }
-    let name = parts.remove(0);
+    let name = unquote_token(&parts.remove(0)).to_string();
     let mut not_null = false;
     if let Some(pos) = parts.iter().position(|s| s.eq_ignore_ascii_case("NOT")) {
         if pos + 1 < parts.len() && parts[pos + 1].eq_ignore_ascii_case("NULL") {
@@ -43,7 +253,7 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
         if pos + 1 >= parts.len() {
             return Err("DEFAULT requires a literal".into());
         }
-        let literal = parts[pos+1..].join(" ");
+        let literal = join_tokens(&parts[pos+1..]);
         let lit = literal.trim();
         let lit = if (lit.starts_with('"') && lit.ends_with('"')) || (lit.starts_with('\'') && lit.ends_with('\'')) {
             &lit[1..lit.len()-1]
@@ -66,7 +276,7 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
             parts.remove(pos);
         }
     }
-    let type_str = parts.join(" ");
+    let type_str = join_type_tokens(&parts);
     let ctype = ColumnType::from_str(&type_str).ok_or_else(|| format!("Unknown type {}", type_str))?;
     if auto_increment {
         let is_int = matches!(ctype, ColumnType::Integer | ColumnType::SmallInt { .. } | ColumnType::MediumInt { .. });
@@ -82,10 +292,32 @@ fn parse_column_def(chunk: &str) -> Result<ColumnDef, String> {
 
 /// Parse a simple boolean expression consisting of identifiers, =, !=, AND, OR.
 /// Returns the expression and the number of tokens consumed.
-fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
+fn parse_expression(tokens: &[String]) -> Result<(Expr, usize), String> {
     if tokens.is_empty() {
         return Err("Incomplete expression".into());
     }
+    fn parse_operand(tokens: &[String]) -> Result<(String, usize), String> {
+        if tokens.is_empty() {
+            return Err("Incomplete expression".into());
+        }
+        if tokens.len() > 1 && tokens[1] == "(" {
+            let mut depth = 0i32;
+            for (idx, token) in tokens.iter().enumerate().skip(1) {
+                if token == "(" {
+                    depth += 1;
+                } else if token == ")" {
+                    depth -= 1;
+                    if depth == 0 {
+                        let combined = join_tokens(&tokens[..=idx]);
+                        return Ok((combined, idx + 1));
+                    }
+                }
+            }
+            return Err("Unclosed function call".into());
+        }
+        Ok((unquote_token(&tokens[0]).to_string(), 1))
+    }
+
     if tokens[0].eq_ignore_ascii_case("EXISTS") {
         if tokens.len() < 2 || !tokens[1].starts_with('(') {
             return Err("Expected '(' after EXISTS".into());
@@ -97,7 +329,7 @@ fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
             if end >= tokens.len() { return Err("Unclosed subquery".into()); }
             depth += tokens[end].matches('(').count() as i32 - tokens[end].matches(')').count() as i32;
         }
-        let sub_tokens = tokens[1..=end].join(" ");
+        let sub_tokens = join_tokens(&tokens[1..=end]);
         let inner = sub_tokens.trim_start_matches('(').trim_end_matches(')');
         let substmt = parse_statement(inner)?;
         let mut expr = Expr::ExistsSubquery { query: Box::new(substmt) };
@@ -115,109 +347,113 @@ fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
     if tokens.len() < 3 {
         return Err("Incomplete expression".into());
     }
-    let left = tokens[0].to_string();
-    let op = tokens[1];
+    let (left, mut idx) = parse_operand(tokens)?;
+    if idx >= tokens.len() {
+        return Err("Incomplete expression".into());
+    }
+    let op = tokens[idx].as_str();
+    idx += 1;
     let mut consumed;
     let mut expr = match op.to_uppercase().as_str() {
         "IN" => {
-            if !tokens[2].starts_with('(') {
+            if idx >= tokens.len() || !tokens[idx].starts_with('(') {
                 return Err("Expected '(' after IN".into());
             }
-            let mut depth = tokens[2].matches('(').count() as i32 - tokens[2].matches(')').count() as i32;
-            let mut end = 2;
+            let mut depth = tokens[idx].matches('(').count() as i32 - tokens[idx].matches(')').count() as i32;
+            let mut end = idx;
             while depth > 0 {
                 end += 1;
                 if end >= tokens.len() { return Err("Unclosed subquery".into()); }
                 depth += tokens[end].matches('(').count() as i32 - tokens[end].matches(')').count() as i32;
             }
-            let sub_tokens = tokens[2..=end].join(" ");
+            let sub_tokens = join_tokens(&tokens[idx..=end]);
             let inner = sub_tokens.trim_start_matches('(').trim_end_matches(')');
             let substmt = parse_statement(inner)?;
             consumed = end + 1;
             Expr::InSubquery { left, query: Box::new(substmt) }
         }
         "=" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::Equals { left, right }
         }
         "!=" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::NotEquals { left, right }
         }
         "<>" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::NotEquals { left, right }
         }
         "+" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::Add { left, right }
         }
         "-" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::Subtract { left, right }
         }
         "*" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::Multiply { left, right }
         }
         "/" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::Divide { left, right }
         }
         "%" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::Modulo { left, right }
         }
         "&" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::BitwiseAnd { left, right }
         }
         "|" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::BitwiseOr { left, right }
         }
         "^" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::BitwiseXor { left, right }
         }
         "BETWEEN" => {
-            if tokens.len() < 5 || !tokens[3].eq_ignore_ascii_case("AND") {
+            if idx + 2 >= tokens.len() || !tokens[idx + 1].eq_ignore_ascii_case("AND") {
                 return Err("BETWEEN requires syntax: <expr> BETWEEN <low> AND <high>".into());
             }
-            let low = tokens[2].to_string();
-            let high = tokens[4].trim_end_matches(';').to_string();
-            consumed = 5;
+            let low = unquote_token(&tokens[idx]).to_string();
+            let high = unquote_token(&tokens[idx + 2]).trim_end_matches(';').to_string();
+            consumed = idx + 3;
             Expr::Between { expr: left, low, high }
         }
         ">" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::GreaterThan { left, right }
         }
         ">=" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::GreaterOrEquals { left, right }
         }
         "<" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::LessThan { left, right }
         }
         "<=" => {
-            let right = tokens[2].trim_end_matches(';').to_string();
-            consumed = 3;
+            let right = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
+            consumed = idx + 1;
             Expr::LessOrEquals { left, right }
         }
         _ => return Err(format!("Unknown operator '{}'", op)),
@@ -239,12 +475,12 @@ fn parse_expression(tokens: &[&str]) -> Result<(Expr, usize), String> {
     Ok((expr, consumed))
 }
 
-fn parse_create_sequence(tokens: &[&str]) -> Result<Statement, String> {
+fn parse_create_sequence(tokens: &[String]) -> Result<Statement, String> {
     if tokens.len() < 2 {
         return Err("Usage: CREATE SEQUENCE <name> [START WITH n] [INCREMENT BY m]".into());
     }
     let mut idx = 1; // tokens[0] is SEQUENCE
-    let name = tokens[idx].to_string();
+    let name = unquote_token(&tokens[idx]).to_string();
     idx += 1;
     let mut start = 1i64;
     let mut increment = 1i64;
@@ -268,7 +504,7 @@ fn parse_create_sequence(tokens: &[&str]) -> Result<Statement, String> {
 }
 
 pub fn parse_statement(input: &str) -> Result<Statement, String> {
-    let tokens: Vec<&str> = input.split_whitespace().collect();
+    let tokens = tokenize(input)?;
     if tokens.is_empty() {
         return Err("Empty input".to_string());
     }
@@ -279,7 +515,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             if tokens.get(idx).map(|s| s.eq_ignore_ascii_case("TRANSACTION")) == Some(true) {
                 idx += 1;
             }
-            let name = tokens.get(idx).map(|s| s.trim_end_matches(';').to_string());
+            let name = tokens.get(idx).map(|s| unquote_token(s).trim_end_matches(';').to_string());
             Ok(Statement::BeginTransaction { name })
         }
         "COMMIT" => Ok(Statement::Commit),
@@ -293,7 +529,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     return Err("Usage: CREATE INDEX <name> ON <table>(<column>)".to_string());
                 }
                 let index_name = tokens[2].to_string();
-                let table_name = tokens[4].trim_end_matches(';').to_string();
+                let table_name = unquote_token(&tokens[4]).trim_end_matches(';').to_string();
                 let rest = input[input.find('(').ok_or("Missing '('")?..].trim();
                 if !rest.starts_with('(') || !rest.ends_with(')') {
                     return Err("Column must be in parentheses".to_string());
@@ -317,7 +553,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             if idx >= tokens.len() {
                 return Err("Usage: CREATE TABLE <name> (col1, col2, ...)".to_string());
             }
-            let name = tokens[idx].to_string();
+            let name = unquote_token(&tokens[idx]).to_string();
             // The rest is "(col1,col2,...)". Rejoin and strip parens.
             let rest = input[input.find('(').ok_or("Missing '('")?..].trim();
             if !rest.starts_with('(') || !rest.ends_with(')') {
@@ -411,17 +647,17 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             if tokens.len() < 4 || !tokens[1].eq_ignore_ascii_case("INTO") {
                 return Err("Usage: INSERT INTO <table> [ (cols) ] VALUES (...)".to_string());
             }
-            let table = tokens[2].trim_end_matches(',').to_string();
+            let table = unquote_token(&tokens[2]).trim_end_matches(',').to_string();
             let mut idx = 3;
             let mut columns = None;
             if idx < tokens.len() && tokens[idx].starts_with('(') && !tokens[idx].eq_ignore_ascii_case("VALUES") {
                 let mut depth = tokens[idx].matches('(').count() as i32 - tokens[idx].matches(')').count() as i32;
-                let mut col_tokens = vec![tokens[idx]];
+                let mut col_tokens = vec![tokens[idx].clone()];
                 idx += 1;
                 while depth > 0 {
                     if idx >= tokens.len() { return Err("Unclosed column list".into()); }
                     depth += tokens[idx].matches('(').count() as i32 - tokens[idx].matches(')').count() as i32;
-                    col_tokens.push(tokens[idx]);
+                    col_tokens.push(tokens[idx].clone());
                     idx += 1;
                 }
                 let joined = col_tokens.join(" ");
@@ -430,7 +666,10 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     return Err("Column list must be in parentheses".into());
                 }
                 let cols_str = &inner[1..inner.len() - 1];
-                let cols: Vec<String> = cols_str.split(',').map(|c| c.trim().to_string()).collect();
+                let cols: Vec<String> = cols_str
+                    .split(',')
+                    .map(|c| unquote_token(c.trim()).to_string())
+                    .collect();
                 columns = Some(cols);
             }
             if idx >= tokens.len() || !tokens[idx].eq_ignore_ascii_case("VALUES") {
@@ -484,74 +723,102 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     break;
                 }
                 depth += tokens[idx].matches('(').count() as i32 - tokens[idx].matches(')').count() as i32;
-                col_tokens.push(tokens[idx]);
+                col_tokens.push(tokens[idx].clone());
                 idx += 1;
             }
-            let col_str = col_tokens.join(" ");
-            for part in split_top_level(&col_str) {
-                let token = part.trim().trim_end_matches(',').trim_end_matches(';');
-                let mut expr_part = token.trim();
+            for item_tokens in split_top_level_tokens(&col_tokens) {
+                if item_tokens.is_empty() {
+                    continue;
+                }
                 let mut alias: Option<String> = None;
-                if let Some(pos) = token.to_uppercase().rfind(" AS ") {
-                    expr_part = token[..pos].trim();
-                    alias = Some(token[pos + 4..].trim().to_string());
-                } else if let Some(pos) = token.rfind(' ') {
-                    let potential = token[pos + 1..].trim();
-                    if !potential.contains('(')
-                        && !token.trim_end().ends_with(')')
-                        && !token[..pos].chars().any(|ch| "+-*/%".contains(ch))
-                    {
-                        alias = Some(potential.trim_end_matches(';').to_string());
-                        expr_part = token[..pos].trim();
+                let mut expr_tokens = item_tokens.clone();
+                let mut depth = 0i32;
+                let mut as_pos = None;
+                for (i, token) in item_tokens.iter().enumerate() {
+                    match token.as_str() {
+                        "(" => depth += 1,
+                        ")" => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 && token.eq_ignore_ascii_case("AS") {
+                        as_pos = Some(i);
+                        break;
                     }
                 }
-                let upper = expr_part.to_uppercase();
-                let item = if expr_part == "*" {
+                if let Some(pos) = as_pos {
+                    if pos + 1 >= item_tokens.len() {
+                        return Err("Expected alias after AS".into());
+                    }
+                    alias = Some(unquote_token(&item_tokens[pos + 1]).to_string());
+                    expr_tokens = item_tokens[..pos].to_vec();
+                } else if item_tokens.len() >= 2 {
+                    let last = item_tokens.last().unwrap();
+                    let has_operator = item_tokens[..item_tokens.len() - 1]
+                        .iter()
+                        .any(|tok| is_operator_token(tok.as_str()));
+                    if !has_operator && is_identifier_token(last) {
+                        alias = Some(unquote_token(last).to_string());
+                        expr_tokens = item_tokens[..item_tokens.len() - 1].to_vec();
+                    }
+                }
+                if expr_tokens.is_empty() {
+                    return Err("Expected expression in SELECT list".into());
+                }
+                let upper = expr_tokens[0].to_uppercase();
+                let item = if expr_tokens.len() == 1 && expr_tokens[0] == "*" {
                     crate::sql::ast::SelectItem::All
-                } else if expr_part.starts_with('(') {
-                    let end = expr_part.rfind(')').ok_or("Unclosed subquery")?;
-                    let inner = &expr_part[1..end];
-                    let sub = parse_statement(inner)?;
+                } else if expr_tokens[0] == "(" && expr_tokens.last().map(|t| t.as_str()) == Some(")") {
+                    let inner = join_tokens(&expr_tokens[1..expr_tokens.len() - 1]);
+                    let sub = parse_statement(&inner)?;
                     crate::sql::ast::SelectItem::Subquery(Box::new(sub))
                 } else if upper.starts_with("SELECT") {
-                    let sub = parse_statement(expr_part)?;
+                    let sub = parse_statement(&join_tokens(&expr_tokens))?;
                     crate::sql::ast::SelectItem::Subquery(Box::new(sub))
-                } else if upper.starts_with("COUNT(") {
-                    let inner = expr_part[6..expr_part.len() - 1].trim();
-                    let col = if inner == "*" { None } else { Some(inner.to_string()) };
-                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Count, column: col }
-                } else if upper.starts_with("SUM(") {
-                    let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
-                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Sum, column: Some(inner) }
-                } else if upper.starts_with("AVG(") {
-                    let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
-                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Avg, column: Some(inner) }
-                } else if upper.starts_with("MIN(") {
-                    let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
-                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Min, column: Some(inner) }
-                } else if upper.starts_with("MAX(") {
-                    let inner = expr_part[4..expr_part.len() - 1].trim().to_string();
-                    crate::sql::ast::SelectItem::Aggregate { func: crate::sql::ast::AggFunc::Max, column: Some(inner) }
-                } else if upper == "CURRENT_TIMESTAMP" || upper == "CURRENT_TIMESTAMP()" {
+                } else if expr_tokens.len() >= 3
+                    && expr_tokens[1] == "("
+                    && expr_tokens.last().map(|t| t.as_str()) == Some(")")
+                    && matches!(upper.as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX")
+                {
+                    let inner_tokens = &expr_tokens[2..expr_tokens.len() - 1];
+                    let inner = join_tokens(inner_tokens);
+                    let inner_trim = inner.trim();
+                    let column = if inner_trim == "*" {
+                        None
+                    } else {
+                        Some(unquote_token(inner_trim).to_string())
+                    };
+                    let func = match upper.as_str() {
+                        "COUNT" => crate::sql::ast::AggFunc::Count,
+                        "SUM" => crate::sql::ast::AggFunc::Sum,
+                        "AVG" => crate::sql::ast::AggFunc::Avg,
+                        "MIN" => crate::sql::ast::AggFunc::Min,
+                        _ => crate::sql::ast::AggFunc::Max,
+                    };
+                    crate::sql::ast::SelectItem::Aggregate { func, column }
+                } else if upper == "CURRENT_TIMESTAMP"
+                    && (expr_tokens.len() == 1
+                        || (expr_tokens.len() == 3 && expr_tokens[1] == "(" && expr_tokens[2] == ")"))
+                {
                     crate::sql::ast::SelectItem::Expr(Box::new(crate::sql::ast::Expr::FunctionCall { name: "CURRENT_TIMESTAMP".into(), args: Vec::new() }))
-                } else if expr_part.starts_with("'") && expr_part.ends_with("'") {
-                    crate::sql::ast::SelectItem::Literal(expr_part[1..expr_part.len()-1].to_string())
-                } else if expr_part.chars().all(|c| c.is_ascii_digit()) {
-                    crate::sql::ast::SelectItem::Literal(expr_part.to_string())
+                } else if expr_tokens.len() == 1 && expr_tokens[0].starts_with('\'') && expr_tokens[0].ends_with('\'') {
+                    crate::sql::ast::SelectItem::Literal(unquote_token(&expr_tokens[0]).to_string())
+                } else if expr_tokens.len() == 1 && expr_tokens[0].starts_with('"') && expr_tokens[0].ends_with('"') {
+                    crate::sql::ast::SelectItem::Column(unquote_token(&expr_tokens[0]).to_string())
+                } else if expr_tokens.len() == 1 && expr_tokens[0].chars().all(|c| c.is_ascii_digit()) {
+                    crate::sql::ast::SelectItem::Literal(expr_tokens[0].to_string())
                 } else {
-                    let parts: Vec<&str> = expr_part.split_whitespace().collect();
-                    if parts.len() >= 3 {
-                        if let Ok((expr, used)) = parse_expression(&parts) {
-                            if used == parts.len() {
+                    if expr_tokens.len() >= 3 {
+                        if let Ok((expr, used)) = parse_expression(&expr_tokens) {
+                            if used == expr_tokens.len() {
                                 crate::sql::ast::SelectItem::Expr(Box::new(expr))
                             } else {
-                                crate::sql::ast::SelectItem::Column(expr_part.to_string())
+                                crate::sql::ast::SelectItem::Column(join_tokens(&expr_tokens))
                             }
                         } else {
-                            crate::sql::ast::SelectItem::Column(expr_part.to_string())
+                            crate::sql::ast::SelectItem::Column(join_tokens(&expr_tokens))
                         }
                     } else {
-                        crate::sql::ast::SelectItem::Column(expr_part.to_string())
+                        crate::sql::ast::SelectItem::Column(join_tokens(&expr_tokens))
                     }
                 };
                 columns.push(crate::sql::ast::SelectExpr { expr: item, alias });
@@ -588,17 +855,17 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     if end >= tokens.len() { return Err("Unclosed subquery".into()); }
                     depth += tokens[end].matches('(').count() as i32 - tokens[end].matches(')').count() as i32;
                 }
-                let sub_tokens = tokens[idx..=end].join(" ");
+                let sub_tokens = join_tokens(&tokens[idx..=end]);
                 let inner = sub_tokens.trim_start_matches('(').trim_end_matches(')');
                 let substmt = parse_statement(inner)?;
                 idx = end + 1;
                 let mut alias = None;
                 if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("AS") {
                     if idx + 1 >= tokens.len() { return Err("Subquery in FROM requires alias".into()); }
-                    alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
+                    alias = Some(unquote_token(&tokens[idx + 1]).trim_end_matches(';').to_string());
                     idx += 2;
                 } else if idx < tokens.len() {
-                    alias = Some(tokens[idx].trim_end_matches(';').to_string());
+                    alias = Some(unquote_token(&tokens[idx]).trim_end_matches(';').to_string());
                     idx += 1;
                 } else {
                     return Err("Subquery in FROM requires alias".into());
@@ -606,12 +873,12 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 let alias = alias.unwrap();
                 from.push(crate::sql::ast::TableRef::Subquery { query: Box::new(substmt), alias });
             } else {
-                let table = tokens[idx].trim_end_matches(';').to_string();
+                let table = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
                 idx += 1;
                 let mut alias = None;
                 if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("AS") {
                     if idx + 1 < tokens.len() {
-                        alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
+                        alias = Some(unquote_token(&tokens[idx + 1]).trim_end_matches(';').to_string());
                         idx += 2;
                     } else {
                         return Err("Expected alias after AS".into());
@@ -628,7 +895,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     && !tokens[idx].eq_ignore_ascii_case("ORDER")
                     && !tokens[idx].eq_ignore_ascii_case("HAVING")
                 {
-                    alias = Some(tokens[idx].trim_end_matches(';').to_string());
+                    alias = Some(unquote_token(&tokens[idx]).trim_end_matches(';').to_string());
                     idx += 1;
                 }
                 from.push(crate::sql::ast::TableRef::Named { name: table, alias });
@@ -704,16 +971,16 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 if idx >= tokens.len() {
                     return Err("Expected table after JOIN".into());
                 }
-                let table = tokens[idx].trim_end_matches(';').to_string();
+                let table = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
                 idx += 1;
                 let mut alias = None;
                 if idx < tokens.len() && tokens[idx].eq_ignore_ascii_case("AS") {
                     if idx + 1 < tokens.len() {
-                        alias = Some(tokens[idx + 1].trim_end_matches(';').to_string());
+                        alias = Some(unquote_token(&tokens[idx + 1]).trim_end_matches(';').to_string());
                         idx += 2;
                     } else { return Err("Expected alias after AS".into()); }
-                } else if idx < tokens.len() && !is_join_boundary(tokens[idx]) {
-                    alias = Some(tokens[idx].trim_end_matches(';').to_string());
+                } else if idx < tokens.len() && !is_join_boundary(&tokens[idx]) {
+                    alias = Some(unquote_token(&tokens[idx]).trim_end_matches(';').to_string());
                     idx += 1;
                 }
 
@@ -730,7 +997,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                     let mut end = idx;
                     let mut depth = 0i32;
                     while end < tokens.len() {
-                        let token = tokens[end];
+                        let token = tokens[end].as_str();
                         depth += token.matches('(').count() as i32;
                         depth -= token.matches(')').count() as i32;
                         if depth == 0 && is_join_boundary(token) {
@@ -765,12 +1032,15 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 idx += 2;
                 let mut cols = Vec::new();
                 while idx < tokens.len() {
+                    if tokens[idx] == "," {
+                        idx += 1;
+                        continue;
+                    }
                     let token = tokens[idx].trim_end_matches(',').trim_end_matches(';');
                     if token.eq_ignore_ascii_case("ORDER") || token.eq_ignore_ascii_case("WHERE") || token.eq_ignore_ascii_case("HAVING") { break; }
-                    cols.push(token.to_string());
+                    cols.push(unquote_token(token).to_string());
                     idx += 1;
                     if idx >= tokens.len() { break; }
-                    if tokens[idx - 1].ends_with(';') { break; }
                 }
                 group_by = Some(cols);
             }
@@ -791,8 +1061,11 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 if idx >= tokens.len() {
                     return Err("Expected column after ORDER BY".into());
                 }
+                if tokens[idx] == "," {
+                    return Err("Expected column after ORDER BY".into());
+                }
                 let column = tokens[idx].trim_end_matches(',').trim_end_matches(';');
-                if tokens[idx].ends_with(',') {
+                if idx + 1 < tokens.len() && tokens[idx + 1] == "," {
                     return Err("Only one ORDER BY column is supported".into());
                 }
                 let mut descending = false;
@@ -818,7 +1091,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 if column.contains(',') {
                     return Err("Unexpected token after ORDER BY clause".into());
                 }
-                order_by = Some(OrderBy { column: column.to_string(), descending });
+                order_by = Some(OrderBy { column: unquote_token(column).to_string(), descending });
             }
 
             let mut limit = None;
@@ -863,13 +1136,13 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
                 if idx >= tokens.len() {
                     return Err("Usage: DROP TABLE <name>".to_string());
                 }
-                let table = tokens[idx].trim_end_matches(';').to_string();
+                let table = unquote_token(&tokens[idx]).trim_end_matches(';').to_string();
                 Ok(Statement::DropTable { table_name: table, if_exists })
             } else if tokens[1].eq_ignore_ascii_case("INDEX") {
                 if tokens.len() < 3 {
                     return Err("Usage: DROP INDEX <name>".to_string());
                 }
-                let name = tokens[2].trim_end_matches(';').to_string();
+                let name = unquote_token(&tokens[2]).trim_end_matches(';').to_string();
                 Ok(Statement::DropIndex { name })
             } else {
                 Err("Usage: DROP TABLE <name>".to_string())
@@ -879,7 +1152,7 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             if tokens.len() < 5 || !tokens[1].eq_ignore_ascii_case("FROM") || !tokens[3].eq_ignore_ascii_case("WHERE") {
                 return Err("Usage: DELETE FROM <table> WHERE <expr>".to_string());
             }
-            let table = tokens[2].trim_end_matches(';').to_string();
+            let table = unquote_token(&tokens[2]).trim_end_matches(';').to_string();
             let (expr, _) = parse_expression(&tokens[4..])?;
             Ok(Statement::Delete { table_name: table, selection: Some(expr) })
         }
@@ -887,14 +1160,18 @@ pub fn parse_statement(input: &str) -> Result<Statement, String> {
             if tokens.len() < 4 || !tokens[2].eq_ignore_ascii_case("SET") {
                 return Err("Usage: UPDATE <table> SET col = val [, ...] [WHERE <expr>]".to_string());
             }
-            let table = tokens[1].to_string();
+            let table = unquote_token(&tokens[1]).to_string();
             let mut idx = 3;
             let mut assignments = Vec::new();
             while idx < tokens.len() {
                 if tokens[idx].eq_ignore_ascii_case("WHERE") {
                     break;
                 }
-                let col = tokens[idx].trim_end_matches(',').to_string();
+                if tokens[idx] == "," {
+                    idx += 1;
+                    continue;
+                }
+                let col = unquote_token(&tokens[idx]).trim_end_matches(',').to_string();
                 idx += 1;
                 if idx >= tokens.len() || tokens[idx] != "=" {
                     return Err("Expected '=' in assignment".into());
