@@ -1,14 +1,14 @@
 use crate::catalog::Catalog;
 use crate::constraints::{
-    Constraint, default::DefaultConstraint, foreign_key::ForeignKeyConstraint,
-    not_null::NotNullConstraint, primary_key::PrimaryKeyConstraint,
+    default::DefaultConstraint, foreign_key::ForeignKeyConstraint, not_null::NotNullConstraint,
+    primary_key::PrimaryKeyConstraint, Constraint,
 };
 use crate::error::{DbError, DbResult};
 use crate::planner::aggregate;
-use crate::sql::ast::{Expr, Statement, expr_to_string};
+use crate::sql::ast::{expr_to_string, Expr, Statement};
 use crate::storage::btree::BTree;
 use crate::storage::row::{
-    COMMITTED_BOOTSTRAP_TX, ColumnType, ColumnValue, Row, RowData, build_row_data,
+    build_row_data, ColumnType, ColumnValue, Row, RowData, COMMITTED_BOOTSTRAP_TX,
 };
 use crate::transaction::Snapshot;
 use std::collections::HashMap;
@@ -511,6 +511,7 @@ pub fn execute_select_with_indexes(
     let table_info = catalog.get_table(table_name)?.clone();
     let root_page = table_info.root_page;
     let columns = table_info.columns.clone();
+    let snapshot = dml_snapshot(catalog);
 
     if let Some(Expr::Equals { left, right }) = selection.clone() {
         let (col_name, value) = if columns.iter().any(|(c, _)| c == &left) {
@@ -532,7 +533,7 @@ pub fn execute_select_with_indexes(
                                 if let ColumnValue::Integer(k) = val {
                                     let mut table_tree =
                                         BTree::open_root(&mut catalog.pager, root_page)?;
-                                    if let Some(r) = table_tree.find(*k)? {
+                                    if let Some(r) = table_tree.find_visible(*k, &snapshot)? {
                                         out.push(r);
                                     }
                                 }
@@ -547,8 +548,7 @@ pub fn execute_select_with_indexes(
     }
 
     let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
-    let mut cursor = table_btree.scan_all_rows();
-    while let Some(row) = cursor.next() {
+    for row in table_btree.scan_visible(&snapshot)? {
         if let Some(ref expr) = selection {
             let mut values = HashMap::new();
             for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
@@ -580,9 +580,9 @@ pub fn execute_multi_join(
     // base table scan
     {
         let base_info = catalog.get_table(&plan.base_table)?.clone();
+        let snapshot = dml_snapshot(catalog);
         let mut tree = BTree::open_root(&mut catalog.pager, base_info.root_page)?;
-        let mut cursor = tree.scan_all_rows();
-        while let Some(row) = cursor.next() {
+        for row in tree.scan_visible(&snapshot)? {
             let mut map = std::collections::HashMap::new();
             let alias = plan.base_alias.as_deref().unwrap_or(&plan.base_table);
             for ((c, _), v) in base_info.columns.iter().zip(row.data.0.iter()) {
@@ -599,11 +599,11 @@ pub fn execute_multi_join(
     for jc in &plan.joins {
         let alias = jc.alias.as_ref().unwrap_or(&jc.table);
         let info = catalog.get_table(&jc.table)?.clone();
+        let snapshot = dml_snapshot(catalog);
         let mut tree = BTree::open_root(&mut catalog.pager, info.root_page)?;
         let rows: Vec<_> = {
-            let mut curs = tree.scan_all_rows();
             let mut tmp = Vec::new();
-            while let Some(r) = curs.next() {
+            for r in tree.scan_visible(&snapshot)? {
                 let mut m = std::collections::HashMap::new();
                 for ((c, _), v) in info.columns.iter().zip(r.data.0.iter()) {
                     m.insert(format!("{alias}.{c}"), v.clone());
