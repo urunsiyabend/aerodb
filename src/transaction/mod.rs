@@ -1,3 +1,9 @@
 pub mod wal;
 
-// For now, empty. Later, put Transaction struct here.
+mod classifier;
+mod manager;
+mod state;
+
+pub use classifier::statement_requires_transaction;
+pub use manager::TransactionManager;
+pub use state::{TransactionMode, TransactionState};
