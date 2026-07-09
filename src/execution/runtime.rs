@@ -1,17 +1,52 @@
 use crate::catalog::Catalog;
 use crate::constraints::{
-    default::DefaultConstraint, foreign_key::ForeignKeyConstraint, not_null::NotNullConstraint,
-    primary_key::PrimaryKeyConstraint, Constraint,
+    Constraint, default::DefaultConstraint, foreign_key::ForeignKeyConstraint,
+    not_null::NotNullConstraint, primary_key::PrimaryKeyConstraint,
 };
 use crate::error::{DbError, DbResult};
 use crate::planner::aggregate;
-use crate::sql::ast::{expr_to_string, Expr, Statement};
+use crate::sql::ast::{Expr, Statement, expr_to_string};
 use crate::storage::btree::BTree;
 use crate::storage::row::{
-    build_row_data, ColumnType, ColumnValue, Row, RowData, COMMITTED_BOOTSTRAP_TX,
+    COMMITTED_BOOTSTRAP_TX, ColumnType, ColumnValue, Row, RowData, build_row_data,
 };
 use crate::transaction::Snapshot;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+fn parse_index_lookup_value(value: &str, col_type: ColumnType) -> ColumnValue {
+    match col_type {
+        ColumnType::Integer | ColumnType::SmallInt { .. } | ColumnType::MediumInt { .. } => value
+            .parse::<i32>()
+            .map(ColumnValue::Integer)
+            .unwrap_or_else(|_| ColumnValue::Text(value.to_string())),
+        ColumnType::Boolean => match value.to_ascii_lowercase().as_str() {
+            "true" => ColumnValue::Boolean(true),
+            "false" => ColumnValue::Boolean(false),
+            _ => ColumnValue::Text(value.to_string()),
+        },
+        ColumnType::Char(_) => ColumnValue::Char(value.to_string()),
+        ColumnType::Double { .. } => value
+            .parse::<f64>()
+            .map(ColumnValue::Double)
+            .unwrap_or_else(|_| ColumnValue::Text(value.to_string())),
+        ColumnType::Date => crate::storage::row::parse_date(value)
+            .map(ColumnValue::Date)
+            .unwrap_or_else(|| ColumnValue::Text(value.to_string())),
+        ColumnType::DateTime => crate::storage::row::parse_datetime(value)
+            .map(ColumnValue::DateTime)
+            .unwrap_or_else(|| ColumnValue::Text(value.to_string())),
+        ColumnType::Timestamp => crate::storage::row::parse_datetime(value)
+            .map(ColumnValue::Timestamp)
+            .unwrap_or_else(|| ColumnValue::Text(value.to_string())),
+        ColumnType::Time => crate::storage::row::parse_time(value)
+            .map(ColumnValue::Time)
+            .unwrap_or_else(|| ColumnValue::Text(value.to_string())),
+        ColumnType::Year => crate::storage::row::parse_year(value)
+            .map(ColumnValue::Year)
+            .unwrap_or_else(|| ColumnValue::Text(value.to_string())),
+        ColumnType::Text => ColumnValue::Text(value.to_string()),
+    }
+}
 
 fn dml_snapshot(catalog: &Catalog) -> Snapshot {
     catalog
@@ -84,9 +119,9 @@ pub fn execute_delete(
                 catalog.update_catalog_root(table_name, new_root)?;
             }
 
-            for r in rows_to_delete {
-                catalog.remove_from_indexes(table_name, &r.data, r.key)?;
-            }
+            // Index entries intentionally remain in place until a future vacuum pass.
+            // Indexed lookups re-check base-table visibility with find_visible(), so
+            // deleted base rows are filtered after the candidate key is read.
             return Ok(count);
         }
     }
@@ -228,7 +263,6 @@ pub fn execute_update(
                 old_key: i32,
                 old_created_tx: u64,
                 new_key: i32,
-                old_data: RowData,
                 new_data: RowData,
             }
             let mut ops = Vec::new();
@@ -245,7 +279,6 @@ pub fn execute_update(
                     old_key: row.key,
                     old_created_tx: row.created_tx,
                     new_key,
-                    old_data: row.data,
                     new_data,
                 });
             }
@@ -322,7 +355,10 @@ pub fn execute_update(
             }
 
             for op in ops {
-                catalog.remove_from_indexes(table_name, &op.old_data, op.old_key)?;
+                // The old indexed value is left as a stale candidate for the logical
+                // row key. The base-table old version was marked invisible above;
+                // indexed lookup correctness is enforced by find_visible() plus the
+                // original predicate check. Add the new value as another candidate.
                 catalog.insert_into_indexes(table_name, &op.new_data)?;
             }
             return Ok(count);
@@ -523,17 +559,54 @@ pub fn execute_select_with_indexes(
         };
         if !col_name.is_empty() {
             if let Some(index) = catalog.find_index(table_name, &col_name).cloned() {
-                let mut index_tree = BTree::open_root(&mut catalog.pager, index.root_page)?;
-                let val_cv = ColumnValue::Text(value.clone());
+                let col_type = columns
+                    .iter()
+                    .find(|(c, _)| c == &col_name)
+                    .map(|(_, ty)| *ty)
+                    .unwrap_or(ColumnType::Text);
+                let val_cv = parse_index_lookup_value(&value, col_type);
+                let expected = Catalog::value_to_string(&val_cv);
                 let hash = Catalog::hash_value(&val_cv);
+                let mut index_tree = BTree::open_root(&mut catalog.pager, index.root_page)?;
                 if let Some(row) = index_tree.find(hash)? {
                     if let ColumnValue::Text(ref stored) = row.data.0[0] {
-                        if stored == &value {
-                            for val in row.data.0.iter().skip(1) {
-                                if let ColumnValue::Integer(k) = val {
-                                    let mut table_tree =
-                                        BTree::open_root(&mut catalog.pager, root_page)?;
-                                    if let Some(r) = table_tree.find_visible(*k, &snapshot)? {
+                        if stored == &expected {
+                            let candidate_keys: Vec<i32> = row
+                                .data
+                                .0
+                                .iter()
+                                .skip(1)
+                                .filter_map(|val| match val {
+                                    ColumnValue::Integer(k) => Some(*k),
+                                    _ => None,
+                                })
+                                .collect();
+                            drop(index_tree);
+
+                            let mut table_tree = BTree::open_root(&mut catalog.pager, root_page)?;
+                            let mut seen_keys = HashSet::new();
+                            for key in candidate_keys {
+                                if !seen_keys.insert(key) {
+                                    continue;
+                                }
+                                // Index entries store logical base-row keys and may be stale
+                                // until vacuum. Always resolve each candidate through the
+                                // base table's MVCC visibility rules before returning it.
+                                if let Some(r) = table_tree.find_visible(key, &snapshot)? {
+                                    let mut values = HashMap::new();
+                                    for ((col, _), val) in columns.iter().zip(r.data.0.iter()) {
+                                        values.insert(col.clone(), val.to_string_value());
+                                    }
+                                    if selection
+                                        .as_ref()
+                                        .map(|expr| {
+                                            matches!(
+                                                crate::sql::ast::evaluate_expression(expr, &values),
+                                                ColumnValue::Boolean(true)
+                                            )
+                                        })
+                                        .unwrap_or(true)
+                                    {
                                         out.push(r);
                                     }
                                 }
