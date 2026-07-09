@@ -6,6 +6,7 @@ use crate::storage::row::{Row, RowData, ColumnValue, ColumnType};
 use crate::storage::pager::Pager;
 use crate::storage::page::PAGE_SIZE;
 use crate::sql::ast::{Expr};
+use crate::transaction::{Snapshot, TransactionId};
 
 /// In‐memory representation of a table’s metadata.
 #[derive(Debug, Clone)]
@@ -42,6 +43,8 @@ pub struct Catalog {
     indexes: HashMap<String, IndexInfo>,
     sequences: HashMap<String, SequenceInfo>,
     pub(crate) pager: Pager,
+    next_transaction_id: TransactionId,
+    active_tx_ids: Vec<TransactionId>,
 }
 
 impl Catalog {
@@ -96,7 +99,7 @@ impl Catalog {
             }
         }
 
-        Ok(Catalog { tables, indexes: HashMap::new(), sequences, pager })
+        Ok(Catalog { tables, indexes: HashMap::new(), sequences, pager, next_transaction_id: 1, active_tx_ids: Vec::new() })
     }
 
     fn reload_tables(&mut self) -> io::Result<()> {
@@ -181,22 +184,62 @@ impl Catalog {
     }
 
     pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
-        debug!("Transaction started with name: {:?}", name);
-        self.pager.begin_transaction(name)
+        if self.transaction_active() {
+            return Err(io::Error::new(io::ErrorKind::Other, "transaction already active"));
+        }
+
+        let transaction_id = self.allocate_transaction_id();
+        let snapshot = Snapshot::new(self.next_transaction_id, self.active_tx_ids.clone());
+
+        debug!("Transaction started with id: {}, snapshot: {:?}, name: {:?}", transaction_id, snapshot, name);
+        self.pager.begin_transaction(transaction_id, snapshot, name)?;
+        self.active_tx_ids.push(transaction_id);
+        Ok(())
     }
 
     pub fn commit_transaction(&mut self) -> io::Result<()> {
-        debug!("Transaction committed");
-        self.pager.commit_transaction()
+        let transaction_id = self.transaction_id();
+        debug!("Transaction committed: {:?}", transaction_id);
+        self.pager.commit_transaction()?;
+        if let Some(transaction_id) = transaction_id {
+            self.finish_transaction_id(transaction_id);
+        }
+        Ok(())
     }
 
     pub fn rollback_transaction(&mut self) -> io::Result<()> {
+        let transaction_id = self.transaction_id();
         self.pager.rollback_transaction()?;
+        if let Some(transaction_id) = transaction_id {
+            self.finish_transaction_id(transaction_id);
+        }
         self.reload_tables()
     }
 
     pub fn transaction_active(&self) -> bool {
         self.pager.transaction_active()
+    }
+
+    pub fn transaction_id(&self) -> Option<TransactionId> {
+        self.pager.transaction_id()
+    }
+
+    pub fn transaction_snapshot(&self) -> Option<&Snapshot> {
+        self.pager.transaction_snapshot()
+    }
+
+    pub fn active_transaction_ids(&self) -> &[TransactionId] {
+        &self.active_tx_ids
+    }
+
+    fn allocate_transaction_id(&mut self) -> TransactionId {
+        let transaction_id = self.next_transaction_id;
+        self.next_transaction_id = self.next_transaction_id.saturating_add(1);
+        transaction_id
+    }
+
+    fn finish_transaction_id(&mut self, transaction_id: TransactionId) {
+        self.active_tx_ids.retain(|active_id| *active_id != transaction_id);
     }
 
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
