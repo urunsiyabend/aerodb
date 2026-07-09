@@ -1,48 +1,79 @@
 use crate::catalog::Catalog;
-use crate::sql::ast::{Statement, Expr, expr_to_string};
-use crate::constraints::{Constraint, not_null::NotNullConstraint, foreign_key::ForeignKeyConstraint, default::DefaultConstraint, primary_key::PrimaryKeyConstraint};
-use crate::storage::btree::BTree;
-use crate::storage::row::{Row, RowData, ColumnValue, ColumnType, build_row_data};
-use std::collections::HashMap;
+use crate::constraints::{
+    Constraint, default::DefaultConstraint, foreign_key::ForeignKeyConstraint,
+    not_null::NotNullConstraint, primary_key::PrimaryKeyConstraint,
+};
 use crate::error::{DbError, DbResult};
 use crate::planner::aggregate;
+use crate::sql::ast::{Expr, Statement, expr_to_string};
+use crate::storage::btree::BTree;
+use crate::storage::row::{
+    COMMITTED_BOOTSTRAP_TX, ColumnType, ColumnValue, Row, RowData, build_row_data,
+};
+use crate::transaction::Snapshot;
+use std::collections::HashMap;
 
-pub fn execute_delete(catalog: &mut Catalog, table_name: &str, selection: Option<Expr>) -> DbResult<usize> {
+fn dml_snapshot(catalog: &Catalog) -> Snapshot {
+    catalog
+        .current_snapshot()
+        .unwrap_or_else(|| Snapshot::new(u64::MAX, Vec::new()))
+}
+
+fn current_tx_id(catalog: &Catalog) -> u64 {
+    catalog
+        .transaction_snapshot()
+        .and_then(|snapshot| snapshot.current_tx_id)
+        .unwrap_or(COMMITTED_BOOTSTRAP_TX)
+}
+
+pub fn execute_delete(
+    catalog: &mut Catalog,
+    table_name: &str,
+    selection: Option<Expr>,
+) -> DbResult<usize> {
     if let Ok(table_info) = catalog.get_table(table_name).map(Clone::clone) {
         let root_page = table_info.root_page;
         let columns = table_info.columns.clone();
         let rows_to_delete = {
+            let snapshot = dml_snapshot(catalog);
             let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
-            let mut cursor = scan_tree.scan_all_rows();
+            let rows = scan_tree.scan_visible(&snapshot)?;
             let mut collected = Vec::new();
-            while let Some(row) = cursor.next() {
+            for row in rows {
                 if let Some(ref expr) = selection {
                     let mut values = HashMap::new();
                     for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
                         let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
-                    if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
+                    if matches!(
+                        crate::sql::ast::evaluate_expression(expr, &values),
+                        ColumnValue::Boolean(true)
+                    ) {
                         collected.push(row);
                     }
                 } else {
                     collected.push(row);
                 }
             }
-            drop(cursor);
             collected
         };
 
         if !rows_to_delete.is_empty() {
-            let fk_cons = ForeignKeyConstraint { fks: &table_info.fks };
+            let fk_cons = ForeignKeyConstraint {
+                fks: &table_info.fks,
+            };
             for row in &rows_to_delete {
                 fk_cons.validate_delete(catalog, &table_info, &row.data)?;
             }
 
             let count = rows_to_delete.len();
+
+            let snapshot = dml_snapshot(catalog);
+            let tx_id = current_tx_id(catalog);
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
             for r in &rows_to_delete {
-                table_btree.delete(r.key)?;
+                table_btree.mark_deleted_visible(r.key, &snapshot, tx_id)?;
             }
             let new_root = table_btree.root_page();
             drop(table_btree);
@@ -68,7 +99,7 @@ pub fn execute_update(
     assignments: Vec<(String, String)>,
     selection: Option<Expr>,
 ) -> DbResult<usize> {
-    if let Ok(table_info) = catalog.get_table(table_name) {
+    if let Ok(table_info) = catalog.get_table(table_name).map(Clone::clone) {
         let root_page = table_info.root_page;
         let columns = table_info.columns.clone();
         let mut col_pos = HashMap::new();
@@ -90,15 +121,14 @@ pub fn execute_update(
                 ColumnType::Boolean => match val.to_ascii_lowercase().as_str() {
                     "true" => ColumnValue::Boolean(true),
                     "false" => ColumnValue::Boolean(false),
-                    _ => {
-                        return Err(DbError::InvalidValue("Invalid BOOLEAN".into()))
-                    }
+                    _ => return Err(DbError::InvalidValue("Invalid BOOLEAN".into())),
                 },
                 ColumnType::Char(len) => {
                     if val.len() > len {
-                        return Err(DbError::InvalidValue(
-                            format!("Value '{}' for column '{}' exceeds length {}", val, col, len)
-                        ));
+                        return Err(DbError::InvalidValue(format!(
+                            "Value '{}' for column '{}' exceeds length {}",
+                            val, col, len
+                        )));
                     }
                     let mut s = val.clone();
                     if s.len() < len {
@@ -107,7 +137,9 @@ pub fn execute_update(
                     ColumnValue::Char(s)
                 }
                 ColumnType::SmallInt { unsigned, .. } => {
-                    let i = val.parse::<i32>().map_err(|_| DbError::ParseError("Invalid SMALLINT".into()))?;
+                    let i = val
+                        .parse::<i32>()
+                        .map_err(|_| DbError::ParseError("Invalid SMALLINT".into()))?;
                     if unsigned {
                         if !(0..=65535).contains(&i) {
                             return Err(DbError::Overflow);
@@ -118,7 +150,9 @@ pub fn execute_update(
                     ColumnValue::Integer(i)
                 }
                 ColumnType::MediumInt { unsigned, .. } => {
-                    let i = val.parse::<i32>().map_err(|_| DbError::ParseError("Invalid MEDIUMINT".into()))?;
+                    let i = val
+                        .parse::<i32>()
+                        .map_err(|_| DbError::ParseError("Invalid MEDIUMINT".into()))?;
                     if unsigned {
                         if !(0..=16_777_215).contains(&i) {
                             return Err(DbError::Overflow);
@@ -129,67 +163,62 @@ pub fn execute_update(
                     ColumnValue::Integer(i)
                 }
                 ColumnType::Double { unsigned, .. } => {
-                    let f = val.parse::<f64>().map_err(|_| DbError::ParseError("Invalid DOUBLE".into()))?;
+                    let f = val
+                        .parse::<f64>()
+                        .map_err(|_| DbError::ParseError("Invalid DOUBLE".into()))?;
                     if unsigned && f < 0.0 {
                         return Err(DbError::Overflow);
                     }
                     ColumnValue::Double(f)
                 }
-                ColumnType::Date => {
-                    match crate::storage::row::parse_date(&val) {
-                        Some(d) => ColumnValue::Date(d),
-                        None => {
-                            return Err(DbError::ParseError("Invalid DATE".into()));
-                        }
+                ColumnType::Date => match crate::storage::row::parse_date(&val) {
+                    Some(d) => ColumnValue::Date(d),
+                    None => {
+                        return Err(DbError::ParseError("Invalid DATE".into()));
                     }
-                }
-                ColumnType::DateTime => {
-                    match crate::storage::row::parse_datetime(&val) {
-                        Some(ts) => ColumnValue::DateTime(ts),
-                        None => return Err(DbError::ParseError("Invalid DATETIME".into())),
-                    }
-                }
-                ColumnType::Timestamp => {
-                    match crate::storage::row::parse_datetime(&val) {
-                        Some(ts) => ColumnValue::Timestamp(ts),
-                        None => return Err(DbError::ParseError("Invalid TIMESTAMP".into())),
-                    }
-                }
-                ColumnType::Time => {
-                    match crate::storage::row::parse_time(&val) {
-                        Some(t) => ColumnValue::Time(t),
-                        None => return Err(DbError::ParseError("Invalid TIME".into())),
-                    }
-                }
-                ColumnType::Year => {
-                    match crate::storage::row::parse_year(&val) {
-                        Some(y) => ColumnValue::Year(y),
-                        None => return Err(DbError::ParseError("Invalid YEAR".into())),
-                    }
-                }
+                },
+                ColumnType::DateTime => match crate::storage::row::parse_datetime(&val) {
+                    Some(ts) => ColumnValue::DateTime(ts),
+                    None => return Err(DbError::ParseError("Invalid DATETIME".into())),
+                },
+                ColumnType::Timestamp => match crate::storage::row::parse_datetime(&val) {
+                    Some(ts) => ColumnValue::Timestamp(ts),
+                    None => return Err(DbError::ParseError("Invalid TIMESTAMP".into())),
+                },
+                ColumnType::Time => match crate::storage::row::parse_time(&val) {
+                    Some(t) => ColumnValue::Time(t),
+                    None => return Err(DbError::ParseError("Invalid TIME".into())),
+                },
+                ColumnType::Year => match crate::storage::row::parse_year(&val) {
+                    Some(y) => ColumnValue::Year(y),
+                    None => return Err(DbError::ParseError("Invalid YEAR".into())),
+                },
             };
             parsed.push((idx, cv));
         }
 
         let rows_to_update = {
+            let snapshot = dml_snapshot(catalog);
             let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
-            let mut cursor = scan_tree.scan_all_rows();
+            let rows = scan_tree.scan_visible(&snapshot)?;
             let mut collected = Vec::new();
-            while let Some(row) = cursor.next() {
+            for row in rows {
                 if let Some(ref expr) = selection {
                     let mut values = HashMap::new();
                     for ((col, _), val) in columns.iter().zip(row.data.0.iter()) {
                         let v = val.to_string_value();
                         values.insert(col.clone(), v);
                     }
-                    if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
+                    if matches!(
+                        crate::sql::ast::evaluate_expression(expr, &values),
+                        ColumnValue::Boolean(true)
+                    ) {
                         collected.push(row);
                     }
                 } else {
                     collected.push(row);
                 }
             }
-            drop(cursor);
             collected
         };
 
@@ -197,6 +226,7 @@ pub fn execute_update(
             let count = rows_to_update.len();
             struct UpdateOp {
                 old_key: i32,
+                old_created_tx: u64,
                 new_key: i32,
                 old_data: RowData,
                 new_data: RowData,
@@ -213,16 +243,74 @@ pub fn execute_update(
                 };
                 ops.push(UpdateOp {
                     old_key: row.key,
+                    old_created_tx: row.created_tx,
                     new_key,
                     old_data: row.data,
                     new_data,
                 });
             }
 
+            for op in &mut ops {
+                let nn = NotNullConstraint;
+                nn.validate_insert(catalog, &table_info, &mut op.new_data)?;
+
+                let fk_cons = ForeignKeyConstraint {
+                    fks: &table_info.fks,
+                };
+                fk_cons.validate_insert(catalog, &table_info, &mut op.new_data)?;
+            }
+
+            if let Some(ref pk_cols) = table_info.primary_key {
+                let snapshot = dml_snapshot(catalog);
+                let mut existing_rows = {
+                    let mut scan_tree = BTree::open_root(&mut catalog.pager, root_page)?;
+                    scan_tree.scan_visible(&snapshot)?
+                };
+
+                for (idx, op) in ops.iter().enumerate() {
+                    existing_rows.retain(|existing| {
+                        !(existing.key == op.old_key && existing.created_tx == op.old_created_tx)
+                    });
+
+                    for existing in &existing_rows {
+                        let equal = pk_cols.iter().all(|col| {
+                            table_info
+                                .columns
+                                .iter()
+                                .position(|(c, _)| c == col)
+                                .map(|pos| existing.data.0[pos] == op.new_data.0[pos])
+                                .unwrap_or(false)
+                        });
+                        if equal {
+                            return Err(DbError::DuplicateKey(op.new_key));
+                        }
+                    }
+
+                    for other in ops.iter().skip(idx + 1) {
+                        let equal = pk_cols.iter().all(|col| {
+                            table_info
+                                .columns
+                                .iter()
+                                .position(|(c, _)| c == col)
+                                .map(|pos| other.new_data.0[pos] == op.new_data.0[pos])
+                                .unwrap_or(false)
+                        });
+                        if equal {
+                            return Err(DbError::DuplicateKey(op.new_key));
+                        }
+                    }
+                }
+            }
+
+            let snapshot = dml_snapshot(catalog);
+            let tx_id = current_tx_id(catalog);
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
             for op in &ops {
-                table_btree.delete(op.old_key)?;
-                table_btree.insert(op.new_key, op.new_data.clone())?;
+                table_btree.mark_deleted_visible(op.old_key, &snapshot, tx_id)?;
+                let mut new_row = Row::new(op.new_key, op.new_data.clone());
+                new_row.created_tx = tx_id;
+                new_row.deleted_tx = None;
+                table_btree.insert_version(new_row)?;
             }
             let new_root = table_btree.root_page();
             drop(table_btree);
@@ -285,12 +373,17 @@ pub fn execute_insert(
                             } else {
                                 let s = expr_to_string(expr);
                                 if let Ok(v) = s.parse::<i64>() {
-                                    catalog.update_sequence_current(&format!("{}_{}", table_name, col_name), v)?;
+                                    catalog.update_sequence_current(
+                                        &format!("{}_{}", table_name, col_name),
+                                        v,
+                                    )?;
                                 }
                                 vals.push(s);
                             }
                         } else if matches!(expr, Expr::DefaultValue) {
-                            if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                            if let Some(def) =
+                                table_info.default_values.get(idx).and_then(|o| o.as_ref())
+                            {
                                 vals.push(DefaultConstraint::evaluate(def)?);
                             } else if !table_info.not_null[idx] {
                                 vals.push("NULL".into());
@@ -308,12 +401,17 @@ pub fn execute_insert(
                             let seq = format!("{}_{}", table_name, col_name);
                             let next = catalog.next_sequence_value(&seq)?;
                             vals.push(next.to_string());
-                        } else if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                        } else if let Some(def) =
+                            table_info.default_values.get(idx).and_then(|o| o.as_ref())
+                        {
                             vals.push(DefaultConstraint::evaluate(def)?);
                         } else if !table_info.not_null[idx] {
                             vals.push("NULL".into());
                         } else {
-                            return Err(DbError::InvalidValue(format!("Column '{}' requires a value or DEFAULT", col_name)));
+                            return Err(DbError::InvalidValue(format!(
+                                "Column '{}' requires a value or DEFAULT",
+                                col_name
+                            )));
                         }
                     }
                 }
@@ -335,12 +433,17 @@ pub fn execute_insert(
                         } else {
                             let s = expr_to_string(expr);
                             if let Ok(v) = s.parse::<i64>() {
-                                catalog.update_sequence_current(&format!("{}_{}", table_name, columns_meta[idx].0), v)?;
+                                catalog.update_sequence_current(
+                                    &format!("{}_{}", table_name, columns_meta[idx].0),
+                                    v,
+                                )?;
                             }
                             vals.push(s);
                         }
                     } else if matches!(expr, Expr::DefaultValue) {
-                        if let Some(def) = table_info.default_values.get(idx).and_then(|o| o.as_ref()) {
+                        if let Some(def) =
+                            table_info.default_values.get(idx).and_then(|o| o.as_ref())
+                        {
                             vals.push(DefaultConstraint::evaluate(def)?);
                         } else if !table_info.not_null[idx] {
                             vals.push("NULL".into());
@@ -356,8 +459,8 @@ pub fn execute_insert(
                 }
             }
 
-            let mut row_data = build_row_data(&vals, &columns_meta)
-                .map_err(|e| DbError::InvalidValue(e))?;
+            let mut row_data =
+                build_row_data(&vals, &columns_meta).map_err(|e| DbError::InvalidValue(e))?;
 
             let nn = NotNullConstraint;
             nn.validate_insert(catalog, &table_info, &mut row_data)?;
@@ -371,7 +474,9 @@ pub fn execute_insert(
             let key = match row_data.0.get(0) {
                 Some(ColumnValue::Integer(i)) => *i,
                 _ => {
-                    return Err(DbError::InvalidValue("First column must be an INTEGER key".into()));
+                    return Err(DbError::InvalidValue(
+                        "First column must be an INTEGER key".into(),
+                    ));
                 }
             };
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
@@ -425,7 +530,8 @@ pub fn execute_select_with_indexes(
                         if stored == &value {
                             for val in row.data.0.iter().skip(1) {
                                 if let ColumnValue::Integer(k) = val {
-                                    let mut table_tree = BTree::open_root(&mut catalog.pager, root_page)?;
+                                    let mut table_tree =
+                                        BTree::open_root(&mut catalog.pager, root_page)?;
                                     if let Some(r) = table_tree.find(*k)? {
                                         out.push(r);
                                     }
@@ -449,7 +555,10 @@ pub fn execute_select_with_indexes(
                 let v = val.to_string_value();
                 values.insert(col.clone(), v);
             }
-            if matches!(crate::sql::ast::evaluate_expression(expr, &values), ColumnValue::Boolean(true)) {
+            if matches!(
+                crate::sql::ast::evaluate_expression(expr, &values),
+                ColumnValue::Boolean(true)
+            ) {
                 out.push(row);
             }
         } else {
@@ -506,7 +615,11 @@ pub fn execute_multi_join(
 
         let mut new_rows = Vec::new();
         let mut matched_right = vec![false; rows.len()];
-        let right_columns: Vec<String> = info.columns.iter().map(|(c, _)| format!("{alias}.{c}")).collect();
+        let right_columns: Vec<String> = info
+            .columns
+            .iter()
+            .map(|(c, _)| format!("{alias}.{c}"))
+            .collect();
 
         for left in &result_rows {
             let mut matched_left = false;
@@ -523,7 +636,10 @@ pub fn execute_multi_join(
                             for (k, v) in &candidate {
                                 str_map.insert(k.clone(), v.to_string_value());
                             }
-                            matches!(evaluate_expression(predicate, &str_map), ColumnValue::Boolean(true))
+                            matches!(
+                                evaluate_expression(predicate, &str_map),
+                                ColumnValue::Boolean(true)
+                            )
                         } else {
                             true
                         }
@@ -535,7 +651,12 @@ pub fn execute_multi_join(
                     new_rows.push(candidate);
                 }
             }
-            if !matched_left && matches!(jc.join_type, crate::sql::ast::JoinType::Left | crate::sql::ast::JoinType::Full) {
+            if !matched_left
+                && matches!(
+                    jc.join_type,
+                    crate::sql::ast::JoinType::Left | crate::sql::ast::JoinType::Full
+                )
+            {
                 let mut merged = left.clone();
                 for col in &right_columns {
                     merged.insert(col.clone(), ColumnValue::Null);
@@ -544,7 +665,10 @@ pub fn execute_multi_join(
             }
         }
 
-        if matches!(jc.join_type, crate::sql::ast::JoinType::Right | crate::sql::ast::JoinType::Full) {
+        if matches!(
+            jc.join_type,
+            crate::sql::ast::JoinType::Right | crate::sql::ast::JoinType::Full
+        ) {
             for (idx_row, r) in rows.iter().enumerate() {
                 if matched_right[idx_row] {
                     continue;
@@ -572,7 +696,10 @@ pub fn execute_multi_join(
             str_map.insert(k.clone(), s);
         }
         if let Some(ref pred) = plan.where_predicate {
-            if !matches!(evaluate_expression(pred, &str_map), ColumnValue::Boolean(true)) {
+            if !matches!(
+                evaluate_expression(pred, &str_map),
+                ColumnValue::Boolean(true)
+            ) {
                 continue;
             }
         }
@@ -602,7 +729,8 @@ pub fn execute_group_query(
     let table_info = catalog.get_table(table_name)?.clone();
     aggregate::validate_group_by(projections, group_by, having.as_ref(), &table_info.columns)?;
 
-    let mut groups: std::collections::HashMap<Vec<String>, Vec<crate::storage::row::Row>> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<Vec<String>, Vec<crate::storage::row::Row>> =
+        std::collections::HashMap::new();
     let mut col_pos = std::collections::HashMap::new();
     for (i, (c, _)) in table_info.columns.iter().enumerate() {
         col_pos.insert(c.clone(), i);
@@ -613,7 +741,9 @@ pub fn execute_group_query(
             .get(name)
             .copied()
             .or_else(|| {
-                name.rsplit('.').next().and_then(|n| col_pos.get(n).copied())
+                name.rsplit('.')
+                    .next()
+                    .and_then(|n| col_pos.get(n).copied())
             })
             .ok_or_else(|| DbError::ColumnNotFound(name.to_string()))
     };
@@ -654,10 +784,17 @@ pub fn execute_group_query(
         match &expr.expr {
             SelectItem::Column(c) => {
                 let idx = get_idx(c)?;
-                header.push((expr.alias.clone().unwrap_or(c.clone()), table_info.columns[idx].1));
+                header.push((
+                    expr.alias.clone().unwrap_or(c.clone()),
+                    table_info.columns[idx].1,
+                ));
             }
             SelectItem::Aggregate { func, column } => {
-                let name = format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into()));
+                let name = format!(
+                    "{}({})",
+                    func.as_str(),
+                    column.clone().unwrap_or("*".into())
+                );
                 header.push((expr.alias.clone().unwrap_or(name), ColumnType::Integer));
             }
             SelectItem::All => {
@@ -666,14 +803,24 @@ pub fn execute_group_query(
                 }
             }
             SelectItem::Subquery(_) => {
-                header.push((expr.alias.clone().unwrap_or("SUBQUERY".into()), ColumnType::Text));
+                header.push((
+                    expr.alias.clone().unwrap_or("SUBQUERY".into()),
+                    ColumnType::Text,
+                ));
             }
             SelectItem::Literal(val) => {
-                let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
+                let ty = if val.parse::<i32>().is_ok() {
+                    ColumnType::Integer
+                } else {
+                    ColumnType::Text
+                };
                 header.push((expr.alias.clone().unwrap_or_else(|| val.clone()), ty));
             }
             SelectItem::Expr(_) => {
-                header.push((expr.alias.clone().unwrap_or("EXPR".into()), ColumnType::Integer));
+                header.push((
+                    expr.alias.clone().unwrap_or("EXPR".into()),
+                    ColumnType::Integer,
+                ));
             }
         }
     }
@@ -748,7 +895,11 @@ pub fn execute_group_query(
                             avg.to_string()
                         }
                     };
-                    let name = format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into()));
+                    let name = format!(
+                        "{}({})",
+                        func.as_str(),
+                        column.clone().unwrap_or("*".into())
+                    );
                     let key = expr.alias.clone().unwrap_or(name.clone());
                     value_map.insert(key, val.clone());
                     if expr.alias.is_some() {
@@ -773,7 +924,11 @@ pub fn execute_group_query(
                         ctx.insert(c.clone(), val);
                     }
                     execute_select_statement(catalog, sub, &mut inner_rows, Some(&ctx))?;
-                    let val = inner_rows.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
+                    let val = inner_rows
+                        .get(0)
+                        .and_then(|r| r.get(0))
+                        .cloned()
+                        .unwrap_or_default();
                     // subqueries are not referenced by HAVING expressions
                     result_row.push(val);
                 }
@@ -793,7 +948,10 @@ pub fn execute_group_query(
             }
         }
         if let Some(ref pred) = having {
-            if !matches!(crate::sql::ast::evaluate_expression(pred, &value_map), ColumnValue::Boolean(true)) {
+            if !matches!(
+                crate::sql::ast::evaluate_expression(pred, &value_map),
+                ColumnValue::Boolean(true)
+            ) {
                 continue;
             }
         }
@@ -804,16 +962,33 @@ pub fn execute_group_query(
 
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> {
     match stmt {
-        Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } => {
+        Statement::CreateTable {
+            table_name,
+            columns,
+            fks,
+            primary_key,
+            if_not_exists,
+        } => {
             let auto_cols: Vec<_> = columns.iter().filter(|c| c.auto_increment).collect();
             if auto_cols.len() > 1 {
-                return Err(DbError::InvalidValue("Only one AUTO_INCREMENT column allowed per table".into()));
+                return Err(DbError::InvalidValue(
+                    "Only one AUTO_INCREMENT column allowed per table".into(),
+                ));
             }
             let cols: Vec<_> = columns
                 .into_iter()
-                .map(|c| (c.name.clone(), c.col_type, c.not_null, c.default_value, c.auto_increment))
+                .map(|c| {
+                    (
+                        c.name.clone(),
+                        c.col_type,
+                        c.not_null,
+                        c.default_value,
+                        c.auto_increment,
+                    )
+                })
                 .collect();
-            match catalog.create_table_with_fks(&table_name, cols.clone(), fks, primary_key.clone()) {
+            match catalog.create_table_with_fks(&table_name, cols.clone(), fks, primary_key.clone())
+            {
                 Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {
@@ -830,7 +1005,11 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 }
             }
         }
-        Statement::CreateIndex { index_name, table_name, column_name } => {
+        Statement::CreateIndex {
+            index_name,
+            table_name,
+            column_name,
+        } => {
             catalog.create_index(&index_name, &table_name, &column_name)?;
             println!("Index {} created", index_name);
         }
@@ -841,13 +1020,33 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 return Err(DbError::NotFound(format!("index '{}' not found", name)));
             }
         }
-        Statement::Insert { table_name, columns: col_list, rows } => {
+        Statement::Insert {
+            table_name,
+            columns: col_list,
+            rows,
+        } => {
             execute_insert(catalog, &table_name, col_list, rows)?;
         }
-        Statement::Select { columns, from, joins, where_predicate, group_by, having, order_by, limit, offset } => {
-            let has_subquery = from.iter().any(|t| matches!(t, crate::sql::ast::TableRef::Subquery { .. }))
-                || columns.iter().any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Subquery(_)))
-                || where_predicate.as_ref().map_or(false, |e| expr_has_subquery(e));
+        Statement::Select {
+            columns,
+            from,
+            joins,
+            where_predicate,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        } => {
+            let has_subquery = from
+                .iter()
+                .any(|t| matches!(t, crate::sql::ast::TableRef::Subquery { .. }))
+                || columns
+                    .iter()
+                    .any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Subquery(_)))
+                || where_predicate
+                    .as_ref()
+                    .map_or(false, |e| expr_has_subquery(e));
             if has_subquery {
                 let stmt = crate::sql::ast::Statement::Select {
                     columns: columns.clone(),
@@ -889,15 +1088,26 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 return Ok(());
             }
             let (from_table, base_alias) = match from.first().unwrap() {
-                crate::sql::ast::TableRef::Named { name, alias } => {
-                    (name.clone(), alias.clone())
-                }
+                crate::sql::ast::TableRef::Named { name, alias } => (name.clone(), alias.clone()),
                 _ => unreachable!(),
             };
             if joins.is_empty() {
-                if group_by.is_some() || columns.iter().any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Aggregate { .. })) {
+                if group_by.is_some()
+                    || columns
+                        .iter()
+                        .any(|c| matches!(c.expr, crate::sql::ast::SelectItem::Aggregate { .. }))
+                {
                     let mut results = Vec::new();
-                    let header = execute_group_query(catalog, &from_table, &columns, group_by.as_deref(), having.clone(), where_predicate, &mut results, None)?;
+                    let header = execute_group_query(
+                        catalog,
+                        &from_table,
+                        &columns,
+                        group_by.as_deref(),
+                        having.clone(),
+                        where_predicate,
+                        &mut results,
+                        None,
+                    )?;
                     println!("{}", format_header(&header));
                     for row in results {
                         println!("{}", format_values(&row));
@@ -907,7 +1117,12 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     let (idxs, meta) = select_projection_indices(&table_info.columns, &columns)?;
                     println!("{}", format_header(&meta));
                     let mut results = Vec::new();
-                    execute_select_with_indexes(catalog, &from_table, where_predicate, &mut results)?;
+                    execute_select_with_indexes(
+                        catalog,
+                        &from_table,
+                        where_predicate,
+                        &mut results,
+                    )?;
                     for row in results {
                         let vals = row_to_strings(&row);
                         let mut val_map = std::collections::HashMap::new();
@@ -920,14 +1135,23 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                                 Projection::Index(i) => vals[*i].clone(),
                                 Projection::Literal(s) => s.clone(),
                                 Projection::Subquery(_) => String::new(),
-                                Projection::Expr(expr) => crate::sql::ast::evaluate_expression(expr, &val_map).to_string_value(),
+                                Projection::Expr(expr) => {
+                                    crate::sql::ast::evaluate_expression(expr, &val_map)
+                                        .to_string_value()
+                                }
                             })
                             .collect();
                         println!("{}", format_values(&projected));
                     }
                 }
             } else {
-                let plan = crate::execution::plan::MultiJoinPlan { base_table: from_table, base_alias, joins, projections: columns.clone(), where_predicate };
+                let plan = crate::execution::plan::MultiJoinPlan {
+                    base_table: from_table,
+                    base_alias,
+                    joins,
+                    projections: columns.clone(),
+                    where_predicate,
+                };
                 let projections = expand_join_projections(&plan, catalog)?;
                 let header_meta = join_header(&plan, catalog, &projections)?;
                 println!("{}", format_header(&header_meta));
@@ -943,11 +1167,18 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 println!("Table {} dropped", table_name);
             }
         }
-        Statement::Delete { table_name, selection } => {
+        Statement::Delete {
+            table_name,
+            selection,
+        } => {
             let count = execute_delete(catalog, &table_name, selection)?;
             println!("{} row(s) deleted", count);
         }
-        Statement::Update { table_name, assignments, selection } => {
+        Statement::Update {
+            table_name,
+            assignments,
+            selection,
+        } => {
             let count = execute_update(catalog, &table_name, assignments, selection)?;
             println!("{} row(s) updated", count);
         }
@@ -970,12 +1201,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
 }
 
 pub fn row_to_strings(row: &Row) -> Vec<String> {
-    row
-        .data
-        .0
-        .iter()
-        .map(|v| v.to_string_value())
-        .collect()
+    row.data.0.iter().map(|v| v.to_string_value()).collect()
 }
 
 pub enum Projection {
@@ -1003,7 +1229,9 @@ pub fn select_projection_indices(
             match &p.expr {
                 SelectItem::Column(col) => {
                     let c = col.split('.').last().unwrap_or(col).to_string();
-                    if let Some((i, (_, ty))) = columns.iter().enumerate().find(|(_, (name, _))| name == &c) {
+                    if let Some((i, (_, ty))) =
+                        columns.iter().enumerate().find(|(_, (name, _))| name == &c)
+                    {
                         idxs.push(Projection::Index(i));
                         let name = p.alias.clone().unwrap_or(c);
                         meta.push((name, *ty));
@@ -1012,7 +1240,11 @@ pub fn select_projection_indices(
                     }
                 }
                 SelectItem::Aggregate { func, column } => {
-                    let name = format!("{}({})", func.as_str(), column.clone().unwrap_or("*".into()));
+                    let name = format!(
+                        "{}({})",
+                        func.as_str(),
+                        column.clone().unwrap_or("*".into())
+                    );
                     let header = p.alias.clone().unwrap_or(name);
                     meta.push((header, ColumnType::Integer));
                 }
@@ -1023,16 +1255,30 @@ pub fn select_projection_indices(
                     }
                 }
                 SelectItem::Subquery(q) => {
-                    meta.push((p.alias.clone().unwrap_or("SUBQUERY".into()), ColumnType::Text));
+                    meta.push((
+                        p.alias.clone().unwrap_or("SUBQUERY".into()),
+                        ColumnType::Text,
+                    ));
                     idxs.push(Projection::Subquery(q.clone()));
                 }
                 SelectItem::Literal(val) => {
-                    let ty = if val.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
+                    let ty = if val.parse::<i32>().is_ok() {
+                        ColumnType::Integer
+                    } else {
+                        ColumnType::Text
+                    };
                     meta.push((p.alias.clone().unwrap_or_else(|| val.clone()), ty));
                     idxs.push(Projection::Literal(val.clone()));
                 }
                 SelectItem::Expr(expr) => {
-                    meta.push((p.alias.clone().unwrap_or("EXPR".into()), ColumnType::Double { precision: 8, scale: 2, unsigned: false }));
+                    meta.push((
+                        p.alias.clone().unwrap_or("EXPR".into()),
+                        ColumnType::Double {
+                            precision: 8,
+                            scale: 2,
+                            unsigned: false,
+                        },
+                    ));
                     idxs.push(Projection::Expr(expr.clone()));
                 }
             }
@@ -1082,15 +1328,24 @@ pub fn join_header(
     let base_alias = plan.base_alias.as_ref().unwrap_or(&plan.base_table);
     alias_map.insert(base_alias.clone(), plan.base_table.clone());
     for jc in &plan.joins {
-        alias_map.insert(jc.alias.clone().unwrap_or_else(|| jc.table.clone()), jc.table.clone());
+        alias_map.insert(
+            jc.alias.clone().unwrap_or_else(|| jc.table.clone()),
+            jc.table.clone(),
+        );
     }
 
     let mut out = Vec::new();
     for p in projections {
         let mut parts = p.split('.');
-        let alias = parts.next().ok_or_else(|| DbError::ParseError("Bad column".into()))?;
-        let col = parts.next().ok_or_else(|| DbError::ParseError("Bad column".into()))?;
-        let table = alias_map.get(alias).ok_or_else(|| DbError::ParseError("Bad alias".into()))?;
+        let alias = parts
+            .next()
+            .ok_or_else(|| DbError::ParseError("Bad column".into()))?;
+        let col = parts
+            .next()
+            .ok_or_else(|| DbError::ParseError("Bad column".into()))?;
+        let table = alias_map
+            .get(alias)
+            .ok_or_else(|| DbError::ParseError("Bad alias".into()))?;
         let info = catalog.get_table(table)?;
         let ty = info
             .columns
@@ -1110,93 +1365,230 @@ fn evaluate_with_catalog(
 ) -> DbResult<bool> {
     use crate::sql::ast::Expr;
     match expr {
-        Expr::Equals { left, right } => {
-            Ok(values.get(left).map(String::as_str).unwrap_or(left)
-                == values.get(right).map(String::as_str).unwrap_or(right))
-        }
-        Expr::NotEquals { left, right } => {
-            Ok(values.get(left).map(String::as_str).unwrap_or(left)
-                != values.get(right).map(String::as_str).unwrap_or(right))
-        }
+        Expr::Equals { left, right } => Ok(values.get(left).map(String::as_str).unwrap_or(left)
+            == values.get(right).map(String::as_str).unwrap_or(right)),
+        Expr::NotEquals { left, right } => Ok(values.get(left).map(String::as_str).unwrap_or(left)
+            != values.get(right).map(String::as_str).unwrap_or(right)),
         Expr::Add { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(0.0);
             Ok((l + r) != 0.0)
         }
         Expr::Subtract { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(0.0);
             Ok((l - r) != 0.0)
         }
         Expr::Multiply { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(0.0);
             Ok((l * r) != 0.0)
         }
         Expr::Divide { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(1.0);
-            if r == 0.0 { Ok(false) } else { Ok((l / r) != 0.0) }
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(1.0);
+            if r == 0.0 {
+                Ok(false)
+            } else {
+                Ok((l / r) != 0.0)
+            }
         }
         Expr::Modulo { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(1.0);
-            if r == 0.0 { Ok(false) } else { Ok((l % r) != 0.0) }
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(1.0);
+            if r == 0.0 {
+                Ok(false)
+            } else {
+                Ok((l % r) != 0.0)
+            }
         }
         Expr::BitwiseAnd { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<i64>()
+                .unwrap_or(0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<i64>()
+                .unwrap_or(0);
             Ok((l & r) != 0)
         }
         Expr::BitwiseOr { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<i64>()
+                .unwrap_or(0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<i64>()
+                .unwrap_or(0);
             Ok((l | r) != 0)
         }
         Expr::BitwiseXor { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<i64>().unwrap_or(0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<i64>().unwrap_or(0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<i64>()
+                .unwrap_or(0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<i64>()
+                .unwrap_or(0);
             Ok((l ^ r) != 0)
         }
         Expr::Between { expr, low, high } => {
-            let v = values.get(expr).map(String::as_str).unwrap_or(expr).parse::<f64>().unwrap_or(0.0);
-            let l = values.get(low).map(String::as_str).unwrap_or(low).parse::<f64>().unwrap_or(0.0);
-            let h = values.get(high).map(String::as_str).unwrap_or(high).parse::<f64>().unwrap_or(0.0);
+            let v = values
+                .get(expr)
+                .map(String::as_str)
+                .unwrap_or(expr)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let l = values
+                .get(low)
+                .map(String::as_str)
+                .unwrap_or(low)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let h = values
+                .get(high)
+                .map(String::as_str)
+                .unwrap_or(high)
+                .parse::<f64>()
+                .unwrap_or(0.0);
             Ok(v >= l && v <= h)
         }
         Expr::GreaterThan { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(0.0);
             Ok(l > r)
         }
         Expr::GreaterOrEquals { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(0.0);
             Ok(l >= r)
         }
         Expr::LessThan { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(0.0);
             Ok(l < r)
         }
         Expr::LessOrEquals { left, right } => {
-            let l = values.get(left).map(String::as_str).unwrap_or(left).parse::<f64>().unwrap_or(0.0);
-            let r = values.get(right).map(String::as_str).unwrap_or(right).parse::<f64>().unwrap_or(0.0);
+            let l = values
+                .get(left)
+                .map(String::as_str)
+                .unwrap_or(left)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let r = values
+                .get(right)
+                .map(String::as_str)
+                .unwrap_or(right)
+                .parse::<f64>()
+                .unwrap_or(0.0);
             Ok(l <= r)
         }
-        Expr::And(a, b) => {
-            Ok(evaluate_with_catalog(a, values, catalog)?
-                && evaluate_with_catalog(b, values, catalog)?)
-        }
-        Expr::Or(a, b) => {
-            Ok(evaluate_with_catalog(a, values, catalog)?
-                || evaluate_with_catalog(b, values, catalog)?)
-        }
+        Expr::And(a, b) => Ok(evaluate_with_catalog(a, values, catalog)?
+            && evaluate_with_catalog(b, values, catalog)?),
+        Expr::Or(a, b) => Ok(evaluate_with_catalog(a, values, catalog)?
+            || evaluate_with_catalog(b, values, catalog)?),
         Expr::InSubquery { left, query } => {
             let mut rows = Vec::new();
             let header = execute_select_statement(catalog, query, &mut rows, Some(values))?;
             if header.len() != 1 {
-                return Err(DbError::InvalidValue("Subquery must return one column".into()));
+                return Err(DbError::InvalidValue(
+                    "Subquery must return one column".into(),
+                ));
             }
             let val = values.get(left).map(String::as_str).unwrap_or(left);
             for r in rows {
@@ -1211,7 +1603,9 @@ fn evaluate_with_catalog(
             let _ = execute_select_statement(catalog, query, &mut rows, Some(values))?;
             Ok(!rows.is_empty())
         }
-        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } | Expr::DefaultValue => Ok(false),
+        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } | Expr::DefaultValue => {
+            Ok(false)
+        }
     }
 }
 
@@ -1233,7 +1627,17 @@ pub fn execute_select_statement(
     use crate::sql::ast::{SelectExpr, SelectItem, TableRef};
     use crate::storage::row::ColumnType;
     match stmt {
-        crate::sql::ast::Statement::Select { columns, from, joins, where_predicate, group_by, having, order_by, limit, offset } => {
+        crate::sql::ast::Statement::Select {
+            columns,
+            from,
+            joins,
+            where_predicate,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        } => {
             if from.is_empty() {
                 if !joins.is_empty()
                     || where_predicate.is_some()
@@ -1251,20 +1655,43 @@ pub fn execute_select_statement(
                     match &expr.expr {
                         SelectItem::Literal(v) => {
                             let name = expr.alias.clone().unwrap_or_else(|| v.clone());
-                            let ty = if v.parse::<i32>().is_ok() { ColumnType::Integer } else { ColumnType::Text };
+                            let ty = if v.parse::<i32>().is_ok() {
+                                ColumnType::Integer
+                            } else {
+                                ColumnType::Text
+                            };
                             header.push((name, ty));
                             row.push(v.clone());
                         }
                         SelectItem::Expr(e) => {
-                            let val = crate::sql::ast::evaluate_expression(e, &std::collections::HashMap::new()).to_string_value();
-                            header.push((expr.alias.clone().unwrap_or("EXPR".into()), ColumnType::Double { precision: 8, scale: 2, unsigned: false }));
+                            let val = crate::sql::ast::evaluate_expression(
+                                e,
+                                &std::collections::HashMap::new(),
+                            )
+                            .to_string_value();
+                            header.push((
+                                expr.alias.clone().unwrap_or("EXPR".into()),
+                                ColumnType::Double {
+                                    precision: 8,
+                                    scale: 2,
+                                    unsigned: false,
+                                },
+                            ));
                             row.push(val);
                         }
                         SelectItem::Subquery(q) => {
                             let mut inner = Vec::new();
-                            let inner_header = execute_select_statement(catalog, q, &mut inner, context)?;
-                            let val = inner.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
-                            let ty = inner_header.get(0).map(|(_, t)| *t).unwrap_or(ColumnType::Text);
+                            let inner_header =
+                                execute_select_statement(catalog, q, &mut inner, context)?;
+                            let val = inner
+                                .get(0)
+                                .and_then(|r| r.get(0))
+                                .cloned()
+                                .unwrap_or_default();
+                            let ty = inner_header
+                                .get(0)
+                                .map(|(_, t)| *t)
+                                .unwrap_or(ColumnType::Text);
                             header.push((expr.alias.clone().unwrap_or("SUBQUERY".into()), ty));
                             row.push(val);
                         }
@@ -1277,11 +1704,26 @@ pub fn execute_select_statement(
             if !joins.is_empty() {
                 return Err(DbError::InvalidValue("Unsupported query".into()));
             }
-            let source = from.first().ok_or_else(|| DbError::ParseError("Missing FROM".into()))?;
+            let source = from
+                .first()
+                .ok_or_else(|| DbError::ParseError("Missing FROM".into()))?;
             match source {
                 TableRef::Named { name, alias } => {
-                    if group_by.is_some() || columns.iter().any(|c| matches!(c.expr, SelectItem::Aggregate { .. })) {
-                        return execute_group_query(catalog, name, columns, group_by.as_deref(), having.clone(), where_predicate.clone(), out, context);
+                    if group_by.is_some()
+                        || columns
+                            .iter()
+                            .any(|c| matches!(c.expr, SelectItem::Aggregate { .. }))
+                    {
+                        return execute_group_query(
+                            catalog,
+                            name,
+                            columns,
+                            group_by.as_deref(),
+                            having.clone(),
+                            where_predicate.clone(),
+                            out,
+                            context,
+                        );
                     }
                     let info = catalog.get_table(name)?.clone();
                     let (idxs, header) = select_projection_indices(&info.columns, columns)?;
@@ -1312,24 +1754,35 @@ pub fn execute_select_statement(
                                 Projection::Literal(s) => projected.push(s.clone()),
                                 Projection::Subquery(q) => {
                                     let mut inner_rows = Vec::new();
-                                    execute_select_statement(catalog, q, &mut inner_rows, Some(&map))?;
-                                    let val = inner_rows.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_default();
+                                    execute_select_statement(
+                                        catalog,
+                                        q,
+                                        &mut inner_rows,
+                                        Some(&map),
+                                    )?;
+                                    let val = inner_rows
+                                        .get(0)
+                                        .and_then(|r| r.get(0))
+                                        .cloned()
+                                        .unwrap_or_default();
                                     projected.push(val);
                                 }
                                 Projection::Expr(expr) => {
-                                    let val = crate::sql::ast::evaluate_expression(expr, &map).to_string_value();
+                                    let val = crate::sql::ast::evaluate_expression(expr, &map)
+                                        .to_string_value();
                                     projected.push(val);
                                 }
                             }
                         }
-                        
+
                         out.push(projected);
                     }
                     Ok(header)
                 }
                 TableRef::Subquery { query, .. } => {
                     let mut inner_rows = Vec::new();
-                    let inner_header = execute_select_statement(catalog, query, &mut inner_rows, context)?;
+                    let inner_header =
+                        execute_select_statement(catalog, query, &mut inner_rows, context)?;
                     let mut filtered = Vec::new();
                     for row in inner_rows {
                         let mut values = std::collections::HashMap::new();
@@ -1358,14 +1811,25 @@ pub fn execute_select_statement(
                             match &expr.expr {
                                 SelectItem::Column(c) => {
                                     let base = c.split('.').last().unwrap_or(c);
-                                    if let Some((i, (_, ty))) = inner_header.iter().enumerate().find(|(_, (n, _))| n == base) {
+                                    if let Some((i, (_, ty))) = inner_header
+                                        .iter()
+                                        .enumerate()
+                                        .find(|(_, (n, _))| n == base)
+                                    {
                                         idxs.push(i);
-                                        header.push((expr.alias.clone().unwrap_or(base.to_string()), *ty));
+                                        header.push((
+                                            expr.alias.clone().unwrap_or(base.to_string()),
+                                            *ty,
+                                        ));
                                     } else {
                                         return Err(DbError::ColumnNotFound(c.clone()));
                                     }
                                 }
-                                _ => return Err(DbError::InvalidValue("Unsupported projection".into())),
+                                _ => {
+                                    return Err(DbError::InvalidValue(
+                                        "Unsupported projection".into(),
+                                    ));
+                                }
                             }
                         }
                         for row in filtered {
@@ -1384,7 +1848,6 @@ pub fn execute_select_statement(
 pub fn format_values(vals: &[String]) -> String {
     vals.join(" | ")
 }
-
 
 pub fn format_row(row: &Row) -> String {
     row.data
@@ -1411,7 +1874,10 @@ mod tests {
     fn format_row_simple() {
         let row = Row::new(
             1,
-            RowData(vec![ColumnValue::Integer(1), ColumnValue::Text("bob".into())]),
+            RowData(vec![
+                ColumnValue::Integer(1),
+                ColumnValue::Text("bob".into()),
+            ]),
         );
         assert_eq!(format_row(&row), "1 | bob");
     }

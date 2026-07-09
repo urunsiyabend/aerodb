@@ -1,11 +1,11 @@
 use crate::storage::page::{
-    get_cell_count, get_next_leaf, get_node_type, get_parent, set_cell_count, set_is_root,
-    set_next_leaf, set_node_type, set_parent, HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE,
+    HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE, get_cell_count, get_next_leaf, get_node_type,
+    get_parent, set_cell_count, set_is_root, set_next_leaf, set_node_type, set_parent,
 };
 use crate::storage::pager::Pager;
-use crate::storage::row::{Row, RowData, COMMITTED_BOOTSTRAP_TX};
+use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, Row, RowData};
 use crate::transaction::{
-    is_visible, Snapshot, TransactionId, TransactionStatus, TransactionTable,
+    Snapshot, TransactionId, TransactionStatus, TransactionTable, is_visible,
 };
 use log::debug;
 use std::io;
@@ -199,6 +199,16 @@ impl<'a> BTree<'a> {
         res
     }
 
+    /// Insert an already-versioned row without applying logical-key uniqueness checks.
+    /// Used by MVCC update paths that append a new version for an existing key.
+    pub fn insert_version(&mut self, row: Row) -> io::Result<()> {
+        debug!(
+            "insert_version() → starting at root {} for key={} created_tx={}",
+            self.root_page, row.key, row.created_tx
+        );
+        self.insert_row_version_into_page(self.root_page, row)
+    }
+
     /// Delete a logical key by marking its newest visible version as deleted.
     pub fn delete(&mut self, key: i32) -> io::Result<bool> {
         let deleted_tx = self
@@ -212,6 +222,30 @@ impl<'a> BTree<'a> {
     pub fn mark_deleted(&mut self, key: i32, deleted_tx: TransactionId) -> io::Result<bool> {
         let snapshot = Snapshot::new(TransactionId::MAX, Vec::new());
         let Some(target) = self.find_visible(key, &snapshot)? else {
+            return Ok(false);
+        };
+        let leaf_page = self.find_leaf_page(self.root_page, key)?;
+        let mut rows = self.read_all_rows_from_leaf(leaf_page)?;
+        let Some(row) = rows
+            .iter_mut()
+            .filter(|r| r.key == key && r.created_tx == target.created_tx)
+            .max_by_key(|r| r.created_tx)
+        else {
+            return Ok(false);
+        };
+        row.deleted_tx = Some(deleted_tx);
+        self.write_all_rows_to_leaf(leaf_page, &rows)?;
+        Ok(true)
+    }
+
+    /// Mark the version of `key` visible to `snapshot` as deleted.
+    pub fn mark_deleted_visible(
+        &mut self,
+        key: i32,
+        snapshot: &Snapshot,
+        deleted_tx: TransactionId,
+    ) -> io::Result<bool> {
+        let Some(target) = self.find_visible(key, snapshot)? else {
             return Ok(false);
         };
         let leaf_page = self.find_leaf_page(self.root_page, key)?;
@@ -279,6 +313,41 @@ impl<'a> BTree<'a> {
             page_num = next;
         }
         Ok(rows)
+    }
+
+    fn insert_row_version_into_page(&mut self, page_num: u32, row: Row) -> io::Result<()> {
+        let page = self.pager.get_page(page_num)?;
+        let node_type = get_node_type(&page.data);
+
+        if node_type == NODE_LEAF {
+            let mut rows = self.read_all_rows_from_leaf(page_num)?;
+            rows.push(row);
+            rows.sort_by_key(|r| (r.key, r.created_tx));
+            return match self.write_all_rows_to_leaf(page_num, &rows) {
+                Ok(()) => Ok(()),
+                Err(e) if e.to_string().starts_with("Leaf overflow") => {
+                    self.split_leaf(page_num, rows)?;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            };
+        }
+
+        let cell_count = get_cell_count(&page.data) as usize;
+        let mut offset = HEADER_SIZE;
+        let mut child_page = u32::from_le_bytes(page.data[offset..offset + 4].try_into().unwrap());
+        offset += 4;
+        for _ in 0..cell_count {
+            let key_i = i32::from_le_bytes(page.data[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            let right_child = u32::from_le_bytes(page.data[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            if row.key < key_i {
+                return self.insert_row_version_into_page(child_page, row);
+            }
+            child_page = right_child;
+        }
+        self.insert_row_version_into_page(child_page, row)
     }
 
     /// Recursive helper to insert into page `page_num`. May split leaf or internal pages.

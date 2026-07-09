@@ -1,15 +1,20 @@
-use crate::catalog::{Catalog, TableInfo};
-use crate::storage::row::{RowData, ColumnValue};
-use crate::storage::btree::BTree;
-use crate::error::{DbError, DbResult};
 use super::Constraint;
+use crate::catalog::{Catalog, TableInfo};
+use crate::error::{DbError, DbResult};
+use crate::storage::btree::BTree;
+use crate::storage::row::{ColumnValue, RowData};
 
 pub struct PrimaryKeyConstraint<'a> {
     pub columns: &'a [String],
 }
 
 impl<'a> Constraint for PrimaryKeyConstraint<'a> {
-    fn validate_insert(&self, catalog: &mut Catalog, table: &TableInfo, row: &mut RowData) -> DbResult<()> {
+    fn validate_insert(
+        &self,
+        catalog: &mut Catalog,
+        table: &TableInfo,
+        row: &mut RowData,
+    ) -> DbResult<()> {
         // ensure not null
         for col in self.columns {
             if let Some(idx) = table.columns.iter().position(|(c, _)| c == col) {
@@ -19,9 +24,11 @@ impl<'a> Constraint for PrimaryKeyConstraint<'a> {
             }
         }
         // check uniqueness
+        let snapshot = catalog
+            .current_snapshot()
+            .unwrap_or_else(|| crate::transaction::Snapshot::new(u64::MAX, Vec::new()));
         let mut btree = BTree::open_root(&mut catalog.pager, table.root_page)?;
-        let mut cursor = btree.scan_all_rows();
-        while let Some(existing) = cursor.next() {
+        for existing in btree.scan_visible(&snapshot)? {
             let mut equal = true;
             for col in self.columns {
                 if let Some(idx) = table.columns.iter().position(|(c, _)| c == col) {
