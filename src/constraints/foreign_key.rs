@@ -1,16 +1,21 @@
-use crate::catalog::{Catalog, TableInfo};
-use crate::sql::ast::ForeignKey;
-use crate::storage::row::{RowData, ColumnValue};
-use crate::storage::btree::BTree;
-use crate::error::{DbError, DbResult};
 use super::Constraint;
+use crate::catalog::{Catalog, TableInfo};
+use crate::error::{DbError, DbResult};
+use crate::sql::ast::ForeignKey;
+use crate::storage::btree::BTree;
+use crate::storage::row::{ColumnValue, RowData};
 
 pub struct ForeignKeyConstraint<'a> {
     pub fks: &'a [ForeignKey],
 }
 
 impl<'a> Constraint for ForeignKeyConstraint<'a> {
-    fn validate_insert(&self, catalog: &mut Catalog, table: &TableInfo, row: &mut RowData) -> DbResult<()> {
+    fn validate_insert(
+        &self,
+        catalog: &mut Catalog,
+        table: &TableInfo,
+        row: &mut RowData,
+    ) -> DbResult<()> {
         for fk in self.fks {
             if fk.columns.is_empty() || fk.parent_columns.is_empty() {
                 continue;
@@ -25,31 +30,51 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
                 _ => return Err(DbError::InvalidValue("FK column must be INTEGER".into())),
             };
             let parent_root = catalog.get_table(&fk.parent_table)?.root_page;
+            let snapshot = catalog
+                .current_snapshot()
+                .unwrap_or_else(|| crate::transaction::Snapshot::new(u64::MAX, Vec::new()));
             let mut parent_btree = BTree::open_root(&mut catalog.pager, parent_root)?;
-            if parent_btree.find(child_val)?.is_none() {
-                return Err(DbError::ForeignKeyViolation(format!("{} {}", fk.parent_table, child_val)));
+            if parent_btree.find_visible(child_val, &snapshot)?.is_none() {
+                return Err(DbError::ForeignKeyViolation(format!(
+                    "{} {}",
+                    fk.parent_table, child_val
+                )));
             }
         }
         Ok(())
     }
 
-    fn validate_delete(&self, catalog: &mut Catalog, table: &TableInfo, row: &RowData) -> DbResult<()> {
+    fn validate_delete(
+        &self,
+        catalog: &mut Catalog,
+        table: &TableInfo,
+        row: &RowData,
+    ) -> DbResult<()> {
         let columns = &table.columns;
         let child_tables: Vec<_> = catalog.all_tables();
         for child in &child_tables {
             for fk in &child.fks {
                 if fk.parent_table == table.name {
-                    let parent_idx = columns.iter().position(|(c, _)| c == &fk.parent_columns[0]).unwrap();
+                    let parent_idx = columns
+                        .iter()
+                        .position(|(c, _)| c == &fk.parent_columns[0])
+                        .unwrap();
                     let parent_val = match row.0[parent_idx] {
                         ColumnValue::Integer(i) => i,
                         _ => continue,
                     };
-                    let child_idx = child.columns.iter().position(|(c, _)| c == &fk.columns[0]).unwrap();
+                    let child_idx = child
+                        .columns
+                        .iter()
+                        .position(|(c, _)| c == &fk.columns[0])
+                        .unwrap();
                     let mut matches: Vec<(i32, RowData)> = Vec::new();
                     {
+                        let snapshot = catalog.current_snapshot().unwrap_or_else(|| {
+                            crate::transaction::Snapshot::new(u64::MAX, Vec::new())
+                        });
                         let mut scan_tree = BTree::open_root(&mut catalog.pager, child.root_page)?;
-                        let mut cursor = scan_tree.scan_all_rows();
-                        while let Some(crow) = cursor.next() {
+                        for crow in scan_tree.scan_visible(&snapshot)? {
                             if let ColumnValue::Integer(v) = crow.data.0[child_idx] {
                                 if v == parent_val {
                                     matches.push((crow.key, crow.data.clone()));
@@ -59,9 +84,16 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
                     }
                     if !matches.is_empty() {
                         if fk.on_delete == Some(crate::sql::ast::Action::Cascade) {
-                            let mut del_tree = BTree::open_root(&mut catalog.pager, child.root_page)?;
+                            let snapshot = catalog.current_snapshot().unwrap_or_else(|| {
+                                crate::transaction::Snapshot::new(u64::MAX, Vec::new())
+                            });
+                            let tx_id = snapshot
+                                .current_tx_id
+                                .unwrap_or(crate::storage::row::COMMITTED_BOOTSTRAP_TX);
+                            let mut del_tree =
+                                BTree::open_root(&mut catalog.pager, child.root_page)?;
                             for (k, _) in &matches {
-                                del_tree.delete(*k)?;
+                                del_tree.mark_deleted_visible(*k, &snapshot, tx_id)?;
                             }
                             let new_root_c = del_tree.root_page();
                             drop(del_tree);
@@ -73,7 +105,10 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
                                 catalog.update_catalog_root(&child.name, new_root_c)?;
                             }
                         } else {
-                            return Err(DbError::ForeignKeyViolation(format!("Cannot delete {}: referenced by {}.{}", table.name, child.name, fk.columns[0])));
+                            return Err(DbError::ForeignKeyViolation(format!(
+                                "Cannot delete {}: referenced by {}.{}",
+                                table.name, child.name, fk.columns[0]
+                            )));
                         }
                     }
                 }
