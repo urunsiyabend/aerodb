@@ -1,14 +1,26 @@
 use std::io;
 
+use crate::transaction::TransactionId;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ColumnType {
     Integer,
     Text,
     Boolean,
     Char(usize),
-    SmallInt { width: usize, unsigned: bool },
-    MediumInt { width: usize, unsigned: bool },
-    Double { precision: usize, scale: usize, unsigned: bool },
+    SmallInt {
+        width: usize,
+        unsigned: bool,
+    },
+    MediumInt {
+        width: usize,
+        unsigned: bool,
+    },
+    Double {
+        precision: usize,
+        scale: usize,
+        unsigned: bool,
+    },
     Date,
     DateTime,
     Timestamp,
@@ -76,7 +88,10 @@ impl ColumnType {
                     let args = &base[start + 1..end];
                     let parts: Vec<&str> = args.split(',').collect();
                     if parts.len() == 2 {
-                        if let (Ok(p), Ok(s)) = (parts[0].trim().parse::<usize>(), parts[1].trim().parse::<usize>()) {
+                        if let (Ok(p), Ok(s)) = (
+                            parts[0].trim().parse::<usize>(),
+                            parts[1].trim().parse::<usize>(),
+                        ) {
                             if p <= 255 && s <= 255 && p >= s {
                                 precision = p;
                                 scale = s;
@@ -88,7 +103,11 @@ impl ColumnType {
                 }
                 base = &base[..start];
             }
-            return Some(ColumnType::Double { precision, scale, unsigned });
+            return Some(ColumnType::Double {
+                precision,
+                scale,
+                unsigned,
+            });
         }
         if base == "DATE" {
             return Some(ColumnType::Date);
@@ -121,19 +140,33 @@ impl ColumnType {
             ColumnType::Char(size) => format!("CHAR({})", size),
             ColumnType::SmallInt { width, unsigned } => {
                 let mut s = String::from("SMALLINT");
-                if *width > 0 { s.push_str(&format!("({})", width)); }
-                if *unsigned { s.push_str(" UNSIGNED"); }
+                if *width > 0 {
+                    s.push_str(&format!("({})", width));
+                }
+                if *unsigned {
+                    s.push_str(" UNSIGNED");
+                }
                 s
             }
             ColumnType::MediumInt { width, unsigned } => {
                 let mut s = String::from("MEDIUMINT");
-                if *width > 0 { s.push_str(&format!("({})", width)); }
-                if *unsigned { s.push_str(" UNSIGNED"); }
+                if *width > 0 {
+                    s.push_str(&format!("({})", width));
+                }
+                if *unsigned {
+                    s.push_str(" UNSIGNED");
+                }
                 s
             }
-            ColumnType::Double { precision, scale, unsigned } => {
+            ColumnType::Double {
+                precision,
+                scale,
+                unsigned,
+            } => {
                 let mut s = format!("DOUBLE({},{})", precision, scale);
-                if *unsigned { s.push_str(" UNSIGNED"); }
+                if *unsigned {
+                    s.push_str(" UNSIGNED");
+                }
                 s
             }
             ColumnType::Date => "DATE".into(),
@@ -150,9 +183,19 @@ impl ColumnType {
             2 => Some(ColumnType::Text),
             3 => Some(ColumnType::Boolean),
             4 => Some(ColumnType::Char(0)),
-            5 => Some(ColumnType::SmallInt { width: 0, unsigned: false }),
-            6 => Some(ColumnType::MediumInt { width: 0, unsigned: false }),
-            7 => Some(ColumnType::Double { precision: 10, scale: 0, unsigned: false }),
+            5 => Some(ColumnType::SmallInt {
+                width: 0,
+                unsigned: false,
+            }),
+            6 => Some(ColumnType::MediumInt {
+                width: 0,
+                unsigned: false,
+            }),
+            7 => Some(ColumnType::Double {
+                precision: 10,
+                scale: 0,
+                unsigned: false,
+            }),
             8 => Some(ColumnType::Date),
             9 => Some(ColumnType::DateTime),
             10 => Some(ColumnType::Timestamp),
@@ -197,6 +240,15 @@ pub enum ColumnValue {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowData(pub Vec<ColumnValue>);
+
+/// Transaction id assigned to rows that were written before row-level MVCC
+/// metadata existed on disk.  Real transaction ids start at 1 today, so 0 is
+/// reserved as a committed bootstrap transaction for legacy payloads.
+pub const COMMITTED_BOOTSTRAP_TX: TransactionId = 0;
+
+/// Current row payload format.  The high-bit marker keeps the version byte out
+/// of the range normally used by the low byte of small legacy column counts.
+pub const MVCC_ROW_PAYLOAD_FORMAT_VERSION: u8 = 0x81;
 
 impl RowData {
     pub fn serialize(&self) -> Vec<u8> {
@@ -284,7 +336,8 @@ impl RowData {
                     if offset + 4 > bytes.len() {
                         return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
                     }
-                    let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                    let len =
+                        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
                     offset += 4;
                     if offset + len > bytes.len() {
                         return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
@@ -305,7 +358,8 @@ impl RowData {
                     if offset + 4 > bytes.len() {
                         return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
                     }
-                    let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                    let len =
+                        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
                     offset += 4;
                     if offset + len > bytes.len() {
                         return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
@@ -374,9 +428,16 @@ impl RowData {
 /// Build a `RowData` from raw string values according to the declared column
 /// types. Returns an error if any value cannot be converted or the counts do
 /// not match.
-pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Result<RowData, String> {
+pub fn build_row_data(
+    values: &[String],
+    columns: &[(String, ColumnType)],
+) -> Result<RowData, String> {
     if values.len() != columns.len() {
-        return Err(format!("Expected {} values, got {}", columns.len(), values.len()));
+        return Err(format!(
+            "Expected {} values, got {}",
+            columns.len(),
+            values.len()
+        ));
     }
     let mut cols = Vec::with_capacity(columns.len());
     for (v, (name, ty)) in values.iter().zip(columns.iter()) {
@@ -388,7 +449,10 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
             ColumnType::Integer => match v.parse::<i32>() {
                 Ok(i) => cols.push(ColumnValue::Integer(i)),
                 Err(_) => {
-                    return Err(format!("Value '{}' for column '{}' is not a valid INTEGER", v, name));
+                    return Err(format!(
+                        "Value '{}' for column '{}' is not a valid INTEGER",
+                        v, name
+                    ));
                 }
             },
             ColumnType::Text => cols.push(ColumnValue::Text(v.clone())),
@@ -396,7 +460,10 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
                 "true" => cols.push(ColumnValue::Boolean(true)),
                 "false" => cols.push(ColumnValue::Boolean(false)),
                 _ => {
-                    return Err(format!("Value '{}' for column '{}' is not a valid BOOLEAN", v, name));
+                    return Err(format!(
+                        "Value '{}' for column '{}' is not a valid BOOLEAN",
+                        v, name
+                    ));
                 }
             },
             ColumnType::Char(len) => {
@@ -414,7 +481,10 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
             }
             ColumnType::SmallInt { unsigned, .. } => {
                 let val = v.parse::<i32>().map_err(|_| {
-                    format!("Value '{}' for column '{}' is not a valid SMALLINT", v, name)
+                    format!(
+                        "Value '{}' for column '{}' is not a valid SMALLINT",
+                        v, name
+                    )
                 })?;
                 if *unsigned {
                     if !(0..=65535).contains(&val) {
@@ -427,7 +497,10 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
             }
             ColumnType::MediumInt { unsigned, .. } => {
                 let val = v.parse::<i32>().map_err(|_| {
-                    format!("Value '{}' for column '{}' is not a valid MEDIUMINT", v, name)
+                    format!(
+                        "Value '{}' for column '{}' is not a valid MEDIUMINT",
+                        v, name
+                    )
                 })?;
                 if *unsigned {
                     if !(0..=16_777_215).contains(&val) {
@@ -447,55 +520,184 @@ pub fn build_row_data(values: &[String], columns: &[(String, ColumnType)]) -> Re
                 }
                 cols.push(ColumnValue::Double(val));
             }
-            ColumnType::Date => {
-                match parse_date(v) {
-                    Some(d) => cols.push(ColumnValue::Date(d)),
-                    None => {
-                        return Err(format!("Value '{}' for column '{}' is not a valid DATE", v, name));
-                    }
+            ColumnType::Date => match parse_date(v) {
+                Some(d) => cols.push(ColumnValue::Date(d)),
+                None => {
+                    return Err(format!(
+                        "Value '{}' for column '{}' is not a valid DATE",
+                        v, name
+                    ));
                 }
-            }
-            ColumnType::DateTime => {
-                match parse_datetime(v) {
-                    Some(ts) => cols.push(ColumnValue::DateTime(ts)),
-                    None => {
-                        return Err(format!("Value '{}' for column '{}' is not a valid DATETIME", v, name));
-                    }
+            },
+            ColumnType::DateTime => match parse_datetime(v) {
+                Some(ts) => cols.push(ColumnValue::DateTime(ts)),
+                None => {
+                    return Err(format!(
+                        "Value '{}' for column '{}' is not a valid DATETIME",
+                        v, name
+                    ));
                 }
-            }
-            ColumnType::Timestamp => {
-                match parse_datetime(v) {
-                    Some(ts) => cols.push(ColumnValue::Timestamp(ts)),
-                    None => {
-                        return Err(format!("Value '{}' for column '{}' is not a valid TIMESTAMP", v, name));
-                    }
+            },
+            ColumnType::Timestamp => match parse_datetime(v) {
+                Some(ts) => cols.push(ColumnValue::Timestamp(ts)),
+                None => {
+                    return Err(format!(
+                        "Value '{}' for column '{}' is not a valid TIMESTAMP",
+                        v, name
+                    ));
                 }
-            }
-            ColumnType::Time => {
-                match parse_time(v) {
-                    Some(t) => cols.push(ColumnValue::Time(t)),
-                    None => {
-                        return Err(format!("Value '{}' for column '{}' is not a valid TIME", v, name));
-                    }
+            },
+            ColumnType::Time => match parse_time(v) {
+                Some(t) => cols.push(ColumnValue::Time(t)),
+                None => {
+                    return Err(format!(
+                        "Value '{}' for column '{}' is not a valid TIME",
+                        v, name
+                    ));
                 }
-            }
-            ColumnType::Year => {
-                match parse_year(v) {
-                    Some(y) => cols.push(ColumnValue::Year(y)),
-                    None => {
-                        return Err(format!("Value '{}' for column '{}' is not a valid YEAR", v, name));
-                    }
+            },
+            ColumnType::Year => match parse_year(v) {
+                Some(y) => cols.push(ColumnValue::Year(y)),
+                None => {
+                    return Err(format!(
+                        "Value '{}' for column '{}' is not a valid YEAR",
+                        v, name
+                    ));
                 }
-            }
+            },
         }
     }
     Ok(RowData(cols))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowVersionRef {
+    pub page_num: u32,
+    pub slot_index: u16,
 }
 
 #[derive(Debug, Clone)]
 pub struct Row {
     pub key: i32,
     pub data: RowData,
+    pub created_tx: TransactionId,
+    pub deleted_tx: Option<TransactionId>,
+    pub version_ptr: Option<RowVersionRef>,
+}
+
+impl Row {
+    pub fn new(key: i32, data: RowData) -> Self {
+        Self {
+            key,
+            data,
+            created_tx: COMMITTED_BOOTSTRAP_TX,
+            deleted_tx: None,
+            version_ptr: None,
+        }
+    }
+
+    pub fn serialize_mvcc_payload(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.push(MVCC_ROW_PAYLOAD_FORMAT_VERSION);
+        buf.extend(&self.created_tx.to_le_bytes());
+        match self.deleted_tx {
+            Some(deleted_tx) => {
+                buf.push(1);
+                buf.extend(&deleted_tx.to_le_bytes());
+            }
+            None => buf.push(0),
+        }
+        match self.version_ptr {
+            Some(version_ptr) => {
+                buf.push(1);
+                buf.extend(&version_ptr.page_num.to_le_bytes());
+                buf.extend(&version_ptr.slot_index.to_le_bytes());
+            }
+            None => buf.push(0),
+        }
+        buf.extend(self.data.serialize());
+        buf
+    }
+
+    pub fn deserialize_mvcc_payload(key: i32, bytes: &[u8]) -> io::Result<Self> {
+        if bytes.first().copied() != Some(MVCC_ROW_PAYLOAD_FORMAT_VERSION) {
+            return Ok(Self {
+                key,
+                data: RowData::deserialize(bytes)?,
+                created_tx: COMMITTED_BOOTSTRAP_TX,
+                deleted_tx: None,
+                version_ptr: None,
+            });
+        }
+
+        let mut offset = 1;
+        if offset + 8 > bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "MVCC row missing created_tx",
+            ));
+        }
+        let created_tx =
+            TransactionId::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+
+        if offset >= bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "MVCC row missing deleted_tx flag",
+            ));
+        }
+        let deleted_tx = if bytes[offset] == 0 {
+            offset += 1;
+            None
+        } else {
+            offset += 1;
+            if offset + 8 > bytes.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "MVCC row missing deleted_tx",
+                ));
+            }
+            let tx = TransactionId::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            offset += 8;
+            Some(tx)
+        };
+
+        if offset >= bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "MVCC row missing version_ptr flag",
+            ));
+        }
+        let version_ptr = if bytes[offset] == 0 {
+            offset += 1;
+            None
+        } else {
+            offset += 1;
+            if offset + 6 > bytes.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "MVCC row missing version_ptr",
+                ));
+            }
+            let page_num = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            let slot_index = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
+            offset += 2;
+            Some(RowVersionRef {
+                page_num,
+                slot_index,
+            })
+        };
+
+        Ok(Self {
+            key,
+            data: RowData::deserialize(&bytes[offset..])?,
+            created_tx,
+            deleted_tx,
+            version_ptr,
+        })
+    }
 }
 
 impl ColumnValue {
@@ -508,14 +710,17 @@ impl ColumnValue {
             ColumnValue::Char(s) => s.clone(),
             ColumnValue::Double(f) => f.to_string(),
             ColumnValue::Date(d) => {
-                use chrono::{NaiveDate, Duration};
-                let epoch = NaiveDate::from_ymd_opt(1970,1,1).unwrap();
+                use chrono::{Duration, NaiveDate};
+                let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
                 let date = epoch + Duration::days(*d as i64);
                 date.format("%Y-%m-%d").to_string()
             }
             ColumnValue::DateTime(ts) | ColumnValue::Timestamp(ts) => {
                 use chrono::NaiveDateTime;
-                NaiveDateTime::from_timestamp_opt(*ts, 0).unwrap().format("%Y-%m-%d %H:%M:%S").to_string()
+                NaiveDateTime::from_timestamp_opt(*ts, 0)
+                    .unwrap()
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
             }
             ColumnValue::Time(t) => {
                 let neg = *t < 0;
@@ -548,18 +753,75 @@ pub(crate) fn parse_time(s: &str) -> Option<i32> {
     let neg = s.starts_with('-');
     let t = if neg { &s[1..] } else { s };
     let parts: Vec<&str> = t.split(':').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let h: i32 = parts[0].parse().ok()?;
     let m: i32 = parts[1].parse().ok()?;
     let sec: i32 = parts[2].parse().ok()?;
-    if h > 838 || m > 59 || sec > 59 { return None; }
+    if h > 838 || m > 59 || sec > 59 {
+        return None;
+    }
     let mut total = h * 3600 + m * 60 + sec;
-    if neg { total = -total; }
+    if neg {
+        total = -total;
+    }
     Some(total)
 }
 
 pub(crate) fn parse_year(s: &str) -> Option<u16> {
-    if s.len() != 4 { return None; }
+    if s.len() != 4 {
+        return None;
+    }
     let y: u16 = s.parse().ok()?;
-    if y == 0 || (1901..=2155).contains(&y) { Some(y) } else { None }
+    if y == 0 || (1901..=2155).contains(&y) {
+        Some(y)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod mvcc_tests {
+    use super::*;
+
+    #[test]
+    fn mvcc_payload_round_trips_metadata_and_column_encoding() {
+        let row = Row {
+            key: 7,
+            data: RowData(vec![
+                ColumnValue::Integer(42),
+                ColumnValue::Text("alice".into()),
+            ]),
+            created_tx: 12,
+            deleted_tx: Some(15),
+            version_ptr: Some(RowVersionRef {
+                page_num: 3,
+                slot_index: 2,
+            }),
+        };
+
+        let payload = row.serialize_mvcc_payload();
+        assert_eq!(payload[0], MVCC_ROW_PAYLOAD_FORMAT_VERSION);
+
+        let decoded = Row::deserialize_mvcc_payload(row.key, &payload).unwrap();
+        assert_eq!(decoded.key, row.key);
+        assert_eq!(decoded.data, row.data);
+        assert_eq!(decoded.created_tx, row.created_tx);
+        assert_eq!(decoded.deleted_tx, row.deleted_tx);
+        assert_eq!(decoded.version_ptr, row.version_ptr);
+    }
+
+    #[test]
+    fn legacy_payload_defaults_to_committed_bootstrap_metadata() {
+        let data = RowData(vec![ColumnValue::Boolean(true)]);
+        let legacy_payload = data.serialize();
+
+        let decoded = Row::deserialize_mvcc_payload(9, &legacy_payload).unwrap();
+        assert_eq!(decoded.key, 9);
+        assert_eq!(decoded.data, data);
+        assert_eq!(decoded.created_tx, COMMITTED_BOOTSTRAP_TX);
+        assert_eq!(decoded.deleted_tx, None);
+        assert_eq!(decoded.version_ptr, None);
+    }
 }

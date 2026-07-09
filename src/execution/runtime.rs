@@ -1409,10 +1409,10 @@ mod tests {
 
     #[test]
     fn format_row_simple() {
-        let row = Row {
-            key: 1,
-            data: RowData(vec![ColumnValue::Integer(1), ColumnValue::Text("bob".into())]),
-        };
+        let row = Row::new(
+            1,
+            RowData(vec![ColumnValue::Integer(1), ColumnValue::Text("bob".into())]),
+        );
         assert_eq!(format_row(&row), "1 | bob");
     }
 

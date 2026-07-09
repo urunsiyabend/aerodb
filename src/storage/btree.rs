@@ -1,8 +1,11 @@
-use std::io;
-use log::debug;
+use crate::storage::page::{
+    get_cell_count, get_next_leaf, get_node_type, get_parent, set_cell_count, set_is_root,
+    set_next_leaf, set_node_type, set_parent, HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE,
+};
 use crate::storage::pager::Pager;
-use crate::storage::row::{Row, RowData, ColumnValue};
-use crate::storage::page::{get_cell_count, get_node_type, set_cell_count, set_node_type, set_parent, set_is_root, NODE_LEAF, HEADER_SIZE, PAGE_SIZE, NODE_INTERNAL, get_parent, get_next_leaf, set_next_leaf};
+use crate::storage::row::{Row, RowData};
+use log::debug;
+use std::io;
 
 /// store multiple separator keys and child pointers.
 ///
@@ -39,8 +42,6 @@ use crate::storage::page::{get_cell_count, get_node_type, set_cell_count, set_no
 ///   5. If you reach the root and it overflows, allocate a new root page, make it internal,
 ///        with two children (old_root and new_internal), and update their parent pointers.
 ///—————————————————————————————————————————————————————————————————————————————————————————————
-
-
 
 pub struct BTree<'a> {
     root_page: u32,
@@ -123,10 +124,7 @@ impl<'a> BTree<'a> {
             offset += 4;
 
             if key < key_i {
-                debug!(
-                    "  → Descending to child {} (key < {})",
-                    child_page, key_i
-                );
+                debug!("  → Descending to child {} (key < {})", child_page, key_i);
                 // Descend to `child_page`
                 return self.find_in_page(child_page, key);
             } else {
@@ -167,13 +165,16 @@ impl<'a> BTree<'a> {
             if get_node_type(&page.data) == NODE_LEAF {
                 break;
             }
-            let left_child = u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
+            let left_child =
+                u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
             page_num = left_child;
         }
         loop {
             all_rows.extend(self.read_all_rows_from_leaf(page_num)?);
             let next = get_next_leaf(&self.pager.get_page(page_num)?.data);
-            if next == 0 { break; }
+            if next == 0 {
+                break;
+            }
             page_num = next;
         }
         let original = all_rows.len();
@@ -248,7 +249,7 @@ impl<'a> BTree<'a> {
             }
 
             // Insert new row and sort
-            rows.push(Row { key, data: data.clone() });
+            rows.push(Row::new(key, data.clone()));
             rows.sort_by_key(|r| r.key);
 
             // Try writing back to leaf
@@ -332,8 +333,6 @@ impl<'a> BTree<'a> {
             get_next_leaf(&left_page.data)
         };
 
-
-
         // —————————————————————————
         // 2) Allocate a new leaf page. Initialize its header properly:
         //    NODE_TYPE = LEAF, IS_ROOT = false, PARENT = 0 (temporarily),
@@ -350,7 +349,6 @@ impl<'a> BTree<'a> {
             set_next_leaf(&mut p.data, 0);
             self.pager.flush_page(new_leaf)?;
         }
-
 
         // —————————————————————————
         // 3) Rewrite left half back into leaf_page_num
@@ -389,7 +387,6 @@ impl<'a> BTree<'a> {
         self.insert_in_parent(leaf_page_num, separator_key, new_leaf)
     }
 
-
     /// Insert a new (separator_key, new_child_page) entry into the parent of `old_page`.
     ///
     /// If `old_page` was the root, create a new root (internal) at page 0 or a newly allocated page.
@@ -419,15 +416,12 @@ impl<'a> BTree<'a> {
                 set_parent(&mut root.data, 0); // root’s parent = 0
 
                 // Leftmost child pointer = old_page
-                root.data[HEADER_SIZE..HEADER_SIZE + 4]
-                    .copy_from_slice(&old_page.to_le_bytes());
+                root.data[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&old_page.to_le_bytes());
 
                 // One separator: [separator_key][new_page]
                 let offset = HEADER_SIZE + 4;
-                root.data[offset..offset + 4]
-                    .copy_from_slice(&separator_key.to_le_bytes());
-                root.data[offset + 4..offset + 8]
-                    .copy_from_slice(&new_page.to_le_bytes());
+                root.data[offset..offset + 4].copy_from_slice(&separator_key.to_le_bytes());
+                root.data[offset + 4..offset + 8].copy_from_slice(&new_page.to_le_bytes());
 
                 // Set cell_count = 1
                 set_cell_count(&mut root.data, 1);
@@ -611,8 +605,7 @@ impl<'a> BTree<'a> {
                 set_cell_count(&mut nr.data, 1);
 
                 // Leftmost child = old root (page_num)
-                nr.data[HEADER_SIZE..HEADER_SIZE + 4]
-                    .copy_from_slice(&page_num.to_le_bytes());
+                nr.data[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&page_num.to_le_bytes());
 
                 // One separator: [separator_key][new_internal]
                 let off = HEADER_SIZE + 4;
@@ -668,17 +661,10 @@ impl<'a> BTree<'a> {
 
         for _ in 0..cell_count {
             // 1) 4 bytes key
-            let key = i32::from_le_bytes(
-                page.data[offset..offset + 4]
-                    .try_into()
-                    .unwrap(),
-            );
+            let key = i32::from_le_bytes(page.data[offset..offset + 4].try_into().unwrap());
             // 2) 4 bytes payload length
-            let payload_len = u32::from_le_bytes(
-                page.data[offset + 4..offset + 8]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
+            let payload_len =
+                u32::from_le_bytes(page.data[offset + 4..offset + 8].try_into().unwrap()) as usize;
             // 3) payload bytes
             let start = offset + 8;
             let end = start + payload_len;
@@ -689,15 +675,14 @@ impl<'a> BTree<'a> {
                 ));
             }
             let bytes = &page.data[start..end];
-            let data = RowData::deserialize(bytes)?;
+            let row = Row::deserialize_mvcc_payload(key, bytes)?;
 
-            rows.push(Row { key, data });
+            rows.push(row);
             offset = end;
         }
 
         Ok(rows)
     }
-
 
     /// Write a complete sorted list of rows into a leaf page.
     fn write_all_rows_to_leaf(&mut self, page_num: u32, rows: &[Row]) -> io::Result<()> {
@@ -706,7 +691,7 @@ impl<'a> BTree<'a> {
         // 1) Compute total size of all row‐bodies (4B key + 4B length + payload.len())
         let mut total_size: usize = 0;
         for row in rows {
-            let bytes = row.data.serialize();
+            let bytes = row.serialize_mvcc_payload();
             total_size += 4; // key
             total_size += 4; // length
             total_size += bytes.len();
@@ -728,7 +713,7 @@ impl<'a> BTree<'a> {
         // 4) Pack each row at offset = HEADER_SIZE
         let mut offset = HEADER_SIZE;
         for row in rows {
-            let bytes = row.data.serialize();
+            let bytes = row.serialize_mvcc_payload();
             // 4A: 4 bytes for key
             let key_bytes = row.key.to_le_bytes();
             page.data[offset..offset + 4].copy_from_slice(&key_bytes);
@@ -862,11 +847,7 @@ impl<'a> BTree<'a> {
         self.scan_rows_with_bounds(0, None)
     }
 
-    pub fn scan_rows_with_bounds(
-        &'a mut self,
-        skip: usize,
-        limit: Option<usize>,
-    ) -> RowCursor<'a> {
+    pub fn scan_rows_with_bounds(&'a mut self, skip: usize, limit: Option<usize>) -> RowCursor<'a> {
         // 1) Find leftmost leaf
         let mut page_num = self.root_page;
         loop {
@@ -889,11 +870,7 @@ impl<'a> BTree<'a> {
         }
     }
 
-    pub fn scan_rows_desc_with_bounds(
-        &'a mut self,
-        skip: usize,
-        limit: Option<usize>,
-    ) -> Vec<Row> {
+    pub fn scan_rows_desc_with_bounds(&'a mut self, skip: usize, limit: Option<usize>) -> Vec<Row> {
         let mut rows: Vec<Row> = self.scan_rows_with_bounds(0, None).collect();
         rows.reverse();
         let start = skip.min(rows.len());
@@ -946,8 +923,7 @@ impl<'b> Iterator for RowCursor<'b> {
                     return None;
                 }
                 let bytes = &page.data[start..end];
-                let data = RowData::deserialize(bytes).ok()?;
-                let row = Row { key, data };
+                let row = Row::deserialize_mvcc_payload(key, bytes).ok()?;
 
                 // Advance offsets
                 self.offset = end;
