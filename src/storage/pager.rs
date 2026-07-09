@@ -1,5 +1,5 @@
 use crate::storage::{dirty_pages::DirtyPageSet, page::PAGE_SIZE};
-use crate::transaction::{wal::Wal, TransactionState};
+use crate::transaction::{Snapshot, TransactionId, TransactionState, wal::Wal};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -151,10 +151,23 @@ impl Pager {
         self.transaction.is_active()
     }
 
-    pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
-        self.transaction.begin(name);
+    pub fn begin_transaction(
+        &mut self,
+        id: TransactionId,
+        snapshot: Snapshot,
+        name: Option<String>,
+    ) -> io::Result<()> {
+        self.transaction.begin(id, snapshot, name);
         self.dirty_pages.clear();
         Ok(())
+    }
+
+    pub fn transaction_id(&self) -> Option<TransactionId> {
+        self.transaction.id()
+    }
+
+    pub fn transaction_snapshot(&self) -> Option<&Snapshot> {
+        self.transaction.snapshot()
     }
 
     pub fn commit_transaction(&mut self) -> io::Result<()> {

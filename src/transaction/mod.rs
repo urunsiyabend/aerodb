@@ -6,4 +6,4 @@ mod state;
 
 pub use classifier::statement_requires_transaction;
 pub use manager::TransactionManager;
-pub use state::{TransactionMode, TransactionState};
+pub use state::{Snapshot, TransactionId, TransactionMode, TransactionState};
