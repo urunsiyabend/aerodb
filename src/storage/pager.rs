@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-use std::fs::{OpenOptions, File};
-use std::io::{self, Read, Write, Seek, SeekFrom};
-use crate::transaction::wal::Wal;
-use crate::storage::page::PAGE_SIZE;
+use crate::storage::{dirty_pages::DirtyPageSet, page::PAGE_SIZE};
+use crate::transaction::{wal::Wal, TransactionState};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 /// A single 4 KiB page of data.
 pub struct Page {
@@ -11,7 +10,9 @@ pub struct Page {
 
 impl Page {
     pub fn new() -> Self {
-        Page { data: [0; PAGE_SIZE] }
+        Page {
+            data: [0; PAGE_SIZE],
+        }
     }
 }
 
@@ -32,8 +33,8 @@ pub struct Pager {
     /// A very basic cache: `cache[page_num] = Some(Box<Page>)` if that page is loaded.
     cache: Vec<Option<Box<Page>>>,
 
-    transaction_active: bool,
-    dirty_pages: HashMap<u32, [u8; PAGE_SIZE]>,
+    transaction: TransactionState,
+    dirty_pages: DirtyPageSet,
 }
 
 impl Pager {
@@ -59,8 +60,8 @@ impl Pager {
             file_length_pages,
             num_pages: file_length_pages,
             cache: Vec::new(),
-            transaction_active: false,
-            dirty_pages: HashMap::new(),
+            transaction: TransactionState::default(),
+            dirty_pages: DirtyPageSet::default(),
         })
     }
 
@@ -115,8 +116,8 @@ impl Pager {
     pub fn flush_page(&mut self, page_num: u32) -> io::Result<()> {
         if let Some(page_box) = &self.cache[page_num as usize] {
             let data = page_box.data;
-            if self.transaction_active {
-                self.dirty_pages.insert(page_num, data);
+            if self.transaction.is_active() {
+                self.dirty_pages.mark(page_num, data);
             } else {
                 self.wal.append_page(page_num, &data)?;
                 self.write_page_raw(page_num, &data)?;
@@ -147,19 +148,18 @@ impl Pager {
     }
 
     pub fn transaction_active(&self) -> bool {
-        self.transaction_active
+        self.transaction.is_active()
     }
 
-    pub fn begin_transaction(&mut self, _name: Option<String>) -> io::Result<()> {
-        self.transaction_active = true;
+    pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
+        self.transaction.begin(name);
         self.dirty_pages.clear();
         Ok(())
     }
 
     pub fn commit_transaction(&mut self) -> io::Result<()> {
-        if self.transaction_active {
-            let pages = self.dirty_pages.clone();
-            for (page_num, data) in pages {
+        if self.transaction.is_active() {
+            for (page_num, data) in self.dirty_pages.snapshot() {
                 self.wal.append_page(page_num, &data)?;
                 self.write_page_raw(page_num, &data)?;
             }
@@ -167,14 +167,14 @@ impl Pager {
             self.wal.truncate()?;
             self.file.sync_all()?;
             self.dirty_pages.clear();
-            self.transaction_active = false;
+            self.transaction.finish();
         }
         Ok(())
     }
 
     pub fn rollback_transaction(&mut self) -> io::Result<()> {
-        if self.transaction_active {
-            for page_num in self.dirty_pages.keys().cloned().collect::<Vec<_>>() {
+        if self.transaction.is_active() {
+            for page_num in self.dirty_pages.page_numbers() {
                 let mut buf = [0u8; PAGE_SIZE];
                 if page_num < self.file_length_pages {
                     let offset = (page_num as u64) * (PAGE_SIZE as u64);
@@ -187,12 +187,11 @@ impl Pager {
             }
             self.wal.truncate()?;
             self.dirty_pages.clear();
-            self.transaction_active = false;
+            self.transaction.finish();
         }
         Ok(())
     }
 }
-
 
 // #[test]
 // fn test_leaf_multiple_inserts_and_find() {
