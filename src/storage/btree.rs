@@ -108,20 +108,20 @@ impl<'a> BTree<'a> {
 
     fn row_visible(row: &Row, snapshot: &Snapshot) -> bool {
         let mut tx_table = TransactionTable::new();
-        tx_table.insert(COMMITTED_BOOTSTRAP_TX, TransactionStatus::Committed);
+        tx_table.insert(COMMITTED_BOOTSTRAP_TX, TransactionStatus::Committed(1));
         if row.created_tx < snapshot.xmax
             && !snapshot
                 .active_tx_ids
                 .binary_search(&row.created_tx)
                 .is_ok()
         {
-            tx_table.insert(row.created_tx, TransactionStatus::Committed);
+            tx_table.insert(row.created_tx, TransactionStatus::Committed(1));
         }
         if let Some(deleted_tx) = row.deleted_tx {
             if deleted_tx < snapshot.xmax
                 && !snapshot.active_tx_ids.binary_search(&deleted_tx).is_ok()
             {
-                tx_table.insert(deleted_tx, TransactionStatus::Committed);
+                tx_table.insert(deleted_tx, TransactionStatus::Committed(1));
             }
         }
         is_visible(row, snapshot, &tx_table)

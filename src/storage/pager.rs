@@ -1,5 +1,7 @@
 use crate::storage::{dirty_pages::DirtyPageSet, page::PAGE_SIZE};
-use crate::transaction::{Snapshot, TransactionId, TransactionState, wal::Wal};
+use crate::transaction::{
+    wal::Wal, Snapshot, TransactionId, TransactionState, TransactionStatus, TransactionTable,
+};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -34,6 +36,8 @@ pub struct Pager {
     cache: Vec<Option<Box<Page>>>,
 
     transaction: TransactionState,
+    tx_table: TransactionTable,
+    next_commit_ts: u64,
     dirty_pages: DirtyPageSet,
 }
 
@@ -48,7 +52,16 @@ impl Pager {
             .create(true)
             .open(filename)?;
         let wal_path = format!("{}.wal", filename);
-        let wal = Wal::open(&wal_path, &mut file)?;
+        let (wal, tx_table) = Wal::open(&wal_path, &mut file)?;
+        let next_commit_ts = tx_table
+            .values()
+            .filter_map(|status| match status {
+                TransactionStatus::Committed(commit_ts) => Some(*commit_ts),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
 
         // Determine file length after WAL recovery in case pages were replayed
         let file_len_after = file.metadata()?.len();
@@ -61,6 +74,8 @@ impl Pager {
             num_pages: file_length_pages,
             cache: Vec::new(),
             transaction: TransactionState::default(),
+            tx_table,
+            next_commit_ts,
             dirty_pages: DirtyPageSet::default(),
         })
     }
@@ -158,6 +173,8 @@ impl Pager {
         name: Option<String>,
     ) -> io::Result<()> {
         self.transaction.begin(id, snapshot, name);
+        self.tx_table.insert(id, TransactionStatus::Active);
+        self.wal.append_tx_status(id, TransactionStatus::Active)?;
         self.dirty_pages.clear();
         Ok(())
     }
@@ -170,10 +187,28 @@ impl Pager {
         self.transaction.snapshot()
     }
 
+    pub fn transaction_table(&self) -> &TransactionTable {
+        &self.tx_table
+    }
+
     pub fn commit_transaction(&mut self) -> io::Result<()> {
         if self.transaction.is_active() {
+            let transaction_id = self.transaction.id().expect("active transaction has id");
+            let commit_ts = self.next_commit_ts;
+            self.next_commit_ts = self.next_commit_ts.saturating_add(1);
+
+            // WAL protocol: first log every dirty page image, then log the commit
+            // record. Recovery only replays page records that appear before the
+            // commit/checkpoint marker and restores the transaction table from
+            // transaction-status records. Database pages are written only after
+            // the commit record is durable.
             for (page_num, data) in self.dirty_pages.snapshot() {
                 self.wal.append_page(page_num, &data)?;
+            }
+            let committed = TransactionStatus::Committed(commit_ts);
+            self.wal.append_tx_status(transaction_id, committed)?;
+            self.tx_table.insert(transaction_id, committed);
+            for (page_num, data) in self.dirty_pages.snapshot() {
                 self.write_page_raw(page_num, &data)?;
             }
             self.wal.append_checkpoint()?;
@@ -187,6 +222,11 @@ impl Pager {
 
     pub fn rollback_transaction(&mut self) -> io::Result<()> {
         if self.transaction.is_active() {
+            let transaction_id = self.transaction.id().expect("active transaction has id");
+            self.wal
+                .append_tx_status(transaction_id, TransactionStatus::Aborted)?;
+            self.tx_table
+                .insert(transaction_id, TransactionStatus::Aborted);
             for page_num in self.dirty_pages.page_numbers() {
                 let mut buf = [0u8; PAGE_SIZE];
                 if page_num < self.file_length_pages {
@@ -198,11 +238,41 @@ impl Pager {
                     page_box.data = buf;
                 }
             }
-            self.wal.truncate()?;
             self.dirty_pages.clear();
             self.transaction.finish();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn rollback_status_is_restored_from_wal() {
+        let path =
+            std::env::temp_dir().join(format!("aerodb-pager-rollback-{}.db", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}.wal", path.display()));
+
+        {
+            let mut pager = Pager::new(path.to_str().unwrap()).unwrap();
+            pager
+                .begin_transaction(7, Snapshot::new_for_transaction(7, 8, vec![]), None)
+                .unwrap();
+            pager.rollback_transaction().unwrap();
+        }
+
+        let pager = Pager::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            pager.transaction_table().get(&7),
+            Some(&TransactionStatus::Aborted)
+        );
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(format!("{}.wal", path.display()));
     }
 }
 
