@@ -3,7 +3,8 @@ use crate::storage::page::{
     set_next_leaf, set_node_type, set_parent, HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE,
 };
 use crate::storage::pager::Pager;
-use crate::storage::row::{Row, RowData};
+use crate::storage::row::{Row, RowData, COMMITTED_BOOTSTRAP_TX};
+use crate::transaction::{Snapshot, TransactionId};
 use log::debug;
 use std::io;
 
@@ -71,14 +72,52 @@ impl<'a> BTree<'a> {
         Ok(BTree { root_page, pager })
     }
 
-    /// Public find: returns Some(Row) if found, else None.
+    /// Public find: legacy wrapper that returns the newest non-deleted version for a logical key.
     pub fn find(&mut self, key: i32) -> io::Result<Option<Row>> {
         debug!(
-            "find() → starting at root page {} for key={}",
+            "find() → starting at root page {} for logical key={}",
             self.root_page, key
         );
 
-        self.find_in_page(self.root_page, key)
+        self.find_latest_logical(key)
+    }
+
+    /// Return the newest version of `key` visible to `snapshot`.
+    pub fn find_visible(&mut self, key: i32, snapshot: &Snapshot) -> io::Result<Option<Row>> {
+        let mut visible = None;
+        for row in self.collect_all_rows()? {
+            if row.key == key && Self::row_visible(&row, snapshot) {
+                if visible
+                    .as_ref()
+                    .map(|current: &Row| row.created_tx > current.created_tx)
+                    .unwrap_or(true)
+                {
+                    visible = Some(row);
+                }
+            }
+        }
+        Ok(visible)
+    }
+
+    fn find_latest_logical(&mut self, key: i32) -> io::Result<Option<Row>> {
+        let snapshot = Snapshot {
+            xmin: COMMITTED_BOOTSTRAP_TX,
+            xmax: TransactionId::MAX,
+            active_tx_ids: Vec::new(),
+        };
+        self.find_visible(key, &snapshot)
+    }
+
+    fn row_visible(row: &Row, snapshot: &Snapshot) -> bool {
+        let created_visible = row.created_tx < snapshot.xmax
+            && !snapshot
+                .active_tx_ids
+                .binary_search(&row.created_tx)
+                .is_ok();
+        let deleted_visible = row.deleted_tx.map(|deleted_tx| {
+            deleted_tx < snapshot.xmax && !snapshot.active_tx_ids.binary_search(&deleted_tx).is_ok()
+        });
+        created_visible && !deleted_visible.unwrap_or(false)
     }
 
     /// Recursive helper to find a key starting at page `page_num`.
@@ -153,52 +192,36 @@ impl<'a> BTree<'a> {
         res
     }
 
-    /// Delete a key from the tree. Rebuilds the tree to maintain balance.
+    /// Delete a logical key by marking its newest visible version as deleted.
     pub fn delete(&mut self, key: i32) -> io::Result<bool> {
-        // Collect all rows first
-        // Traverse leaves to gather all rows
-        let mut all_rows = Vec::new();
-        // Find leftmost leaf
-        let mut page_num = self.root_page;
-        loop {
-            let page = self.pager.get_page(page_num)?;
-            if get_node_type(&page.data) == NODE_LEAF {
-                break;
-            }
-            let left_child =
-                u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
-            page_num = left_child;
-        }
-        loop {
-            all_rows.extend(self.read_all_rows_from_leaf(page_num)?);
-            let next = get_next_leaf(&self.pager.get_page(page_num)?.data);
-            if next == 0 {
-                break;
-            }
-            page_num = next;
-        }
-        let original = all_rows.len();
-        all_rows.retain(|r| r.key != key);
-        if all_rows.len() == original {
+        let deleted_tx = self
+            .pager
+            .transaction_id()
+            .unwrap_or(COMMITTED_BOOTSTRAP_TX);
+        self.mark_deleted(key, deleted_tx)
+    }
+
+    /// Mark the newest visible version of `key` as deleted without physically rebuilding the tree.
+    pub fn mark_deleted(&mut self, key: i32, deleted_tx: TransactionId) -> io::Result<bool> {
+        let snapshot = Snapshot {
+            xmin: COMMITTED_BOOTSTRAP_TX,
+            xmax: TransactionId::MAX,
+            active_tx_ids: Vec::new(),
+        };
+        let Some(target) = self.find_visible(key, &snapshot)? else {
             return Ok(false);
-        }
-
-        // Reinitialize current root page instead of allocating new one
-        let new_root = self.root_page;
-        {
-            let page = self.pager.get_page(new_root)?;
-            set_node_type(&mut page.data, NODE_LEAF);
-            set_is_root(&mut page.data, true);
-            set_parent(&mut page.data, 0);
-            set_cell_count(&mut page.data, 0);
-            set_next_leaf(&mut page.data, 0);
-            self.pager.flush_page(new_root)?;
-        }
-
-        // Replace root and insert rows back
-        for row in all_rows {
-            self.insert(row.key, row.data.clone())?;
-        }
+        };
+        let leaf_page = self.find_leaf_page(self.root_page, key)?;
+        let mut rows = self.read_all_rows_from_leaf(leaf_page)?;
+        let Some(row) = rows
+            .iter_mut()
+            .filter(|r| r.key == key && r.created_tx == target.created_tx)
+            .max_by_key(|r| r.created_tx)
+        else {
+            return Ok(false);
+        };
+        row.deleted_tx = Some(deleted_tx);
+        self.write_all_rows_to_leaf(leaf_page, &rows)?;
         Ok(true)
     }
 
@@ -229,6 +252,32 @@ impl<'a> BTree<'a> {
         self.find_leaf_page(child_page, key)
     }
 
+    fn leftmost_leaf_page(&mut self) -> io::Result<u32> {
+        let mut page_num = self.root_page;
+        loop {
+            let page = self.pager.get_page(page_num)?;
+            if get_node_type(&page.data) == NODE_LEAF {
+                return Ok(page_num);
+            }
+            page_num =
+                u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
+        }
+    }
+
+    fn collect_all_rows(&mut self) -> io::Result<Vec<Row>> {
+        let mut rows = Vec::new();
+        let mut page_num = self.leftmost_leaf_page()?;
+        loop {
+            rows.extend(self.read_all_rows_from_leaf(page_num)?);
+            let next = get_next_leaf(&self.pager.get_page(page_num)?.data);
+            if next == 0 {
+                break;
+            }
+            page_num = next;
+        }
+        Ok(rows)
+    }
+
     /// Recursive helper to insert into page `page_num`. May split leaf or internal pages.
     fn insert_into_page(&mut self, page_num: u32, key: i32, data: RowData) -> io::Result<()> {
         let page = self.pager.get_page(page_num)?;
@@ -240,17 +289,22 @@ impl<'a> BTree<'a> {
             // Read all existing rows
             let mut rows = self.read_all_rows_from_leaf(page_num)?;
 
-            // Check duplicate
-            if rows.iter().any(|r| r.key == key) {
+            // Keep the legacy insert semantics: a logical key may not have a currently visible row.
+            if self.find_latest_logical(key)?.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     format!("Duplicate key {} not allowed", key),
                 ));
             }
 
-            // Insert new row and sort
-            rows.push(Row::new(key, data.clone()));
-            rows.sort_by_key(|r| r.key);
+            // Insert new logical row version and sort by logical key, then newest version.
+            let mut row = Row::new(key, data.clone());
+            row.created_tx = self
+                .pager
+                .transaction_id()
+                .unwrap_or(COMMITTED_BOOTSTRAP_TX);
+            rows.push(row);
+            rows.sort_by_key(|r| (r.key, r.created_tx));
 
             // Try writing back to leaf
             match self.write_all_rows_to_leaf(page_num, &rows) {
@@ -847,6 +901,24 @@ impl<'a> BTree<'a> {
         self.scan_rows_with_bounds(0, None)
     }
 
+    /// Return one visible version per logical key for `snapshot`.
+    pub fn scan_visible(&mut self, snapshot: &Snapshot) -> io::Result<Vec<Row>> {
+        let mut rows = self.collect_all_rows()?;
+        rows.retain(|row| Self::row_visible(row, snapshot));
+        rows.sort_by_key(|row| (row.key, std::cmp::Reverse(row.created_tx)));
+
+        let mut visible = Vec::new();
+        let mut last_key = None;
+        for row in rows {
+            if last_key == Some(row.key) {
+                continue;
+            }
+            last_key = Some(row.key);
+            visible.push(row);
+        }
+        Ok(visible)
+    }
+
     pub fn scan_rows_with_bounds(&'a mut self, skip: usize, limit: Option<usize>) -> RowCursor<'a> {
         // 1) Find leftmost leaf
         let mut page_num = self.root_page;
@@ -928,6 +1000,11 @@ impl<'b> Iterator for RowCursor<'b> {
                 // Advance offsets
                 self.offset = end;
                 self.rows_in_page += 1;
+
+                // Legacy scan wrapper hides versions that have been logically deleted.
+                if row.deleted_tx.is_some() {
+                    continue;
+                }
 
                 if self.skip > 0 {
                     self.skip -= 1;
