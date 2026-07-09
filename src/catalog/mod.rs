@@ -189,7 +189,7 @@ impl Catalog {
         }
 
         let transaction_id = self.allocate_transaction_id();
-        let snapshot = Snapshot::new(self.next_transaction_id, self.active_tx_ids.clone());
+        let snapshot = Snapshot::new_for_transaction(transaction_id, self.next_transaction_id, self.active_tx_ids.clone());
 
         debug!("Transaction started with id: {}, snapshot: {:?}, name: {:?}", transaction_id, snapshot, name);
         self.pager.begin_transaction(transaction_id, snapshot, name)?;
@@ -226,6 +226,10 @@ impl Catalog {
 
     pub fn transaction_snapshot(&self) -> Option<&Snapshot> {
         self.pager.transaction_snapshot()
+    }
+
+    pub fn current_snapshot(&self) -> Option<Snapshot> {
+        self.transaction_snapshot().cloned()
     }
 
     pub fn active_transaction_ids(&self) -> &[TransactionId] {

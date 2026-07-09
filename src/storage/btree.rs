@@ -4,7 +4,9 @@ use crate::storage::page::{
 };
 use crate::storage::pager::Pager;
 use crate::storage::row::{Row, RowData, COMMITTED_BOOTSTRAP_TX};
-use crate::transaction::{Snapshot, TransactionId};
+use crate::transaction::{
+    is_visible, Snapshot, TransactionId, TransactionStatus, TransactionTable,
+};
 use log::debug;
 use std::io;
 
@@ -100,24 +102,29 @@ impl<'a> BTree<'a> {
     }
 
     fn find_latest_logical(&mut self, key: i32) -> io::Result<Option<Row>> {
-        let snapshot = Snapshot {
-            xmin: COMMITTED_BOOTSTRAP_TX,
-            xmax: TransactionId::MAX,
-            active_tx_ids: Vec::new(),
-        };
+        let snapshot = Snapshot::new(TransactionId::MAX, Vec::new());
         self.find_visible(key, &snapshot)
     }
 
     fn row_visible(row: &Row, snapshot: &Snapshot) -> bool {
-        let created_visible = row.created_tx < snapshot.xmax
+        let mut tx_table = TransactionTable::new();
+        tx_table.insert(COMMITTED_BOOTSTRAP_TX, TransactionStatus::Committed);
+        if row.created_tx < snapshot.xmax
             && !snapshot
                 .active_tx_ids
                 .binary_search(&row.created_tx)
-                .is_ok();
-        let deleted_visible = row.deleted_tx.map(|deleted_tx| {
-            deleted_tx < snapshot.xmax && !snapshot.active_tx_ids.binary_search(&deleted_tx).is_ok()
-        });
-        created_visible && !deleted_visible.unwrap_or(false)
+                .is_ok()
+        {
+            tx_table.insert(row.created_tx, TransactionStatus::Committed);
+        }
+        if let Some(deleted_tx) = row.deleted_tx {
+            if deleted_tx < snapshot.xmax
+                && !snapshot.active_tx_ids.binary_search(&deleted_tx).is_ok()
+            {
+                tx_table.insert(deleted_tx, TransactionStatus::Committed);
+            }
+        }
+        is_visible(row, snapshot, &tx_table)
     }
 
     /// Recursive helper to find a key starting at page `page_num`.
@@ -203,11 +210,7 @@ impl<'a> BTree<'a> {
 
     /// Mark the newest visible version of `key` as deleted without physically rebuilding the tree.
     pub fn mark_deleted(&mut self, key: i32, deleted_tx: TransactionId) -> io::Result<bool> {
-        let snapshot = Snapshot {
-            xmin: COMMITTED_BOOTSTRAP_TX,
-            xmax: TransactionId::MAX,
-            active_tx_ids: Vec::new(),
-        };
+        let snapshot = Snapshot::new(TransactionId::MAX, Vec::new());
         let Some(target) = self.find_visible(key, &snapshot)? else {
             return Ok(false);
         };

@@ -29,10 +29,27 @@ pub struct Snapshot {
     pub xmin: TransactionId,
     pub xmax: TransactionId,
     pub active_tx_ids: Vec<TransactionId>,
+    pub current_tx_id: Option<TransactionId>,
 }
 
 impl Snapshot {
-    pub fn new(xmax: TransactionId, mut active_tx_ids: Vec<TransactionId>) -> Self {
+    pub fn new(xmax: TransactionId, active_tx_ids: Vec<TransactionId>) -> Self {
+        Self::new_with_current(xmax, active_tx_ids, None)
+    }
+
+    pub fn new_for_transaction(
+        current_tx_id: TransactionId,
+        xmax: TransactionId,
+        active_tx_ids: Vec<TransactionId>,
+    ) -> Self {
+        Self::new_with_current(xmax, active_tx_ids, Some(current_tx_id))
+    }
+
+    fn new_with_current(
+        xmax: TransactionId,
+        mut active_tx_ids: Vec<TransactionId>,
+        current_tx_id: Option<TransactionId>,
+    ) -> Self {
         active_tx_ids.sort_unstable();
         active_tx_ids.dedup();
         let xmin = active_tx_ids.first().copied().unwrap_or(xmax);
@@ -41,6 +58,7 @@ impl Snapshot {
             xmin,
             xmax,
             active_tx_ids,
+            current_tx_id,
         }
     }
 }

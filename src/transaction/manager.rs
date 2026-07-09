@@ -15,6 +15,10 @@ impl TransactionManager {
         Self::default()
     }
 
+    pub fn current_snapshot(&self, catalog: &Catalog) -> Option<crate::transaction::Snapshot> {
+        catalog.current_snapshot()
+    }
+
     pub fn execute<F>(
         &mut self,
         catalog: &mut Catalog,
