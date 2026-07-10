@@ -1,11 +1,12 @@
 use crate::storage::page::{
-    HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE, get_cell_count, get_next_leaf, get_node_type,
-    get_parent, set_cell_count, set_is_root, set_next_leaf, set_node_type, set_parent,
+    get_cell_count, get_next_leaf, get_node_type, get_parent, set_cell_count, set_is_root,
+    set_next_leaf, set_node_type, set_parent, HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE,
 };
 use crate::storage::pager::Pager;
-use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, Row, RowData};
+use crate::storage::row::{Row, RowData, COMMITTED_BOOTSTRAP_TX};
+use crate::storage::vacuum::deleted_version_is_removable;
 use crate::transaction::{
-    Snapshot, TransactionId, TransactionStatus, TransactionTable, is_visible,
+    is_visible, Snapshot, TransactionId, TransactionStatus, TransactionTable,
 };
 use log::debug;
 use std::io;
@@ -354,6 +355,37 @@ impl<'a> BTree<'a> {
             page_num = next;
         }
         Ok(rows)
+    }
+
+    /// Physically remove deleted row versions that are older than every active
+    /// snapshot boundary. This is an explicit maintenance API; it is never
+    /// called automatically by DML paths.
+    pub fn vacuum_deleted_versions(
+        &mut self,
+        global_xmin: TransactionId,
+        tx_table: &TransactionTable,
+    ) -> io::Result<usize> {
+        let mut removed = 0;
+        let mut page_num = self.leftmost_leaf_page()?;
+        loop {
+            let rows = self.read_all_rows_from_leaf(page_num)?;
+            let before = rows.len();
+            let kept: Vec<Row> = rows
+                .into_iter()
+                .filter(|row| !deleted_version_is_removable(row.deleted_tx, global_xmin, tx_table))
+                .collect();
+            removed += before - kept.len();
+            if kept.len() != before {
+                self.write_all_rows_to_leaf(page_num, &kept)?;
+            }
+
+            let next = get_next_leaf(&self.pager.get_page(page_num)?.data);
+            if next == 0 {
+                break;
+            }
+            page_num = next;
+        }
+        Ok(removed)
     }
 
     fn insert_row_version_into_page(&mut self, page_num: u32, row: Row) -> io::Result<()> {
@@ -1171,11 +1203,9 @@ mod tests {
 
         btree.insert_version(row_with_tx(1, "after", 4)).unwrap();
 
-        assert!(
-            btree
-                .has_write_conflict(1, visible.created_tx, &snapshot)
-                .unwrap()
-        );
+        assert!(btree
+            .has_write_conflict(1, visible.created_tx, &snapshot)
+            .unwrap());
     }
 
     #[test]
@@ -1189,10 +1219,36 @@ mod tests {
 
         assert!(btree.mark_deleted_visible(1, &snapshot, 4).unwrap());
 
-        assert!(
-            btree
-                .has_write_conflict(1, visible.created_tx, &snapshot)
-                .unwrap()
-        );
+        assert!(btree
+            .has_write_conflict(1, visible.created_tx, &snapshot)
+            .unwrap());
+    }
+
+    #[test]
+    fn vacuum_prunes_only_committed_deletes_below_global_xmin() {
+        let file = NamedTempFile::new().unwrap();
+        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&mut pager).unwrap();
+        let mut removable = row_with_tx(1, "old", 1);
+        removable.deleted_tx = Some(3);
+        let mut active_delete = row_with_tx(2, "active-delete", 1);
+        active_delete.deleted_tx = Some(4);
+        let mut protected = row_with_tx(3, "protected", 1);
+        protected.deleted_tx = Some(7);
+        btree.insert_version(removable).unwrap();
+        btree.insert_version(active_delete).unwrap();
+        btree.insert_version(protected).unwrap();
+
+        let tx_table = TransactionTable::from([
+            (3, TransactionStatus::Committed(1)),
+            (4, TransactionStatus::Active),
+            (7, TransactionStatus::Committed(2)),
+        ]);
+
+        assert_eq!(btree.vacuum_deleted_versions(6, &tx_table).unwrap(), 1);
+        let rows = btree.collect_all_rows().unwrap();
+        assert!(rows.iter().all(|row| row.key != 1));
+        assert!(rows.iter().any(|row| row.key == 2));
+        assert!(rows.iter().any(|row| row.key == 3));
     }
 }
