@@ -3,6 +3,7 @@ use crate::storage::btree::BTree;
 use crate::storage::page::PAGE_SIZE;
 use crate::storage::pager::Pager;
 use crate::storage::row::{ColumnType, ColumnValue, Row, RowData};
+use crate::storage::vacuum::VacuumReport;
 use crate::transaction::{IsolationLevel, Snapshot, TransactionId};
 use log::debug;
 use std::collections::HashMap;
@@ -299,6 +300,19 @@ impl Catalog {
 
     pub fn active_transaction_ids(&self) -> &[TransactionId] {
         &self.active_tx_ids
+    }
+
+    /// Oldest snapshot boundary that can still observe deleted versions.
+    ///
+    /// When there are no active transactions, the next transaction id is the
+    /// safe cutoff; otherwise the oldest active transaction id protects all
+    /// versions deleted by that transaction or newer transactions.
+    pub fn global_xmin(&self) -> TransactionId {
+        self.active_tx_ids
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(self.next_transaction_id)
     }
 
     fn allocate_transaction_id(&mut self) -> TransactionId {
@@ -675,6 +689,88 @@ impl Catalog {
 
     pub fn all_indexes(&self) -> Vec<IndexInfo> {
         self.indexes.values().cloned().collect()
+    }
+
+    /// Explicit internal maintenance API for physically pruning obsolete MVCC
+    /// versions from one table and lazily rebuilding that table's indexes to
+    /// remove stale index candidates left behind by UPDATE/DELETE.
+    pub fn vacuum_table(&mut self, table_name: &str) -> io::Result<VacuumReport> {
+        let table = self.get_table(table_name)?.clone();
+        let global_xmin = self.global_xmin();
+        let tx_table = self.pager.transaction_table().clone();
+
+        let versions_removed = {
+            let mut table_tree = BTree::open_root(&mut self.pager, table.root_page)?;
+            table_tree.vacuum_deleted_versions(global_xmin, &tx_table)?
+        };
+
+        let indexes_cleaned = if versions_removed > 0 {
+            self.rebuild_indexes_for_table(table_name)?
+        } else {
+            0
+        };
+        Ok(VacuumReport {
+            versions_removed,
+            indexes_cleaned,
+        })
+    }
+
+    fn rebuild_indexes_for_table(&mut self, table_name: &str) -> io::Result<usize> {
+        let table = self.get_table(table_name)?.clone();
+        let index_names: Vec<String> = self
+            .indexes
+            .values()
+            .filter(|index| index.table_name == table_name)
+            .map(|index| index.name.clone())
+            .collect();
+        let mut rebuilt = 0;
+
+        for index_name in index_names {
+            let index = self.indexes.get(&index_name).cloned().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "index disappeared during vacuum")
+            })?;
+            let col_idx = table
+                .columns
+                .iter()
+                .position(|(column, _)| column == &index.column_name)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "index column not found"))?;
+
+            let mut rows = Vec::new();
+            {
+                let mut table_tree = BTree::open_root(&mut self.pager, table.root_page)?;
+                let mut cursor = table_tree.scan_all_rows();
+                while let Some(row) = cursor.next() {
+                    rows.push(row);
+                }
+            }
+
+            let mut new_root = self.pager.allocate_page()?;
+            {
+                let page = self.pager.get_page(new_root)?;
+                crate::storage::page::set_node_type(
+                    &mut page.data,
+                    crate::storage::page::NODE_LEAF,
+                );
+                crate::storage::page::set_is_root(&mut page.data, true);
+                crate::storage::page::set_parent(&mut page.data, 0);
+                crate::storage::page::set_cell_count(&mut page.data, 0);
+                self.pager.flush_page(new_root)?;
+            }
+            {
+                let mut index_tree = BTree::open_root(&mut self.pager, new_root)?;
+                for row in rows {
+                    if let Some(value) = row.data.0.get(col_idx).cloned() {
+                        new_root = Catalog::insert_index_value(&mut index_tree, value, row.key)?;
+                    }
+                }
+            }
+            if let Some(index_info) = self.indexes.get_mut(&index_name) {
+                index_info.root_page = new_root;
+            }
+            rebuilt += 1;
+        }
+
+        Ok(rebuilt)
     }
 
     /// Drop a table if it exists. Returns true if the table was removed.
