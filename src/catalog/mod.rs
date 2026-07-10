@@ -3,7 +3,7 @@ use crate::storage::btree::BTree;
 use crate::storage::page::PAGE_SIZE;
 use crate::storage::pager::Pager;
 use crate::storage::row::{ColumnType, ColumnValue, Row, RowData};
-use crate::transaction::{Snapshot, TransactionId};
+use crate::transaction::{IsolationLevel, Snapshot, TransactionId};
 use log::debug;
 use std::collections::HashMap;
 use std::io;
@@ -230,6 +230,14 @@ impl Catalog {
     }
 
     pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
+        self.begin_transaction_with_isolation(name, IsolationLevel::default())
+    }
+
+    pub fn begin_transaction_with_isolation(
+        &mut self,
+        name: Option<String>,
+        isolation_level: IsolationLevel,
+    ) -> io::Result<()> {
         if self.transaction_active() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -245,11 +253,11 @@ impl Catalog {
         );
 
         debug!(
-            "Transaction started with id: {}, snapshot: {:?}, name: {:?}",
-            transaction_id, snapshot, name
+            "Transaction started with id: {}, snapshot: {:?}, name: {:?}, isolation: {:?}",
+            transaction_id, snapshot, name, isolation_level
         );
         self.pager
-            .begin_transaction(transaction_id, snapshot, name)?;
+            .begin_transaction(transaction_id, snapshot, name, isolation_level)?;
         self.active_tx_ids.push(transaction_id);
         Ok(())
     }
