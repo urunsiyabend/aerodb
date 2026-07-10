@@ -101,6 +101,47 @@ impl<'a> BTree<'a> {
         Ok(visible)
     }
 
+    /// Return true when the logical key visible in `snapshot` has been changed
+    /// by another transaction that was not visible to that snapshot. UPDATE and
+    /// DELETE use this to provide snapshot-isolation write/write conflict
+    /// detection before they mark the visible version as deleted.
+    pub fn has_write_conflict(
+        &mut self,
+        key: i32,
+        visible_created_tx: TransactionId,
+        snapshot: &Snapshot,
+    ) -> io::Result<bool> {
+        let current_tx = snapshot.current_tx_id;
+        for row in self.collect_all_rows()? {
+            if row.key != key {
+                continue;
+            }
+
+            if row.created_tx != visible_created_tx
+                && Self::changed_after_snapshot(row.created_tx, snapshot)
+                && Some(row.created_tx) != current_tx
+            {
+                return Ok(true);
+            }
+
+            if row.created_tx == visible_created_tx {
+                if let Some(deleted_tx) = row.deleted_tx {
+                    if Self::changed_after_snapshot(deleted_tx, snapshot)
+                        && Some(deleted_tx) != current_tx
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn changed_after_snapshot(tx_id: TransactionId, snapshot: &Snapshot) -> bool {
+        tx_id >= snapshot.xmax || snapshot.active_tx_ids.binary_search(&tx_id).is_ok()
+    }
+
     fn find_latest_logical(&mut self, key: i32) -> io::Result<Option<Row>> {
         let snapshot = Snapshot::new(TransactionId::MAX, Vec::new());
         self.find_visible(key, &snapshot)
@@ -1102,5 +1143,56 @@ impl<'b> Iterator for RowCursor<'b> {
             self.offset = HEADER_SIZE;
             self.rows_in_page = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    fn row_with_tx(key: i32, value: &str, created_tx: TransactionId) -> Row {
+        let mut row = Row::new(
+            key,
+            RowData(vec![crate::storage::row::ColumnValue::Text(value.into())]),
+        );
+        row.created_tx = created_tx;
+        row
+    }
+
+    #[test]
+    fn write_conflict_detects_version_created_after_snapshot() {
+        let file = NamedTempFile::new().unwrap();
+        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&mut pager).unwrap();
+        btree.insert_version(row_with_tx(1, "before", 1)).unwrap();
+        let snapshot = Snapshot::new_for_transaction(2, 3, vec![]);
+        let visible = btree.find_visible(1, &snapshot).unwrap().unwrap();
+
+        btree.insert_version(row_with_tx(1, "after", 4)).unwrap();
+
+        assert!(
+            btree
+                .has_write_conflict(1, visible.created_tx, &snapshot)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn write_conflict_detects_delete_after_snapshot() {
+        let file = NamedTempFile::new().unwrap();
+        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&mut pager).unwrap();
+        btree.insert_version(row_with_tx(1, "before", 1)).unwrap();
+        let snapshot = Snapshot::new_for_transaction(2, 3, vec![]);
+        let visible = btree.find_visible(1, &snapshot).unwrap().unwrap();
+
+        assert!(btree.mark_deleted_visible(1, &snapshot, 4).unwrap());
+
+        assert!(
+            btree
+                .has_write_conflict(1, visible.created_tx, &snapshot)
+                .unwrap()
+        );
     }
 }

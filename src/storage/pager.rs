@@ -1,6 +1,7 @@
 use crate::storage::{dirty_pages::DirtyPageSet, page::PAGE_SIZE};
 use crate::transaction::{
-    wal::Wal, Snapshot, TransactionId, TransactionState, TransactionStatus, TransactionTable,
+    IsolationLevel, Snapshot, TransactionId, TransactionState, TransactionStatus, TransactionTable,
+    wal::Wal,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -171,8 +172,9 @@ impl Pager {
         id: TransactionId,
         snapshot: Snapshot,
         name: Option<String>,
+        isolation_level: IsolationLevel,
     ) -> io::Result<()> {
-        self.transaction.begin(id, snapshot, name);
+        self.transaction.begin(id, snapshot, name, isolation_level);
         self.tx_table.insert(id, TransactionStatus::Active);
         self.wal.append_tx_status(id, TransactionStatus::Active)?;
         self.dirty_pages.clear();
@@ -260,7 +262,12 @@ mod tests {
         {
             let mut pager = Pager::new(path.to_str().unwrap()).unwrap();
             pager
-                .begin_transaction(7, Snapshot::new_for_transaction(7, 8, vec![]), None)
+                .begin_transaction(
+                    7,
+                    Snapshot::new_for_transaction(7, 8, vec![]),
+                    None,
+                    IsolationLevel::Snapshot,
+                )
                 .unwrap();
             pager.rollback_transaction().unwrap();
         }

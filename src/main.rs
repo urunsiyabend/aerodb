@@ -63,6 +63,7 @@ fn main() -> io::Result<()> {
                         DbError::NotFound(m) => println!("Error: {}", m),
                         DbError::NullViolation(c) => println!("Error: column '{}' cannot be NULL", c),
                         DbError::ForeignKeyViolation(m) => println!("Error: {}", m),
+                        DbError::WriteConflict(k) => println!("Error: write conflict on logical key {}", k),
                         DbError::Io(err) => println!("IO error: {}", err),
                     }
                 }

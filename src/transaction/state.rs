@@ -23,6 +23,21 @@ impl Default for TransactionMode {
 /// added later through WAL/metastore integration.
 pub type TransactionId = u64;
 
+/// SQL transaction isolation levels. The parser does not expose `SET TRANSACTION
+/// ISOLATION LEVEL` yet, but keeping the isolation decision explicit here lets
+/// that syntax select a policy without reshaping transaction state later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolationLevel {
+    /// One snapshot is captured at BEGIN and reused for the whole transaction.
+    Snapshot,
+}
+
+impl Default for IsolationLevel {
+    fn default() -> Self {
+        Self::Snapshot
+    }
+}
+
 /// MVCC snapshot captured when a transaction starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -72,6 +87,7 @@ pub struct TransactionState {
     id: Option<TransactionId>,
     snapshot: Option<Snapshot>,
     name: Option<String>,
+    isolation_level: IsolationLevel,
 }
 
 impl TransactionState {
@@ -79,11 +95,18 @@ impl TransactionState {
         self.active
     }
 
-    pub fn begin(&mut self, id: TransactionId, snapshot: Snapshot, name: Option<String>) {
+    pub fn begin(
+        &mut self,
+        id: TransactionId,
+        snapshot: Snapshot,
+        name: Option<String>,
+        isolation_level: IsolationLevel,
+    ) {
         self.active = true;
         self.id = Some(id);
         self.snapshot = Some(snapshot);
         self.name = name;
+        self.isolation_level = isolation_level;
     }
 
     pub fn finish(&mut self) {
@@ -91,6 +114,7 @@ impl TransactionState {
         self.id = None;
         self.snapshot = None;
         self.name = None;
+        self.isolation_level = IsolationLevel::default();
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -104,6 +128,10 @@ impl TransactionState {
     pub fn snapshot(&self) -> Option<&Snapshot> {
         self.snapshot.as_ref()
     }
+
+    pub fn isolation_level(&self) -> IsolationLevel {
+        self.isolation_level
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +144,12 @@ mod tests {
         assert!(!state.is_active());
 
         let snapshot = Snapshot::new(2, vec![1]);
-        state.begin(2, snapshot.clone(), Some("tx".to_string()));
+        state.begin(
+            2,
+            snapshot.clone(),
+            Some("tx".to_string()),
+            IsolationLevel::Snapshot,
+        );
         assert!(state.is_active());
         assert_eq!(state.id(), Some(2));
         assert_eq!(state.snapshot(), Some(&snapshot));

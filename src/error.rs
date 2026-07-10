@@ -1,5 +1,5 @@
-use thiserror::Error;
 use std::io;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -23,6 +23,8 @@ pub enum DbError {
     GroupByMismatch(String),
     #[error("{0} not found")]
     NotFound(String),
+    #[error("write conflict on logical key {0}")]
+    WriteConflict(i32),
     #[error(transparent)]
     Io(#[from] io::Error),
 }

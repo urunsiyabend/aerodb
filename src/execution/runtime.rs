@@ -61,6 +61,18 @@ fn current_tx_id(catalog: &Catalog) -> u64 {
         .unwrap_or(COMMITTED_BOOTSTRAP_TX)
 }
 
+fn ensure_no_write_conflict(
+    table_btree: &mut BTree<'_>,
+    key: i32,
+    visible_created_tx: u64,
+    snapshot: &Snapshot,
+) -> DbResult<()> {
+    if table_btree.has_write_conflict(key, visible_created_tx, snapshot)? {
+        return Err(DbError::WriteConflict(key));
+    }
+    Ok(())
+}
+
 pub fn execute_delete(
     catalog: &mut Catalog,
     table_name: &str,
@@ -108,6 +120,7 @@ pub fn execute_delete(
             let tx_id = current_tx_id(catalog);
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
             for r in &rows_to_delete {
+                ensure_no_write_conflict(&mut table_btree, r.key, r.created_tx, &snapshot)?;
                 table_btree.mark_deleted_visible(r.key, &snapshot, tx_id)?;
             }
             let new_root = table_btree.root_page();
@@ -339,6 +352,12 @@ pub fn execute_update(
             let tx_id = current_tx_id(catalog);
             let mut table_btree = BTree::open_root(&mut catalog.pager, root_page)?;
             for op in &ops {
+                ensure_no_write_conflict(
+                    &mut table_btree,
+                    op.old_key,
+                    op.old_created_tx,
+                    &snapshot,
+                )?;
                 table_btree.mark_deleted_visible(op.old_key, &snapshot, tx_id)?;
                 let mut new_row = Row::new(op.new_key, op.new_data.clone());
                 new_row.created_tx = tx_id;
