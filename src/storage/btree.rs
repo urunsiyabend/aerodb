@@ -1,12 +1,12 @@
 use crate::storage::page::{
-    get_cell_count, get_next_leaf, get_node_type, get_parent, set_cell_count, set_is_root,
-    set_next_leaf, set_node_type, set_parent, HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE,
+    HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE, get_cell_count, get_next_leaf, get_node_type,
+    get_parent, set_cell_count, set_is_root, set_next_leaf, set_node_type, set_parent,
 };
 use crate::storage::pager::Pager;
-use crate::storage::row::{Row, RowData, COMMITTED_BOOTSTRAP_TX};
+use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, Row, RowData};
 use crate::storage::vacuum::deleted_version_is_removable;
 use crate::transaction::{
-    is_visible, Snapshot, TransactionId, TransactionStatus, TransactionTable,
+    Snapshot, TransactionId, TransactionStatus, TransactionTable, is_visible,
 };
 use log::debug;
 use std::io;
@@ -355,6 +355,13 @@ impl<'a> BTree<'a> {
             page_num = next;
         }
         Ok(rows)
+    }
+
+    /// Return every physical row version, including versions that have been
+    /// logically deleted. Commit-time constraint rechecks use this to validate
+    /// rows written or deleted by the committing transaction.
+    pub fn all_versions(&mut self) -> io::Result<Vec<Row>> {
+        self.collect_all_rows()
     }
 
     /// Physically remove deleted row versions that are older than every active
@@ -1203,9 +1210,11 @@ mod tests {
 
         btree.insert_version(row_with_tx(1, "after", 4)).unwrap();
 
-        assert!(btree
-            .has_write_conflict(1, visible.created_tx, &snapshot)
-            .unwrap());
+        assert!(
+            btree
+                .has_write_conflict(1, visible.created_tx, &snapshot)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1219,9 +1228,11 @@ mod tests {
 
         assert!(btree.mark_deleted_visible(1, &snapshot, 4).unwrap());
 
-        assert!(btree
-            .has_write_conflict(1, visible.created_tx, &snapshot)
-            .unwrap());
+        assert!(
+            btree
+                .has_write_conflict(1, visible.created_tx, &snapshot)
+                .unwrap()
+        );
     }
 
     #[test]
