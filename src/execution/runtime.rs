@@ -111,7 +111,7 @@ pub fn execute_delete(
                 fks: &table_info.fks,
             };
             for row in &rows_to_delete {
-                fk_cons.validate_delete(catalog, &table_info, &row.data)?;
+                fk_cons.validate_delete(catalog, &table_info, &row.data, &dml_snapshot(catalog))?;
             }
 
             let count = rows_to_delete.len();
@@ -298,12 +298,22 @@ pub fn execute_update(
 
             for op in &mut ops {
                 let nn = NotNullConstraint;
-                nn.validate_insert(catalog, &table_info, &mut op.new_data)?;
+                nn.validate_insert(
+                    catalog,
+                    &table_info,
+                    &mut op.new_data,
+                    &dml_snapshot(catalog),
+                )?;
 
                 let fk_cons = ForeignKeyConstraint {
                     fks: &table_info.fks,
                 };
-                fk_cons.validate_insert(catalog, &table_info, &mut op.new_data)?;
+                fk_cons.validate_insert(
+                    catalog,
+                    &table_info,
+                    &mut op.new_data,
+                    &dml_snapshot(catalog),
+                )?;
             }
 
             if let Some(ref pk_cols) = table_info.primary_key {
@@ -518,13 +528,18 @@ pub fn execute_insert(
                 build_row_data(&vals, &columns_meta).map_err(|e| DbError::InvalidValue(e))?;
 
             let nn = NotNullConstraint;
-            nn.validate_insert(catalog, &table_info, &mut row_data)?;
+            nn.validate_insert(catalog, &table_info, &mut row_data, &dml_snapshot(catalog))?;
 
             let fk_cons = ForeignKeyConstraint { fks: &fks };
-            fk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
+            fk_cons.validate_insert(catalog, &table_info, &mut row_data, &dml_snapshot(catalog))?;
             if let Some(ref pk_cols) = table_info.primary_key {
                 let pk_cons = PrimaryKeyConstraint { columns: pk_cols };
-                pk_cons.validate_insert(catalog, &table_info, &mut row_data)?;
+                pk_cons.validate_insert(
+                    catalog,
+                    &table_info,
+                    &mut row_data,
+                    &dml_snapshot(catalog),
+                )?;
             }
             let key = match row_data.0.get(0) {
                 Some(ColumnValue::Integer(i)) => *i,

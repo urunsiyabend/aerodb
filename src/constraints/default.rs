@@ -1,7 +1,7 @@
-use crate::sql::ast::Expr;
-use crate::storage::row::ColumnValue;
-use crate::sql::functions::FunctionEvaluator;
 use crate::error::{DbError, DbResult};
+use crate::sql::ast::Expr;
+use crate::sql::functions::FunctionEvaluator;
+use crate::storage::row::ColumnValue;
 
 pub struct DefaultConstraint;
 
@@ -22,17 +22,26 @@ impl DefaultConstraint {
                     Err(_) => Err(DbError::InvalidValue("function error".into())),
                 }
             }
-            _ => Err(DbError::InvalidValue("unsupported default expression".into())),
+            _ => Err(DbError::InvalidValue(
+                "unsupported default expression".into(),
+            )),
         }
     }
 }
 
+use super::Constraint;
 use crate::catalog::{Catalog, TableInfo};
 use crate::storage::row::RowData;
-use super::Constraint;
+use crate::transaction::Snapshot;
 
 impl Constraint for DefaultConstraint {
-    fn validate_insert(&self, _catalog: &mut Catalog, _table: &TableInfo, _row: &mut RowData) -> DbResult<()> {
+    fn validate_insert(
+        &self,
+        _catalog: &mut Catalog,
+        _table: &TableInfo,
+        _row: &mut RowData,
+        _snapshot: &Snapshot,
+    ) -> DbResult<()> {
         Ok(())
     }
 }

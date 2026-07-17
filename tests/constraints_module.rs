@@ -1,8 +1,12 @@
-use aerodb::constraints::{Constraint, not_null::NotNullConstraint, default::DefaultConstraint, foreign_key::ForeignKeyConstraint};
-use aerodb::storage::row::{RowData, ColumnValue, ColumnType};
 use aerodb::catalog::{Catalog, TableInfo};
+use aerodb::constraints::{
+    Constraint, default::DefaultConstraint, foreign_key::ForeignKeyConstraint,
+    not_null::NotNullConstraint,
+};
 use aerodb::sql::ast::ForeignKey;
 use aerodb::storage::pager::Pager;
+use aerodb::storage::row::{ColumnType, ColumnValue, RowData};
+use aerodb::transaction::Snapshot;
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -26,7 +30,12 @@ fn not_null_constraint_fails_on_null() {
     let mut row = RowData(vec![ColumnValue::Null]);
     let mut catalog = setup_catalog("nn_fail.db");
     let constraint = NotNullConstraint;
-    let res = constraint.validate_insert(&mut catalog, &table, &mut row);
+    let res = constraint.validate_insert(
+        &mut catalog,
+        &table,
+        &mut row,
+        &Snapshot::new(u64::MAX, Vec::new()),
+    );
     assert!(res.is_err());
 }
 
@@ -67,7 +76,13 @@ fn foreign_key_constraint_detects_missing_parent() {
         not_null: vec![false],
         default_values: vec![None],
         auto_increment: vec![false],
-        fks: vec![ForeignKey { columns: vec!["pid".into()], parent_table: "p".into(), parent_columns: vec!["id".into()], on_delete: None, on_update: None }],
+        fks: vec![ForeignKey {
+            columns: vec!["pid".into()],
+            parent_table: "p".into(),
+            parent_columns: vec!["id".into()],
+            on_delete: None,
+            on_update: None,
+        }],
         primary_key: None,
     };
     catalog
@@ -80,6 +95,11 @@ fn foreign_key_constraint_detects_missing_parent() {
         .unwrap();
     let mut row = RowData(vec![ColumnValue::Integer(1)]);
     let constraint = ForeignKeyConstraint { fks: &child.fks };
-    let res = constraint.validate_insert(&mut catalog, &child, &mut row);
+    let res = constraint.validate_insert(
+        &mut catalog,
+        &child,
+        &mut row,
+        &Snapshot::new(u64::MAX, Vec::new()),
+    );
     assert!(res.is_err());
 }

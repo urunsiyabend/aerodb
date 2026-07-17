@@ -266,9 +266,142 @@ impl Catalog {
     pub fn commit_transaction(&mut self) -> io::Result<()> {
         let transaction_id = self.transaction_id();
         debug!("Transaction committed: {:?}", transaction_id);
+        if let Some(transaction_id) = transaction_id {
+            self.recheck_constraints_for_commit(transaction_id)
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        }
         self.pager.commit_transaction()?;
         if let Some(transaction_id) = transaction_id {
             self.finish_transaction_id(transaction_id);
+        }
+        Ok(())
+    }
+
+    fn recheck_constraints_for_commit(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> crate::error::DbResult<()> {
+        let snapshot =
+            Snapshot::new_for_transaction(transaction_id, TransactionId::MAX, Vec::new());
+        let tables = self.all_tables();
+
+        for table in &tables {
+            if let Some(pk_cols) = &table.primary_key {
+                let mut tree = BTree::open_root(&mut self.pager, table.root_page)?;
+                let rows = tree.scan_visible(&snapshot)?;
+                for (idx, row) in rows.iter().enumerate() {
+                    if row.created_tx != transaction_id {
+                        continue;
+                    }
+                    if rows.iter().skip(idx + 1).any(|other| {
+                        pk_cols.iter().all(|col| {
+                            table
+                                .columns
+                                .iter()
+                                .position(|(name, _)| name == col)
+                                .map(|pos| row.data.0[pos] == other.data.0[pos])
+                                .unwrap_or(false)
+                        })
+                    }) {
+                        return Err(crate::error::DbError::DuplicateKey(row.key));
+                    }
+                }
+            }
+
+            let mut tree = BTree::open_root(&mut self.pager, table.root_page)?;
+            let versions = tree.all_versions()?;
+            drop(tree);
+
+            for row in versions
+                .iter()
+                .filter(|row| row.created_tx == transaction_id && row.deleted_tx.is_none())
+            {
+                self.recheck_foreign_keys_for_row(table, &row.data, &snapshot)?;
+            }
+
+            for row in versions
+                .iter()
+                .filter(|row| row.deleted_tx == Some(transaction_id))
+            {
+                self.recheck_referential_delete_for_row(table, &row.data, &snapshot)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn recheck_foreign_keys_for_row(
+        &mut self,
+        table: &TableInfo,
+        row: &RowData,
+        snapshot: &Snapshot,
+    ) -> crate::error::DbResult<()> {
+        for fk in &table.fks {
+            if fk.columns.is_empty() || fk.parent_columns.is_empty() {
+                continue;
+            }
+            let child_idx = table
+                .columns
+                .iter()
+                .position(|(name, _)| name == &fk.columns[0])
+                .ok_or_else(|| crate::error::DbError::ColumnNotFound(fk.columns[0].clone()))?;
+            let ColumnValue::Integer(child_val) = row.0[child_idx] else {
+                return Err(crate::error::DbError::InvalidValue(
+                    "FK column must be INTEGER".into(),
+                ));
+            };
+            let parent = self.get_table(&fk.parent_table)?.clone();
+            let mut parent_tree = BTree::open_root(&mut self.pager, parent.root_page)?;
+            if parent_tree.find_visible(child_val, snapshot)?.is_none() {
+                return Err(crate::error::DbError::ForeignKeyViolation(format!(
+                    "{} {}",
+                    fk.parent_table, child_val
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn recheck_referential_delete_for_row(
+        &mut self,
+        table: &TableInfo,
+        row: &RowData,
+        snapshot: &Snapshot,
+    ) -> crate::error::DbResult<()> {
+        for child in self.all_tables() {
+            for fk in &child.fks {
+                if fk.parent_table != table.name
+                    || fk.columns.is_empty()
+                    || fk.parent_columns.is_empty()
+                {
+                    continue;
+                }
+                if fk.on_delete == Some(crate::sql::ast::Action::Cascade) {
+                    continue;
+                }
+                let parent_idx = table
+                    .columns
+                    .iter()
+                    .position(|(name, _)| name == &fk.parent_columns[0])
+                    .unwrap();
+                let ColumnValue::Integer(parent_val) = row.0[parent_idx] else {
+                    continue;
+                };
+                let child_idx = child
+                    .columns
+                    .iter()
+                    .position(|(name, _)| name == &fk.columns[0])
+                    .unwrap();
+                let mut child_tree = BTree::open_root(&mut self.pager, child.root_page)?;
+                for child_row in child_tree.scan_visible(snapshot)? {
+                    if child_row.data.0[child_idx] == ColumnValue::Integer(parent_val) {
+                        return Err(crate::error::DbError::ForeignKeyViolation(format!(
+                            "Cannot delete {}: referenced by {}.{}",
+                            table.name, child.name, fk.columns[0]
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }

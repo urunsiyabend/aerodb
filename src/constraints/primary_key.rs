@@ -3,6 +3,7 @@ use crate::catalog::{Catalog, TableInfo};
 use crate::error::{DbError, DbResult};
 use crate::storage::btree::BTree;
 use crate::storage::row::{ColumnValue, RowData};
+use crate::transaction::Snapshot;
 
 pub struct PrimaryKeyConstraint<'a> {
     pub columns: &'a [String],
@@ -14,6 +15,7 @@ impl<'a> Constraint for PrimaryKeyConstraint<'a> {
         catalog: &mut Catalog,
         table: &TableInfo,
         row: &mut RowData,
+        snapshot: &Snapshot,
     ) -> DbResult<()> {
         // ensure not null
         for col in self.columns {
@@ -24,11 +26,8 @@ impl<'a> Constraint for PrimaryKeyConstraint<'a> {
             }
         }
         // check uniqueness
-        let snapshot = catalog
-            .current_snapshot()
-            .unwrap_or_else(|| crate::transaction::Snapshot::new(u64::MAX, Vec::new()));
         let mut btree = BTree::open_root(&mut catalog.pager, table.root_page)?;
-        for existing in btree.scan_visible(&snapshot)? {
+        for existing in btree.scan_visible(snapshot)? {
             let mut equal = true;
             for col in self.columns {
                 if let Some(idx) = table.columns.iter().position(|(c, _)| c == col) {
