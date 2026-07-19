@@ -4,8 +4,7 @@ use crate::storage::page::PAGE_SIZE;
 use crate::storage::pager::Pager;
 use crate::storage::row::{ColumnType, ColumnValue, Row, RowData};
 use crate::storage::vacuum::VacuumReport;
-use crate::transaction::{IsolationLevel, Snapshot, TransactionId};
-use log::debug;
+use crate::transaction::{Snapshot, TransactionId};
 use std::collections::HashMap;
 use std::io;
 
@@ -44,8 +43,10 @@ pub struct Catalog {
     indexes: HashMap<String, IndexInfo>,
     sequences: HashMap<String, SequenceInfo>,
     pub(crate) pager: Pager,
-    next_transaction_id: TransactionId,
-    active_tx_ids: Vec<TransactionId>,
+    /// In-memory index map captured at BEGIN so an aborted transaction's DDL
+    /// (CREATE INDEX / DROP TABLE side effects) can be undone. Index metadata is
+    /// not persisted on disk, so page-level rollback alone cannot restore it.
+    pre_tx_indexes: Option<HashMap<String, IndexInfo>>,
 }
 
 impl Catalog {
@@ -123,12 +124,11 @@ impl Catalog {
             indexes: HashMap::new(),
             sequences,
             pager,
-            next_transaction_id: 1,
-            active_tx_ids: Vec::new(),
+            pre_tx_indexes: None,
         })
     }
 
-    fn reload_tables(&mut self) -> io::Result<()> {
+    pub(crate) fn reload_tables(&mut self) -> io::Result<()> {
         self.tables.clear();
         let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
         let mut cursor = catalog_btree.scan_all_rows();
@@ -230,54 +230,27 @@ impl Catalog {
         Ok(())
     }
 
-    pub fn begin_transaction(&mut self, name: Option<String>) -> io::Result<()> {
-        self.begin_transaction_with_isolation(name, IsolationLevel::default())
+    /// Capture the in-memory index map at BEGIN so ROLLBACK can undo DDL that
+    /// mutated it (index metadata is not persisted, so page rollback alone
+    /// cannot restore it). Driven by [`crate::transaction::TransactionManager`].
+    pub(crate) fn capture_pre_tx_indexes(&mut self) {
+        self.pre_tx_indexes = Some(self.indexes.clone());
     }
 
-    pub fn begin_transaction_with_isolation(
-        &mut self,
-        name: Option<String>,
-        isolation_level: IsolationLevel,
-    ) -> io::Result<()> {
-        if self.transaction_active() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "transaction already active",
-            ));
-        }
-
-        let transaction_id = self.allocate_transaction_id();
-        let snapshot = Snapshot::new_for_transaction(
-            transaction_id,
-            self.next_transaction_id,
-            self.active_tx_ids.clone(),
-        );
-
-        debug!(
-            "Transaction started with id: {}, snapshot: {:?}, name: {:?}, isolation: {:?}",
-            transaction_id, snapshot, name, isolation_level
-        );
-        self.pager
-            .begin_transaction(transaction_id, snapshot, name, isolation_level)?;
-        self.active_tx_ids.push(transaction_id);
-        Ok(())
+    /// Drop the BEGIN-time index snapshot after a successful COMMIT.
+    pub(crate) fn clear_pre_tx_indexes(&mut self) {
+        self.pre_tx_indexes = None;
     }
 
-    pub fn commit_transaction(&mut self) -> io::Result<()> {
-        let transaction_id = self.transaction_id();
-        debug!("Transaction committed: {:?}", transaction_id);
-        if let Some(transaction_id) = transaction_id {
-            self.recheck_constraints_for_commit(transaction_id)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    /// Restore the BEGIN-time index map during ROLLBACK so aborted DDL leaves no
+    /// trace in the (non-persisted) index metadata.
+    pub(crate) fn restore_pre_tx_indexes(&mut self) {
+        if let Some(saved_indexes) = self.pre_tx_indexes.take() {
+            self.indexes = saved_indexes;
         }
-        self.pager.commit_transaction()?;
-        if let Some(transaction_id) = transaction_id {
-            self.finish_transaction_id(transaction_id);
-        }
-        Ok(())
     }
 
-    fn recheck_constraints_for_commit(
+    pub(crate) fn recheck_constraints_for_commit(
         &mut self,
         transaction_id: TransactionId,
     ) -> crate::error::DbResult<()> {
@@ -406,15 +379,6 @@ impl Catalog {
         Ok(())
     }
 
-    pub fn rollback_transaction(&mut self) -> io::Result<()> {
-        let transaction_id = self.transaction_id();
-        self.pager.rollback_transaction()?;
-        if let Some(transaction_id) = transaction_id {
-            self.finish_transaction_id(transaction_id);
-        }
-        self.reload_tables()
-    }
-
     pub fn transaction_active(&self) -> bool {
         self.pager.transaction_active()
     }
@@ -431,34 +395,6 @@ impl Catalog {
         self.transaction_snapshot().cloned()
     }
 
-    pub fn active_transaction_ids(&self) -> &[TransactionId] {
-        &self.active_tx_ids
-    }
-
-    /// Oldest snapshot boundary that can still observe deleted versions.
-    ///
-    /// When there are no active transactions, the next transaction id is the
-    /// safe cutoff; otherwise the oldest active transaction id protects all
-    /// versions deleted by that transaction or newer transactions.
-    pub fn global_xmin(&self) -> TransactionId {
-        self.active_tx_ids
-            .iter()
-            .copied()
-            .min()
-            .unwrap_or(self.next_transaction_id)
-    }
-
-    fn allocate_transaction_id(&mut self) -> TransactionId {
-        let transaction_id = self.next_transaction_id;
-        self.next_transaction_id = self.next_transaction_id.saturating_add(1);
-        transaction_id
-    }
-
-    fn finish_transaction_id(&mut self, transaction_id: TransactionId) {
-        self.active_tx_ids
-            .retain(|active_id| *active_id != transaction_id);
-    }
-
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
     /// then inserts one catalog row into page 1 (the catalog B-Tree), and updates `tables`.
     pub fn create_table(
@@ -473,6 +409,13 @@ impl Catalog {
         self.create_table_with_fks(name, cols_with_nn, Vec::new(), None)
     }
 
+    /// Transactional DDL rule: when a transaction is active, catalog pages are
+    /// written through the pager as dirty pages, so CREATE/DROP TABLE and CREATE
+    /// INDEX commit or roll back atomically with the surrounding transaction
+    /// (page rollback + `reload_tables` + index-snapshot restore on ROLLBACK).
+    /// The catalog itself is intentionally NOT snapshot-versioned: a committed
+    /// schema change is visible to any handle opened afterward — there is no
+    /// per-snapshot schema isolation between concurrent handles.
     pub fn create_table_with_fks(
         &mut self,
         name: &str,
@@ -536,6 +479,9 @@ impl Catalog {
         Ok(())
     }
 
+    /// See [`Catalog::create_table_with_fks`] for the transactional-DDL rule.
+    /// Because the index map is not persisted, its rollback relies on the
+    /// snapshot captured at BEGIN rather than on page rollback alone.
     pub fn create_index(
         &mut self,
         index_name: &str,
@@ -826,10 +772,15 @@ impl Catalog {
 
     /// Explicit internal maintenance API for physically pruning obsolete MVCC
     /// versions from one table and lazily rebuilding that table's indexes to
-    /// remove stale index candidates left behind by UPDATE/DELETE.
-    pub fn vacuum_table(&mut self, table_name: &str) -> io::Result<VacuumReport> {
+    /// remove stale index candidates left behind by UPDATE/DELETE. `global_xmin`
+    /// is supplied by the [`crate::transaction::TransactionManager`], which owns
+    /// the live-transaction set; see [`crate::engine::Engine::vacuum_table`].
+    pub fn vacuum_table(
+        &mut self,
+        table_name: &str,
+        global_xmin: TransactionId,
+    ) -> io::Result<VacuumReport> {
         let table = self.get_table(table_name)?.clone();
-        let global_xmin = self.global_xmin();
         let tx_table = self.pager.transaction_table().clone();
 
         let versions_removed = {
@@ -907,6 +858,8 @@ impl Catalog {
     }
 
     /// Drop a table if it exists. Returns true if the table was removed.
+    /// See [`Catalog::create_table_with_fks`] for the transactional-DDL rule:
+    /// inside a transaction this rolls back with the surrounding transaction.
     pub fn drop_table(&mut self, name: &str) -> io::Result<bool> {
         if !self.tables.contains_key(name) {
             return Ok(false);

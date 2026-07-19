@@ -30,6 +30,7 @@ fn main() -> io::Result<()> {
     info!("AeroDB v0.5(Transaction with WAL). Type .exit to quit.");
 
     let mut catalog = Catalog::open(Pager::new(DATABASE_FILE)?)?;
+    let mut transaction_manager = crate::transaction::TransactionManager::new();
 
     loop {
         print!("aerodb> ");
@@ -52,7 +53,9 @@ fn main() -> io::Result<()> {
                 if let Statement::Exit = stmt {
                     break;
                 }
-                if let Err(e) = handle_statement(&mut catalog, stmt) {
+                if let Err(e) =
+                    transaction_manager.execute(&mut catalog, stmt, handle_statement)
+                {
                     match e {
                         DbError::TableNotFound(t) => println!("Error: table '{}' not found", t),
                         DbError::DuplicateKey(k) => println!("Error: duplicate primary key {}", k),

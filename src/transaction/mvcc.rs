@@ -37,10 +37,19 @@ fn committed_before_snapshot(
     snapshot: &Snapshot,
     tx_table: &TransactionTable,
 ) -> bool {
+    // A transaction counts as committed-before-snapshot when it sits below the
+    // snapshot boundary, is not one of the transactions that were live when the
+    // snapshot was taken, and is not explicitly recorded as aborted or still
+    // active. A tx id that is *absent* from the table is treated as committed
+    // (frozen): the WAL is truncated on commit, so long-committed transactions
+    // leave no status record behind, yet their versions must stay visible.
     tx_id == COMMITTED_BOOTSTRAP_TX
         || (tx_id < snapshot.xmax
-            && !snapshot.active_tx_ids.binary_search(&tx_id).is_ok()
-            && matches!(tx_table.get(&tx_id), Some(TransactionStatus::Committed(_))))
+            && snapshot.active_tx_ids.binary_search(&tx_id).is_err()
+            && !matches!(
+                tx_table.get(&tx_id),
+                Some(TransactionStatus::Aborted) | Some(TransactionStatus::Active)
+            ))
 }
 
 #[cfg(test)]

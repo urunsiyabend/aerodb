@@ -132,6 +132,17 @@ pub fn execute_delete(
                 catalog.update_catalog_root(table_name, new_root)?;
             }
 
+            // Record write intents so commit can re-validate first-committer-wins.
+            let final_root = catalog
+                .get_table(table_name)
+                .map(|t| t.root_page)
+                .unwrap_or(new_root);
+            for r in &rows_to_delete {
+                catalog
+                    .pager
+                    .record_write_intent(final_root, r.key, r.created_tx);
+            }
+
             // Index entries intentionally remain in place until a future vacuum pass.
             // Indexed lookups re-check base-table visibility with find_visible(), so
             // deleted base rows are filtered after the candidate key is read.
@@ -381,6 +392,17 @@ pub fn execute_update(
                     t.root_page = new_root;
                 }
                 catalog.update_catalog_root(table_name, new_root)?;
+            }
+
+            // Record write intents so commit can re-validate first-committer-wins.
+            let final_root = catalog
+                .get_table(table_name)
+                .map(|t| t.root_page)
+                .unwrap_or(new_root);
+            for op in &ops {
+                catalog
+                    .pager
+                    .record_write_intent(final_root, op.old_key, op.old_created_tx);
             }
 
             for op in ops {
@@ -1293,14 +1315,13 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             catalog.create_sequence(&seq.name, seq.start, seq.increment)?;
             println!("Sequence '{}' created successfully", seq.name);
         }
-        Statement::BeginTransaction { name } => {
-            catalog.begin_transaction(name)?;
-        }
-        Statement::Commit => {
-            catalog.commit_transaction()?;
-        }
-        Statement::Rollback => {
-            catalog.rollback_transaction()?;
+        Statement::BeginTransaction { .. } | Statement::Commit | Statement::Rollback => {
+            // Transaction control is owned by `TransactionManager::execute`, which
+            // intercepts these before dispatching here. Reaching this arm means a
+            // caller bypassed the manager.
+            return Err(DbError::InvalidValue(
+                "transaction control statements must go through the transaction manager".into(),
+            ));
         }
         Statement::Exit => {}
     }
