@@ -4,7 +4,7 @@ use crate::storage::page::{
 };
 use crate::storage::pager::Pager;
 use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, Row, RowData};
-use crate::storage::vacuum::deleted_version_is_removable;
+use crate::storage::vacuum::{aborted_creator_is_removable, deleted_version_is_removable};
 use crate::transaction::{
     Snapshot, TransactionId, TransactionStatus, TransactionTable, is_visible,
 };
@@ -87,9 +87,11 @@ impl<'a> BTree<'a> {
 
     /// Return the newest version of `key` visible to `snapshot`.
     pub fn find_visible(&mut self, key: i32, snapshot: &Snapshot) -> io::Result<Option<Row>> {
+        let rows = self.collect_all_rows()?;
+        let tx_table = self.pager.transaction_table().clone();
         let mut visible = None;
-        for row in self.collect_all_rows()? {
-            if row.key == key && Self::row_visible(&row, snapshot) {
+        for row in rows {
+            if row.key == key && Self::row_visible(&row, snapshot, &tx_table) {
                 if visible
                     .as_ref()
                     .map(|current: &Row| row.created_tx > current.created_tx)
@@ -144,29 +146,27 @@ impl<'a> BTree<'a> {
     }
 
     fn find_latest_logical(&mut self, key: i32) -> io::Result<Option<Row>> {
-        let snapshot = Snapshot::new(TransactionId::MAX, Vec::new());
+        // Physical "newest live version" lookup used by non-snapshot callers such
+        // as index probes. Anchor it to the active transaction (if any) so the
+        // transaction's own in-flight versions are recognised as own writes
+        // instead of being hidden as uncommitted by the real transaction table.
+        let snapshot = match self.pager.transaction_id() {
+            Some(current) => {
+                Snapshot::new_for_transaction(current, TransactionId::MAX, Vec::new())
+            }
+            None => Snapshot::new(TransactionId::MAX, Vec::new()),
+        };
         self.find_visible(key, &snapshot)
     }
 
-    fn row_visible(row: &Row, snapshot: &Snapshot) -> bool {
-        let mut tx_table = TransactionTable::new();
-        tx_table.insert(COMMITTED_BOOTSTRAP_TX, TransactionStatus::Committed(1));
-        if row.created_tx < snapshot.xmax
-            && !snapshot
-                .active_tx_ids
-                .binary_search(&row.created_tx)
-                .is_ok()
-        {
-            tx_table.insert(row.created_tx, TransactionStatus::Committed(1));
-        }
-        if let Some(deleted_tx) = row.deleted_tx {
-            if deleted_tx < snapshot.xmax
-                && !snapshot.active_tx_ids.binary_search(&deleted_tx).is_ok()
-            {
-                tx_table.insert(deleted_tx, TransactionStatus::Committed(1));
-            }
-        }
-        is_visible(row, snapshot, &tx_table)
+    /// Visibility wrapper over [`is_visible`] that consults the authoritative,
+    /// WAL-recovered transaction table (cloned from the pager by callers) instead
+    /// of fabricating commit status from snapshot boundaries. Transactions absent
+    /// from the table are treated as committed/frozen by `committed_before_snapshot`,
+    /// so long-committed versions stay visible after the WAL is truncated, while
+    /// explicitly aborted or still-active transactions are correctly excluded.
+    fn row_visible(row: &Row, snapshot: &Snapshot, tx_table: &TransactionTable) -> bool {
+        is_visible(row, snapshot, tx_table)
     }
 
     /// Recursive helper to find a key starting at page `page_num`.
@@ -379,7 +379,10 @@ impl<'a> BTree<'a> {
             let before = rows.len();
             let kept: Vec<Row> = rows
                 .into_iter()
-                .filter(|row| !deleted_version_is_removable(row.deleted_tx, global_xmin, tx_table))
+                .filter(|row| {
+                    !deleted_version_is_removable(row.deleted_tx, global_xmin, tx_table)
+                        && !aborted_creator_is_removable(row.created_tx, tx_table)
+                })
                 .collect();
             removed += before - kept.len();
             if kept.len() != before {
@@ -1056,7 +1059,8 @@ impl<'a> BTree<'a> {
     /// Return one visible version per logical key for `snapshot`.
     pub fn scan_visible(&mut self, snapshot: &Snapshot) -> io::Result<Vec<Row>> {
         let mut rows = self.collect_all_rows()?;
-        rows.retain(|row| Self::row_visible(row, snapshot));
+        let tx_table = self.pager.transaction_table().clone();
+        rows.retain(|row| Self::row_visible(row, snapshot, &tx_table));
         rows.sort_by_key(|row| (row.key, std::cmp::Reverse(row.created_tx)));
 
         let mut visible = Vec::new();
@@ -1232,6 +1236,57 @@ mod tests {
             btree
                 .has_write_conflict(1, visible.created_tx, &snapshot)
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn write_conflict_absent_for_unchanged_key() {
+        let file = NamedTempFile::new().unwrap();
+        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&mut pager).unwrap();
+        btree.insert_version(row_with_tx(1, "before", 1)).unwrap();
+        let snapshot = Snapshot::new_for_transaction(2, 3, vec![]);
+        let visible = btree.find_visible(1, &snapshot).unwrap().unwrap();
+
+        assert!(
+            !btree
+                .has_write_conflict(1, visible.created_tx, &snapshot)
+                .unwrap(),
+            "a key with no concurrent change must not conflict"
+        );
+    }
+
+    #[test]
+    fn write_conflict_detects_writer_live_at_snapshot() {
+        let file = NamedTempFile::new().unwrap();
+        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&mut pager).unwrap();
+        btree.insert_version(row_with_tx(1, "before", 1)).unwrap();
+        // Transaction 4 was still live when the snapshot was captured.
+        let snapshot = Snapshot::new_for_transaction(2, 10, vec![4]);
+        btree.insert_version(row_with_tx(1, "concurrent", 4)).unwrap();
+
+        assert!(
+            btree.has_write_conflict(1, 1, &snapshot).unwrap(),
+            "a version from a concurrently-live transaction must conflict"
+        );
+    }
+
+    #[test]
+    fn write_conflict_ignores_own_write() {
+        let file = NamedTempFile::new().unwrap();
+        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&mut pager).unwrap();
+        // The current transaction (id 3) wrote the only version; its own write
+        // sits at/after the snapshot bound but must not be flagged as a conflict.
+        let snapshot = Snapshot::new_for_transaction(3, 3, vec![]);
+        btree.insert_version(row_with_tx(1, "self", 3)).unwrap();
+
+        assert!(
+            !btree
+                .has_write_conflict(1, COMMITTED_BOOTSTRAP_TX, &snapshot)
+                .unwrap(),
+            "a transaction's own write must not count as a conflict"
         );
     }
 

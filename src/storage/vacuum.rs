@@ -26,3 +26,16 @@ pub fn deleted_version_is_removable(
             Some(TransactionStatus::Committed(_))
         )
 }
+
+/// Returns true when a row version was created by a transaction that aborted.
+///
+/// With logical abort, an aborted transaction's versions are left in place and
+/// hidden by MVCC visibility (they are never visible to any snapshot, present or
+/// future). They can therefore be reclaimed immediately, without waiting for
+/// `global_xmin`.
+pub fn aborted_creator_is_removable(
+    created_tx: TransactionId,
+    tx_table: &TransactionTable,
+) -> bool {
+    matches!(tx_table.get(&created_tx), Some(TransactionStatus::Aborted))
+}
