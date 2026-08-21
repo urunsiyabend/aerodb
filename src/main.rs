@@ -121,7 +121,7 @@ mod tests {
 
             // Look up the root_page for “users” and open its B-Tree.
             let root_page = catalog.get_table("users").unwrap().root_page;
-            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut table_btree = BTree::open_root(&catalog.pager, root_page).unwrap();
             table_btree.insert(i as i32, row_data).unwrap();
             let new_root = table_btree.root_page();
             if new_root != root_page {
@@ -131,7 +131,7 @@ mod tests {
 
         // 5) Now scan all rows in “users” and collect them.
         let root_page = catalog.get_table("users").unwrap().root_page;
-        let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut table_btree = BTree::open_root(&catalog.pager, root_page).unwrap();
         let mut rows: Vec<_> = table_btree.scan_all_rows().collect();
 
         // Assert we got exactly 100 rows, with keys 1 and 100 at the ends
@@ -162,7 +162,7 @@ mod tests {
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
             let root_page = catalog.get_table("users").unwrap().root_page;
-            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut table_btree = BTree::open_root(&catalog.pager, root_page).unwrap();
             table_btree.insert(i as i32, row_data).unwrap();
             let new_root = table_btree.root_page();
             if new_root != root_page {
@@ -184,7 +184,7 @@ mod tests {
                 let table_info = catalog.get_table(&from_table).unwrap().clone();
                 let root_page = table_info.root_page;
                 let columns = table_info.columns;
-                let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+                let mut table_btree = BTree::open_root(&catalog.pager, root_page).unwrap();
                 let mut cursor = table_btree.scan_all_rows();
                 let mut found = Vec::new();
                 while let Some(row) = cursor.next() {
@@ -226,7 +226,7 @@ mod tests {
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
             let root_page = catalog.get_table("users").unwrap().root_page;
-            let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut table_btree = BTree::open_root(&catalog.pager, root_page).unwrap();
             table_btree.insert(i as i32, row_data).unwrap();
             let new_root = table_btree.root_page();
             if new_root != root_page {
@@ -243,7 +243,7 @@ mod tests {
                 let deleted = crate::execution::execute_delete(&mut catalog, &table_name, selection).unwrap();
                 assert_eq!(deleted, 1);
                 let root_page = catalog.get_table("users").unwrap().root_page;
-                let mut table_btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+                let mut table_btree = BTree::open_root(&catalog.pager, root_page).unwrap();
                 let remaining: Vec<_> = table_btree.scan_all_rows().collect();
                 assert_eq!(remaining.len(), 2);
                 assert!(remaining.iter().all(|r| r.key != 2));
@@ -272,7 +272,7 @@ mod tests {
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
             let root_page = catalog.get_table("users").unwrap().root_page;
-            let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
             btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             if new_root != root_page {
@@ -292,7 +292,7 @@ mod tests {
         assert_eq!(deleted, 1);
 
         let root_page = catalog.get_table("users").unwrap().root_page;
-        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
         assert!(btree.find(1).unwrap().is_none());
         let remaining: Vec<_> = btree.scan_all_rows().collect();
         assert_eq!(remaining.len(), 2);
@@ -316,7 +316,7 @@ mod tests {
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
             let root_page = catalog.get_table("nums").unwrap().root_page;
-            let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
             btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             drop(btree);
@@ -326,7 +326,7 @@ mod tests {
         }
 
         let root_page = catalog.get_table("nums").unwrap().root_page;
-        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
         assert!(btree.delete(150).unwrap());
         let new_root = btree.root_page();
         drop(btree);
@@ -334,7 +334,7 @@ mod tests {
             catalog.get_table_mut("nums").unwrap().root_page = new_root;
         }
 
-        let mut btree = BTree::open_root(&mut catalog.pager, new_root).unwrap();
+        let mut btree = BTree::open_root(&catalog.pager, new_root).unwrap();
 
         assert!(btree.find(150).unwrap().is_none());
         let remaining: Vec<_> = btree.scan_all_rows().collect();
@@ -356,7 +356,7 @@ mod tests {
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
             let root_page = catalog.get_table("nums").unwrap().root_page;
-            let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
             btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             drop(btree);
@@ -366,7 +366,7 @@ mod tests {
         }
 
         let root_page = catalog.get_table("nums").unwrap().root_page;
-        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
         for k in 2..=100 {
             btree.delete(k).unwrap();
         }
@@ -377,8 +377,8 @@ mod tests {
         }
 
         let root_page = catalog.get_table("nums").unwrap().root_page;
-        let page = catalog.pager.get_page(root_page).unwrap();
-        assert_eq!(crate::storage::page::get_node_type(&page.data), crate::storage::page::NODE_LEAF);
+        let page = catalog.pager.read_page(root_page).unwrap();
+        assert_eq!(crate::storage::page::get_node_type(&page), crate::storage::page::NODE_LEAF);
     }
 
     #[test]
@@ -396,7 +396,7 @@ mod tests {
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
             let root_page = catalog.get_table("nums").unwrap().root_page;
-            let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
             btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             drop(btree);
@@ -406,7 +406,7 @@ mod tests {
         }
 
         let root_page = catalog.get_table("nums").unwrap().root_page;
-        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
         let cursor = btree.scan_rows_with_bounds(10, Some(5));
         let keys: Vec<_> = cursor.map(|r| r.key).collect();
         assert_eq!(keys, vec![11, 12, 13, 14, 15]);
@@ -536,7 +536,7 @@ mod tests {
             let cols = values.iter().map(|v| ColumnValue::Text(v.clone())).collect();
             let row_data = RowData(cols);
             let root_page = catalog.get_table("nums").unwrap().root_page;
-            let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
             btree.insert(i as i32, row_data).unwrap();
             let new_root = btree.root_page();
             drop(btree);
@@ -546,7 +546,7 @@ mod tests {
         }
 
         let root_page = catalog.get_table("nums").unwrap().root_page;
-        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
         let rows = btree.scan_rows_desc_with_bounds(0, None);
         let keys: Vec<_> = rows.into_iter().map(|r| r.key).collect();
         assert_eq!(keys, vec![3, 2, 1]);
@@ -642,7 +642,7 @@ mod tests {
                         _ => unreachable!(),
                     };
                     let root_page = table_info.root_page;
-                    let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+                    let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
                     bt.insert(key, row_data.clone()).unwrap();
                     let new_root = bt.root_page();
                     drop(bt);
@@ -698,7 +698,7 @@ mod tests {
                 _ => unreachable!(),
             };
             let root_page = table_info.root_page;
-            let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
             bt.insert(key, row_data.clone()).unwrap();
             let new_root = bt.root_page();
             drop(bt);
@@ -755,7 +755,7 @@ mod tests {
                 _ => unreachable!(),
             };
             let root_page = table_info.root_page;
-            let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
             bt.insert(key, row_data.clone()).unwrap();
             let new_root = bt.root_page();
             drop(bt);
@@ -807,7 +807,7 @@ mod tests {
                 _ => unreachable!(),
             };
             let root_page = table_info.root_page;
-            let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
             bt.insert(key, row_data.clone()).unwrap();
             if bt.root_page() != root_page {
                 catalog.get_table_mut("users").unwrap().root_page = bt.root_page();
@@ -858,7 +858,7 @@ mod tests {
                 _ => unreachable!(),
             };
             let root_page = table_info.root_page;
-            let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+            let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
             bt.insert(key, row_data.clone()).unwrap();
             if bt.root_page() != root_page {
                 catalog.get_table_mut("users").unwrap().root_page = bt.root_page();
@@ -904,7 +904,7 @@ mod tests {
         handle_statement(&mut catalog, insert).unwrap();
 
         let root_page = catalog.get_table("users").unwrap().root_page;
-        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
         let rows: Vec<_> = btree.scan_all_rows().collect();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].key, 1);
@@ -980,7 +980,7 @@ mod tests {
         }
 
         let root_page = catalog.get_table("users").unwrap().root_page;
-        let mut btree = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut btree = BTree::open_root(&catalog.pager, root_page).unwrap();
         let row = btree.find(1).unwrap().unwrap();
         match &row.data.0[1] {
             ColumnValue::Text(s) => assert_eq!(s, "bob"),
@@ -1036,7 +1036,7 @@ mod tests {
         drop(catalog);
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
         let root_page = catalog.get_table("items").unwrap().root_page;
-        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
         assert!(bt.find(1).unwrap().is_some());
     }
 
@@ -1070,7 +1070,7 @@ mod tests {
         drop(catalog);
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
         let root_page = catalog.get_table("users").unwrap().root_page;
-        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
         let row = bt.find(2).unwrap().unwrap();
         if let ColumnValue::Text(ref name) = row.data.0[1] {
             assert_eq!(name, "new_user2");
@@ -1100,7 +1100,7 @@ mod tests {
         drop(catalog);
         let mut catalog = Catalog::open(Pager::new(filename).unwrap()).unwrap();
         let root_page = catalog.get_table("items").unwrap().root_page;
-        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
         assert!(bt.find(1).unwrap().is_none());
     }
 
@@ -1124,7 +1124,7 @@ mod tests {
 
         // verify without reopening file
         let root_page = catalog.get_table("items").unwrap().root_page;
-        let mut bt = BTree::open_root(&mut catalog.pager, root_page).unwrap();
+        let mut bt = BTree::open_root(&catalog.pager, root_page).unwrap();
         assert!(bt.find(1).unwrap().is_none());
     }
 

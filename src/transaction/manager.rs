@@ -203,10 +203,10 @@ impl TransactionManager {
     /// the current version chains. Returns the first logical key that another,
     /// non-visible transaction has changed since this transaction's snapshot.
     fn first_conflicting_key(&self, catalog: &mut Catalog) -> Option<i32> {
-        let snapshot = catalog.transaction_snapshot().cloned()?;
+        let snapshot = catalog.transaction_snapshot()?;
         let intents = catalog.pager.transaction_write_set();
         for intent in intents {
-            let conflict = BTree::open_root(&mut catalog.pager, intent.table_root)
+            let conflict = BTree::open_root(&catalog.pager, intent.table_root)
                 .and_then(|mut tree| {
                     tree.has_write_conflict(intent.key, intent.visible_created_tx, &snapshot)
                 })

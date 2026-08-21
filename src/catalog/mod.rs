@@ -49,37 +49,41 @@ pub struct Catalog {
     pre_tx_indexes: Option<HashMap<String, IndexInfo>>,
 }
 
+/// Initialize `page_num` as an empty leaf root and persist it.
+///
+/// Shared by every fresh-tree allocation (catalog pages, table roots, index
+/// roots). Takes the page's exclusive latch only for the header write.
+fn init_leaf_root(pager: &Pager, page_num: u32) -> io::Result<()> {
+    pager.with_page_mut(page_num, |data| {
+        crate::storage::page::set_node_type(data, crate::storage::page::NODE_LEAF);
+        crate::storage::page::set_is_root(data, true);
+        crate::storage::page::set_parent(data, 0);
+        crate::storage::page::set_cell_count(data, 0);
+    })?;
+    pager.flush_page(page_num)
+}
+
 impl Catalog {
     /// Open (or create) a catalog. This ensures page 1 exists as a leaf root,
     /// then reads any existing rows from page 1 into `tables`.
-    pub fn open(mut pager: Pager) -> io::Result<Self> {
+    pub fn open(pager: Pager) -> io::Result<Self> {
         // If the file has ≤1 pages total, allocate page 1 and initialize it as a leaf.
         if pager.file_length_pages() <= 1 {
             // Allocate page 1
             pager.allocate_page()?;
-            let page = pager.get_page(1)?;
-            crate::storage::page::set_node_type(&mut page.data, crate::storage::page::NODE_LEAF);
-            crate::storage::page::set_is_root(&mut page.data, true);
-            crate::storage::page::set_parent(&mut page.data, 0);
-            crate::storage::page::set_cell_count(&mut page.data, 0);
-            pager.flush_page(1)?;
+            init_leaf_root(&pager, 1)?;
         }
 
         // Ensure page 2 exists for sequence catalog
         if pager.file_length_pages() <= 2 {
             pager.allocate_page()?;
-            let page = pager.get_page(2)?;
-            crate::storage::page::set_node_type(&mut page.data, crate::storage::page::NODE_LEAF);
-            crate::storage::page::set_is_root(&mut page.data, true);
-            crate::storage::page::set_parent(&mut page.data, 0);
-            crate::storage::page::set_cell_count(&mut page.data, 0);
-            pager.flush_page(2)?;
+            init_leaf_root(&pager, 2)?;
         }
 
         // Now read all catalog entries (if any) from page 1
         let mut tables = HashMap::new();
         {
-            let mut catalog_btree = BTree::open_root(&mut pager, 1)?;
+            let catalog_btree = BTree::open_root(&pager, 1)?;
             let mut cursor = catalog_btree.scan_all_rows();
             while let Some(blob_row) = cursor.next() {
                 let (table_name, root_page, columns, not_null, defaults, auto_inc, fks, pk) =
@@ -103,7 +107,7 @@ impl Catalog {
         // Load sequences from page 2
         let mut sequences = HashMap::new();
         {
-            let mut seq_btree = BTree::open_root(&mut pager, 2)?;
+            let seq_btree = BTree::open_root(&pager, 2)?;
             let mut cursor = seq_btree.scan_all_rows();
             while let Some(row) = cursor.next() {
                 let (name, current, start, inc) = Self::deserialize_sequence_row(&row)?;
@@ -130,7 +134,7 @@ impl Catalog {
 
     pub(crate) fn reload_tables(&mut self) -> io::Result<()> {
         self.tables.clear();
-        let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
+        let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
         let mut cursor = catalog_btree.scan_all_rows();
         while let Some(blob_row) = cursor.next() {
             let (table_name, root_page, columns, not_null, defaults, auto_inc, fks, pk) =
@@ -152,7 +156,7 @@ impl Catalog {
         // reload sequences
         self.sequences.clear();
         {
-            let mut seq_btree = BTree::open_root(&mut self.pager, 2)?;
+            let mut seq_btree = BTree::open_root(&self.pager, 2)?;
             let mut cursor = seq_btree.scan_all_rows();
             while let Some(row) = cursor.next() {
                 let (name, cur, start, inc) = Self::deserialize_sequence_row(&row)?;
@@ -172,7 +176,7 @@ impl Catalog {
 
     pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
         let (target_key, columns, not_null, defaults, ai_vec, fks, pk_cols) = {
-            let mut tree = BTree::open_root(&mut self.pager, 1)?;
+            let mut tree = BTree::open_root(&self.pager, 1)?;
             let mut cursor = tree.scan_all_rows();
             let mut found = None;
             let mut cols = Vec::new();
@@ -198,7 +202,7 @@ impl Catalog {
         };
 
         if let Some(key) = target_key {
-            let mut tree = BTree::open_root(&mut self.pager, 1)?;
+            let mut tree = BTree::open_root(&self.pager, 1)?;
             tree.delete(key)?;
             let cols: Vec<_> = columns
                 .iter()
@@ -214,16 +218,11 @@ impl Catalog {
             )?;
             let new_root_page = tree.root_page();
             if new_root_page != 1 {
-                let src_buf = {
-                    let src = self.pager.get_page(new_root_page)?;
-                    let mut buf = [0u8; PAGE_SIZE];
-                    buf.copy_from_slice(&src.data);
-                    buf
-                };
-                {
-                    let dst = self.pager.get_page(1)?;
-                    dst.data.copy_from_slice(&src_buf);
-                }
+                // Copy the split-out root back into the fixed catalog page. The
+                // source is read (and its latch released) before page 1 is
+                // latched, so only one latch is held at a time.
+                let src_buf = self.pager.read_page(new_root_page)?;
+                self.pager.write_page(1, &src_buf)?;
                 self.pager.flush_page(1)?;
             }
         }
@@ -260,7 +259,7 @@ impl Catalog {
 
         for table in &tables {
             if let Some(pk_cols) = &table.primary_key {
-                let mut tree = BTree::open_root(&mut self.pager, table.root_page)?;
+                let mut tree = BTree::open_root(&self.pager, table.root_page)?;
                 let rows = tree.scan_visible(&snapshot)?;
                 for (idx, row) in rows.iter().enumerate() {
                     if row.created_tx != transaction_id {
@@ -281,7 +280,7 @@ impl Catalog {
                 }
             }
 
-            let mut tree = BTree::open_root(&mut self.pager, table.root_page)?;
+            let mut tree = BTree::open_root(&self.pager, table.root_page)?;
             let versions = tree.all_versions()?;
             drop(tree);
 
@@ -324,7 +323,7 @@ impl Catalog {
                 ));
             };
             let parent = self.get_table(&fk.parent_table)?.clone();
-            let mut parent_tree = BTree::open_root(&mut self.pager, parent.root_page)?;
+            let mut parent_tree = BTree::open_root(&self.pager, parent.root_page)?;
             if parent_tree.find_visible(child_val, snapshot)?.is_none() {
                 return Err(crate::error::DbError::ForeignKeyViolation(format!(
                     "{} {}",
@@ -365,7 +364,7 @@ impl Catalog {
                     .iter()
                     .position(|(name, _)| name == &fk.columns[0])
                     .unwrap();
-                let mut child_tree = BTree::open_root(&mut self.pager, child.root_page)?;
+                let mut child_tree = BTree::open_root(&self.pager, child.root_page)?;
                 for child_row in child_tree.scan_visible(snapshot)? {
                     if child_row.data.0[child_idx] == ColumnValue::Integer(parent_val) {
                         return Err(crate::error::DbError::ForeignKeyViolation(format!(
@@ -387,12 +386,14 @@ impl Catalog {
         self.pager.transaction_id()
     }
 
-    pub fn transaction_snapshot(&self) -> Option<&Snapshot> {
+    /// The installed transaction's snapshot, cloned: it lives behind the pager's
+    /// lock and cannot be borrowed out across page access.
+    pub fn transaction_snapshot(&self) -> Option<Snapshot> {
         self.pager.transaction_snapshot()
     }
 
     pub fn current_snapshot(&self) -> Option<Snapshot> {
-        self.transaction_snapshot().cloned()
+        self.transaction_snapshot()
     }
 
     /// Create a new table with `name` and `columns`. Allocates a fresh page for the table’s root,
@@ -432,14 +433,7 @@ impl Catalog {
 
         // Allocate a new leaf page for this table’s data
         let new_root = self.pager.allocate_page()?;
-        {
-            let page = self.pager.get_page(new_root)?;
-            crate::storage::page::set_node_type(&mut page.data, crate::storage::page::NODE_LEAF);
-            crate::storage::page::set_is_root(&mut page.data, true);
-            crate::storage::page::set_parent(&mut page.data, 0);
-            crate::storage::page::set_cell_count(&mut page.data, 0);
-            self.pager.flush_page(new_root)?;
-        }
+        init_leaf_root(&self.pager, new_root)?;
 
         // Build the catalog row payload: [name_len][name][root_page][num_columns][col1_len][col1]...
         let pk_cols = primary_key.clone().unwrap_or_default();
@@ -448,7 +442,7 @@ impl Catalog {
         // Use a synthetic key = (current number of tables + 1)
         let key = (self.tables.len() as i32) + 1;
         {
-            let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
+            let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
             catalog_btree.insert(key, blob_data)?;
         }
 
@@ -502,25 +496,18 @@ impl Catalog {
         };
 
         let mut root_page = self.pager.allocate_page()?;
-        {
-            let page = self.pager.get_page(root_page)?;
-            crate::storage::page::set_node_type(&mut page.data, crate::storage::page::NODE_LEAF);
-            crate::storage::page::set_is_root(&mut page.data, true);
-            crate::storage::page::set_parent(&mut page.data, 0);
-            crate::storage::page::set_cell_count(&mut page.data, 0);
-            self.pager.flush_page(root_page)?;
-        }
+        init_leaf_root(&self.pager, root_page)?;
 
         // Build index from existing rows
         {
-            let mut table_btree = BTree::open_root(&mut self.pager, table_root)?;
+            let mut table_btree = BTree::open_root(&self.pager, table_root)?;
             let mut cursor = table_btree.scan_all_rows();
             let mut rows = Vec::new();
             while let Some(row) = cursor.next() {
                 rows.push(row);
             }
             drop(cursor);
-            let mut index_tree = BTree::open_root(&mut self.pager, root_page)?;
+            let mut index_tree = BTree::open_root(&self.pager, root_page)?;
             for row in rows {
                 if let Some(val) = row.data.0.get(col_idx).cloned() {
                     root_page = Catalog::insert_index_value(&mut index_tree, val, row.key)?;
@@ -639,7 +626,7 @@ impl Catalog {
         let key = (self.sequences.len() as i32) + 1;
         let current = start - increment;
         {
-            let mut tree = BTree::open_root(&mut self.pager, 2)?;
+            let mut tree = BTree::open_root(&self.pager, 2)?;
             tree.insert(
                 key,
                 Self::serialize_sequence_row(name, current, start, increment),
@@ -666,7 +653,7 @@ impl Catalog {
         })?;
         info.current_value += info.increment;
         {
-            let mut tree = BTree::open_root(&mut self.pager, 2)?;
+            let mut tree = BTree::open_root(&self.pager, 2)?;
             tree.delete(info.key)?;
             tree.insert(
                 info.key,
@@ -688,7 +675,7 @@ impl Catalog {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "sequence not found"))?;
         if new_current > info.current_value {
             info.current_value = new_current;
-            let mut tree = BTree::open_root(&mut self.pager, 2)?;
+            let mut tree = BTree::open_root(&self.pager, 2)?;
             tree.delete(info.key)?;
             tree.insert(
                 info.key,
@@ -713,7 +700,7 @@ impl Catalog {
                     .and_then(|t| t.columns.iter().position(|(c, _)| c == &idx.column_name))
                     .unwrap();
                 if let Some(val) = row_data.0.get(col_pos).cloned() {
-                    let mut tree = BTree::open_root(&mut self.pager, idx.root_page)?;
+                    let mut tree = BTree::open_root(&self.pager, idx.root_page)?;
                     let key = match row_data.0[0] {
                         ColumnValue::Integer(i) => i,
                         _ => continue,
@@ -784,7 +771,7 @@ impl Catalog {
         let tx_table = self.pager.transaction_table().clone();
 
         let versions_removed = {
-            let mut table_tree = BTree::open_root(&mut self.pager, table.root_page)?;
+            let mut table_tree = BTree::open_root(&self.pager, table.root_page)?;
             table_tree.vacuum_deleted_versions(global_xmin, &tx_table)?
         };
 
@@ -851,7 +838,7 @@ impl Catalog {
 
             let mut rows = Vec::new();
             {
-                let mut table_tree = BTree::open_root(&mut self.pager, table.root_page)?;
+                let mut table_tree = BTree::open_root(&self.pager, table.root_page)?;
                 let mut cursor = table_tree.scan_all_rows();
                 while let Some(row) = cursor.next() {
                     rows.push(row);
@@ -859,19 +846,9 @@ impl Catalog {
             }
 
             let mut new_root = self.pager.allocate_page()?;
+            init_leaf_root(&self.pager, new_root)?;
             {
-                let page = self.pager.get_page(new_root)?;
-                crate::storage::page::set_node_type(
-                    &mut page.data,
-                    crate::storage::page::NODE_LEAF,
-                );
-                crate::storage::page::set_is_root(&mut page.data, true);
-                crate::storage::page::set_parent(&mut page.data, 0);
-                crate::storage::page::set_cell_count(&mut page.data, 0);
-                self.pager.flush_page(new_root)?;
-            }
-            {
-                let mut index_tree = BTree::open_root(&mut self.pager, new_root)?;
+                let mut index_tree = BTree::open_root(&self.pager, new_root)?;
                 for row in rows {
                     if let Some(value) = row.data.0.get(col_idx).cloned() {
                         new_root = Catalog::insert_index_value(&mut index_tree, value, row.key)?;
@@ -907,7 +884,7 @@ impl Catalog {
 
         // Find catalog row key corresponding to this table
         let key_opt = {
-            let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
+            let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
             let mut cursor = catalog_btree.scan_all_rows();
             let mut found = None;
             while let Some(row) = cursor.next() {
@@ -922,20 +899,12 @@ impl Catalog {
         };
 
         if let Some(key) = key_opt {
-            let mut catalog_btree = BTree::open_root(&mut self.pager, 1)?;
+            let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
             catalog_btree.delete(key)?;
             let new_root = catalog_btree.root_page();
             if new_root != 1 {
-                let src_buf = {
-                    let src = self.pager.get_page(new_root)?;
-                    let mut buf = [0u8; PAGE_SIZE];
-                    buf.copy_from_slice(&src.data);
-                    buf
-                };
-                {
-                    let dst = self.pager.get_page(1)?;
-                    dst.data.copy_from_slice(&src_buf);
-                }
+                let src_buf = self.pager.read_page(new_root)?;
+                self.pager.write_page(1, &src_buf)?;
                 self.pager.flush_page(1)?;
             }
             self.tables.remove(name);

@@ -2,7 +2,7 @@ use crate::storage::page::{
     HEADER_SIZE, NODE_INTERNAL, NODE_LEAF, PAGE_SIZE, get_cell_count, get_next_leaf, get_node_type,
     get_parent, set_cell_count, set_is_root, set_next_leaf, set_node_type, set_parent,
 };
-use crate::storage::pager::Pager;
+use crate::storage::pager::{PageData, Pager};
 use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, Row, RowData};
 use crate::storage::vacuum::{aborted_creator_is_removable, deleted_version_is_removable};
 use crate::transaction::{
@@ -47,25 +47,38 @@ use std::io;
 ///        with two children (old_root and new_internal), and update their parent pointers.
 ///—————————————————————————————————————————————————————————————————————————————————————————————
 
+/// A B-Tree over one root page of the shared buffer pool.
+///
+/// The pager is borrowed **shared** (`&Pager`): page access goes through
+/// short-lived per-page latches ([`Pager::with_page`] / [`Pager::with_page_mut`])
+/// rather than an exclusive borrow of the whole storage layer, so two trees — or
+/// two transactions over the same tree — can be open at once and only contend on
+/// the individual pages they touch.
+///
+/// The access discipline every method below follows: latch a page, copy out the
+/// bytes needed, release the latch, *then* descend or ascend. No latch is ever
+/// held across a recursive call, which is what keeps the ascending latch order
+/// (and therefore deadlock freedom) trivially satisfied.
 pub struct BTree<'a> {
     root_page: u32,
-    pager: &'a mut Pager,
+    pager: &'a Pager,
 }
 
 impl<'a> BTree<'a> {
     /// Open or create a B-Tree. If the file is empty, initialize page 0 as a leaf root.
     /// Otherwise, simply reuse page 0 as the existing root (leaf or internal).
-    pub fn new(pager: &'a mut Pager) -> io::Result<Self> {
+    pub fn new(pager: &'a Pager) -> io::Result<Self> {
         let root_page: u32;
         if pager.file_length_pages() == 0 {
             debug!("Initializing new database: allocating page 0 as a leaf root.");
             let new_root = pager.allocate_page()?;
-            let page = pager.get_page(new_root)?;
-            set_node_type(&mut page.data, NODE_LEAF);
-            set_is_root(&mut page.data, true);
-            set_parent(&mut page.data, 0);
-            set_cell_count(&mut page.data, 0);
-            set_next_leaf(&mut page.data, 0);
+            pager.with_page_mut(new_root, |data| {
+                set_node_type(data, NODE_LEAF);
+                set_is_root(data, true);
+                set_parent(data, 0);
+                set_cell_count(data, 0);
+                set_next_leaf(data, 0);
+            })?;
             pager.flush_page(new_root)?;
             root_page = new_root;
         } else {
@@ -88,7 +101,7 @@ impl<'a> BTree<'a> {
     /// Return the newest version of `key` visible to `snapshot`.
     pub fn find_visible(&mut self, key: i32, snapshot: &Snapshot) -> io::Result<Option<Row>> {
         let rows = self.collect_all_rows()?;
-        let tx_table = self.pager.transaction_table().clone();
+        let tx_table = self.pager.transaction_table();
         let mut visible = None;
         for row in rows {
             if row.key == key && Self::row_visible(&row, snapshot, &tx_table) {
@@ -169,66 +182,6 @@ impl<'a> BTree<'a> {
         is_visible(row, snapshot, tx_table)
     }
 
-    /// Recursive helper to find a key starting at page `page_num`.
-    fn find_in_page(&mut self, page_num: u32, key: i32) -> io::Result<Option<Row>> {
-        let page = self.pager.get_page(page_num)?;
-        let node_type = get_node_type(&page.data);
-
-        if node_type == NODE_LEAF {
-            debug!("find_in_page: at leaf page {}.", page_num);
-
-            // Leaf: scan all rows
-            let rows = self.read_all_rows_from_leaf(page_num)?;
-            for row in rows {
-                if row.key == key {
-                    debug!("  → Found key={} in leaf {}", key, page_num);
-                    return Ok(Some(row));
-                }
-            }
-            debug!("  → Key={} not found in leaf {}", key, page_num);
-            return Ok(None);
-        }
-
-        debug!("find_in_page: at internal page {}.", page_num);
-        // Otherwise internal node:
-        let cell_count = get_cell_count(&page.data) as usize;
-
-        // Read leftmost child pointer at offset HEADER_SIZE
-        let mut offset = HEADER_SIZE;
-        let leftmost_child_bytes = &page.data[offset..offset + 4];
-        let mut child_page = u32::from_le_bytes(leftmost_child_bytes.try_into().unwrap());
-        offset += 4;
-
-        // For each separator key / child_i pair:
-        for _ in 0..cell_count {
-            // Read separator key_i
-            let key_i_bytes = &page.data[offset..offset + 4];
-            let key_i = i32::from_le_bytes(key_i_bytes.try_into().unwrap());
-            offset += 4;
-
-            // Read child_page_i
-            let child_i_bytes = &page.data[offset..offset + 4];
-            let right_child = u32::from_le_bytes(child_i_bytes.try_into().unwrap());
-            offset += 4;
-
-            if key < key_i {
-                debug!("  → Descending to child {} (key < {})", child_page, key_i);
-                // Descend to `child_page`
-                return self.find_in_page(child_page, key);
-            } else {
-                // Descend to `right_child`
-                child_page = right_child;
-            }
-        }
-        debug!(
-            "  → Descending to rightmost child {} (no larger separator)",
-            child_page
-        );
-
-        // If no separator was larger, descend to last child
-        self.find_in_page(child_page, key)
-    }
-
     /// Public insert: adds (key, data) into the tree.
     pub fn insert(&mut self, key: i32, data: RowData) -> io::Result<()> {
         debug!(
@@ -304,51 +257,59 @@ impl<'a> BTree<'a> {
         Ok(true)
     }
 
-    fn find_leaf_page(&mut self, page_num: u32, key: i32) -> io::Result<u32> {
-        let page = self.pager.get_page(page_num)?;
-        let node_type = get_node_type(&page.data);
-        if node_type == NODE_LEAF {
-            return Ok(page_num);
-        }
-        let cell_count = get_cell_count(&page.data) as usize;
-        let mut offset = HEADER_SIZE;
-        let leftmost_child_bytes = &page.data[offset..offset + 4];
-        let mut child_page = u32::from_le_bytes(leftmost_child_bytes.try_into().unwrap());
-        offset += 4;
-        for _ in 0..cell_count {
-            let key_i_bytes = &page.data[offset..offset + 4];
-            let key_i = i32::from_le_bytes(key_i_bytes.try_into().unwrap());
-            offset += 4;
-            let child_i_bytes = &page.data[offset..offset + 4];
-            let right_child = u32::from_le_bytes(child_i_bytes.try_into().unwrap());
-            offset += 4;
-            if key < key_i {
-                return self.find_leaf_page(child_page, key);
-            } else {
-                child_page = right_child;
-            }
-        }
-        self.find_leaf_page(child_page, key)
-    }
-
-    fn leftmost_leaf_page(&mut self) -> io::Result<u32> {
-        let mut page_num = self.root_page;
+    /// Descend from `page_num` to the leaf that owns `key`.
+    ///
+    /// Iterative rather than recursive: each level's bytes are copied out under a
+    /// latch that is released before stepping to the child, so only one page is
+    /// latched at a time.
+    fn find_leaf_page(&self, page_num: u32, key: i32) -> io::Result<u32> {
+        let mut page_num = page_num;
         loop {
-            let page = self.pager.get_page(page_num)?;
-            if get_node_type(&page.data) == NODE_LEAF {
+            let data = self.pager.read_page(page_num)?;
+            if get_node_type(&data) == NODE_LEAF {
                 return Ok(page_num);
             }
-            page_num =
-                u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
+            page_num = Self::child_for_key(&data, key);
         }
     }
 
-    fn collect_all_rows(&mut self) -> io::Result<Vec<Row>> {
+    /// The child pointer an internal node's separators route `key` to.
+    fn child_for_key(data: &PageData, key: i32) -> u32 {
+        let cell_count = get_cell_count(data) as usize;
+        let mut offset = HEADER_SIZE;
+        let mut child_page = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        offset += 4;
+        for _ in 0..cell_count {
+            let key_i = i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            let right_child = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            if key < key_i {
+                return child_page;
+            }
+            child_page = right_child;
+        }
+        child_page
+    }
+
+    fn leftmost_leaf_page(&self) -> io::Result<u32> {
+        let mut page_num = self.root_page;
+        loop {
+            let data = self.pager.read_page(page_num)?;
+            if get_node_type(&data) == NODE_LEAF {
+                return Ok(page_num);
+            }
+            page_num = u32::from_le_bytes(data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
+        }
+    }
+
+    fn collect_all_rows(&self) -> io::Result<Vec<Row>> {
         let mut rows = Vec::new();
         let mut page_num = self.leftmost_leaf_page()?;
         loop {
-            rows.extend(self.read_all_rows_from_leaf(page_num)?);
-            let next = get_next_leaf(&self.pager.get_page(page_num)?.data);
+            let data = self.pager.read_page(page_num)?;
+            rows.extend(Self::parse_leaf(&data)?);
+            let next = get_next_leaf(&data);
             if next == 0 {
                 break;
             }
@@ -375,7 +336,8 @@ impl<'a> BTree<'a> {
         let mut removed = 0;
         let mut page_num = self.leftmost_leaf_page()?;
         loop {
-            let rows = self.read_all_rows_from_leaf(page_num)?;
+            let data = self.pager.read_page(page_num)?;
+            let rows = Self::parse_leaf(&data)?;
             let before = rows.len();
             let kept: Vec<Row> = rows
                 .into_iter()
@@ -389,7 +351,7 @@ impl<'a> BTree<'a> {
                 self.write_all_rows_to_leaf(page_num, &kept)?;
             }
 
-            let next = get_next_leaf(&self.pager.get_page(page_num)?.data);
+            let next = get_next_leaf(&data);
             if next == 0 {
                 break;
             }
@@ -399,127 +361,78 @@ impl<'a> BTree<'a> {
     }
 
     fn insert_row_version_into_page(&mut self, page_num: u32, row: Row) -> io::Result<()> {
-        let page = self.pager.get_page(page_num)?;
-        let node_type = get_node_type(&page.data);
-
-        if node_type == NODE_LEAF {
-            let mut rows = self.read_all_rows_from_leaf(page_num)?;
-            rows.push(row);
-            rows.sort_by_key(|r| (r.key, r.created_tx));
-            return match self.write_all_rows_to_leaf(page_num, &rows) {
-                Ok(()) => Ok(()),
-                Err(e) if e.to_string().starts_with("Leaf overflow") => {
-                    self.split_leaf(page_num, rows)?;
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            };
-        }
-
-        let cell_count = get_cell_count(&page.data) as usize;
-        let mut offset = HEADER_SIZE;
-        let mut child_page = u32::from_le_bytes(page.data[offset..offset + 4].try_into().unwrap());
-        offset += 4;
-        for _ in 0..cell_count {
-            let key_i = i32::from_le_bytes(page.data[offset..offset + 4].try_into().unwrap());
-            offset += 4;
-            let right_child = u32::from_le_bytes(page.data[offset..offset + 4].try_into().unwrap());
-            offset += 4;
-            if row.key < key_i {
-                return self.insert_row_version_into_page(child_page, row);
+        // Walk down to the owning leaf first, one latch at a time.
+        let mut page_num = page_num;
+        let leaf_data = loop {
+            let data = self.pager.read_page(page_num)?;
+            if get_node_type(&data) == NODE_LEAF {
+                break data;
             }
-            child_page = right_child;
+            page_num = Self::child_for_key(&data, row.key);
+        };
+
+        let mut rows = Self::parse_leaf(&leaf_data)?;
+        rows.push(row);
+        rows.sort_by_key(|r| (r.key, r.created_tx));
+        match self.write_all_rows_to_leaf(page_num, &rows) {
+            Ok(()) => Ok(()),
+            Err(e) if e.to_string().starts_with("Leaf overflow") => {
+                self.split_leaf(page_num, rows)?;
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
-        self.insert_row_version_into_page(child_page, row)
     }
 
-    /// Recursive helper to insert into page `page_num`. May split leaf or internal pages.
+    /// Insert into the leaf that owns `key`, descending from `page_num` and
+    /// splitting on overflow.
     fn insert_into_page(&mut self, page_num: u32, key: i32, data: RowData) -> io::Result<()> {
-        let page = self.pager.get_page(page_num)?;
-        let node_type = get_node_type(&page.data);
-
-        if node_type == NODE_LEAF {
-            debug!("insert_into_page: at leaf page {}.", page_num);
-
-            // Read all existing rows
-            let mut rows = self.read_all_rows_from_leaf(page_num)?;
-
-            // Keep the legacy insert semantics: a logical key may not have a currently visible row.
-            if self.find_latest_logical(key)?.is_some() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Duplicate key {} not allowed", key),
-                ));
+        let mut page_num = page_num;
+        let leaf_data = loop {
+            let page = self.pager.read_page(page_num)?;
+            if get_node_type(&page) == NODE_LEAF {
+                break page;
             }
+            debug!("insert_into_page: at internal page {}.", page_num);
+            page_num = Self::child_for_key(&page, key);
+        };
 
-            // Insert new logical row version and sort by logical key, then newest version.
-            let mut row = Row::new(key, data.clone());
-            row.created_tx = self
-                .pager
-                .transaction_id()
-                .unwrap_or(COMMITTED_BOOTSTRAP_TX);
-            rows.push(row);
-            rows.sort_by_key(|r| (r.key, r.created_tx));
+        debug!("insert_into_page: at leaf page {}.", page_num);
+        let mut rows = Self::parse_leaf(&leaf_data)?;
 
-            // Try writing back to leaf
-            match self.write_all_rows_to_leaf(page_num, &rows) {
-                Ok(()) => {
-                    debug!(
-                        "  → Wrote {} rows to leaf {} without overflow.",
-                        rows.len(),
-                        page_num
-                    );
-                    return Ok(());
-                }
-                Err(e) => {
-                    if e.to_string().starts_with("Leaf overflow") {
-                        debug!("  → Leaf overflow at page {}! Splitting...", page_num);
-
-                        self.split_leaf(page_num, rows)?;
-                        return Ok(());
-                    } else {
-                        return Err(e);
-                    }
-                }
-            }
+        // Keep the legacy insert semantics: a logical key may not have a currently visible row.
+        if self.find_latest_logical(key)?.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Duplicate key {} not allowed", key),
+            ));
         }
 
-        debug!("insert_into_page: at internal page {}.", page_num);
-        // If internal node, find the correct child to descend into
-        let cell_count = get_cell_count(&page.data) as usize;
-        let mut offset = HEADER_SIZE;
-        let leftmost_child_bytes = &page.data[offset..offset + 4];
-        let mut child_page = u32::from_le_bytes(leftmost_child_bytes.try_into().unwrap());
-        offset += 4;
+        // Insert new logical row version and sort by logical key, then newest version.
+        let mut row = Row::new(key, data);
+        row.created_tx = self
+            .pager
+            .transaction_id()
+            .unwrap_or(COMMITTED_BOOTSTRAP_TX);
+        rows.push(row);
+        rows.sort_by_key(|r| (r.key, r.created_tx));
 
-        for _ in 0..cell_count {
-            let key_i_bytes = &page.data[offset..offset + 4];
-            let key_i = i32::from_le_bytes(key_i_bytes.try_into().unwrap());
-            offset += 4;
-
-            let child_i_bytes = &page.data[offset..offset + 4];
-            let right_child = u32::from_le_bytes(child_i_bytes.try_into().unwrap());
-            offset += 4;
-
-            if key < key_i {
+        match self.write_all_rows_to_leaf(page_num, &rows) {
+            Ok(()) => {
                 debug!(
-                    "  → Inserting into left child {} of internal {}.",
-                    child_page, page_num
+                    "  → Wrote {} rows to leaf {} without overflow.",
+                    rows.len(),
+                    page_num
                 );
-
-                return self.insert_into_page(child_page, key, data.clone());
-            } else {
-                child_page = right_child;
+                Ok(())
             }
+            Err(e) if e.to_string().starts_with("Leaf overflow") => {
+                debug!("  → Leaf overflow at page {}! Splitting...", page_num);
+                self.split_leaf(page_num, rows)?;
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
-
-        debug!(
-            "  → Inserting into rightmost child {} of internal {}.",
-            child_page, page_num
-        );
-
-        // Descend to last child
-        self.insert_into_page(child_page, key, data.clone())
     }
 
     /// Split a leaf page that has overflowed. `all_rows` is the full (sorted) list of rows.
@@ -537,10 +450,7 @@ impl<'a> BTree<'a> {
         // 1) Read the old next_leaf *after* the left page has been rewritten.
         //    (This ensures we fetch the correct successor in the chain.)
         // —————————————————————————
-        let old_next = {
-            let left_page = self.pager.get_page(leaf_page_num)?;
-            get_next_leaf(&left_page.data)
-        };
+        let old_next = get_next_leaf(&self.pager.read_page(leaf_page_num)?);
 
         // —————————————————————————
         // 2) Allocate a new leaf page. Initialize its header properly:
@@ -548,16 +458,15 @@ impl<'a> BTree<'a> {
         //    CELL_COUNT = 0 (will set shortly), next_leaf = 0.
         // —————————————————————————
         let new_leaf = self.pager.allocate_page()?;
-        {
-            let mut p = self.pager.get_page(new_leaf)?;
-            set_node_type(&mut p.data, NODE_LEAF);
-            set_is_root(&mut p.data, false);
-            set_parent(&mut p.data, 0);
-            set_cell_count(&mut p.data, 0);
+        self.pager.with_page_mut(new_leaf, |data| {
+            set_node_type(data, NODE_LEAF);
+            set_is_root(data, false);
+            set_parent(data, 0);
+            set_cell_count(data, 0);
             // __Ensure next_leaf starts out at 0 so we know we have a blank slate__
-            set_next_leaf(&mut p.data, 0);
-            self.pager.flush_page(new_leaf)?;
-        }
+            set_next_leaf(data, 0);
+        })?;
+        self.pager.flush_page(new_leaf)?;
 
         // —————————————————————————
         // 3) Rewrite left half back into leaf_page_num
@@ -576,18 +485,14 @@ impl<'a> BTree<'a> {
         //    (b) new_leaf.next_leaf = old_next
         //    and flush each change immediately, so there’s never a broken chain.
         // —————————————————————————
-        {
-            // Link original leaf to new leaf
-            let mut left_page = self.pager.get_page(leaf_page_num)?;
-            set_next_leaf(&mut left_page.data, new_leaf);
-            self.pager.flush_page(leaf_page_num)?;
-        }
-        {
-            // Link new leaf to the old successor
-            let mut new_page = self.pager.get_page(new_leaf)?;
-            set_next_leaf(&mut new_page.data, old_next);
-            self.pager.flush_page(new_leaf)?;
-        }
+        // Link original leaf to new leaf
+        self.pager
+            .with_page_mut(leaf_page_num, |data| set_next_leaf(data, new_leaf))?;
+        self.pager.flush_page(leaf_page_num)?;
+        // Link new leaf to the old successor
+        self.pager
+            .with_page_mut(new_leaf, |data| set_next_leaf(data, old_next))?;
+        self.pager.flush_page(new_leaf)?;
 
         // —————————————————————————
         // 6) Finally, take the first key of “right_rows” and insert it into the parent:
@@ -607,7 +512,7 @@ impl<'a> BTree<'a> {
         new_page: u32,
     ) -> io::Result<()> {
         // Find parent page number
-        let parent_page = get_parent(&self.pager.get_page(old_page)?.data);
+        let parent_page = get_parent(&self.pager.read_page(old_page)?);
 
         if parent_page == 0 && old_page == self.root_page {
             debug!(
@@ -618,33 +523,28 @@ impl<'a> BTree<'a> {
             // old_page was the root. Create a new root internal node.
             // Allocate a fresh page to be the new root (we’ll keep old_page and new_page as children).
             let new_root = self.pager.allocate_page()?;
-            {
-                let root = self.pager.get_page(new_root)?;
-                set_node_type(&mut root.data, NODE_INTERNAL);
-                set_is_root(&mut root.data, true);
-                set_parent(&mut root.data, 0); // root’s parent = 0
+            self.pager.with_page_mut(new_root, |data| {
+                set_node_type(data, NODE_INTERNAL);
+                set_is_root(data, true);
+                set_parent(data, 0); // root’s parent = 0
 
                 // Leftmost child pointer = old_page
-                root.data[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&old_page.to_le_bytes());
+                data[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&old_page.to_le_bytes());
 
                 // One separator: [separator_key][new_page]
                 let offset = HEADER_SIZE + 4;
-                root.data[offset..offset + 4].copy_from_slice(&separator_key.to_le_bytes());
-                root.data[offset + 4..offset + 8].copy_from_slice(&new_page.to_le_bytes());
+                data[offset..offset + 4].copy_from_slice(&separator_key.to_le_bytes());
+                data[offset + 4..offset + 8].copy_from_slice(&new_page.to_le_bytes());
 
                 // Set cell_count = 1
-                set_cell_count(&mut root.data, 1);
-            }
+                set_cell_count(data, 1);
+            })?;
 
-            // Update parent pointers of both children
-            {
-                let p_old = self.pager.get_page(old_page)?;
-                set_parent(&mut p_old.data, new_root);
-            }
-            {
-                let p_new = self.pager.get_page(new_page)?;
-                set_parent(&mut p_new.data, new_root);
-            }
+            // Update parent pointers of both children (one latch at a time)
+            self.pager
+                .with_page_mut(old_page, |data| set_parent(data, new_root))?;
+            self.pager
+                .with_page_mut(new_page, |data| set_parent(data, new_root))?;
 
             // Flush new root and children
             self.pager.flush_page(new_root)?;
@@ -671,8 +571,7 @@ impl<'a> BTree<'a> {
         );
 
         // Otherwise, parent_page > 0, and we know it’s an internal node.
-        let mut parent = self.pager.get_page(parent_page)?;
-        let node_type = get_node_type(&parent.data);
+        let node_type = get_node_type(&self.pager.read_page(parent_page)?);
         if node_type != NODE_INTERNAL {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -708,14 +607,10 @@ impl<'a> BTree<'a> {
                     "  → Inserted separator {} into parent {} without overflow.",
                     separator_key, parent_page
                 );
-                {
-                    let c1 = self.pager.get_page(old_page)?;
-                    set_parent(&mut c1.data, parent_page);
-                }
-                {
-                    let c2 = self.pager.get_page(new_page)?;
-                    set_parent(&mut c2.data, parent_page);
-                }
+                self.pager
+                    .with_page_mut(old_page, |data| set_parent(data, parent_page))?;
+                self.pager
+                    .with_page_mut(new_page, |data| set_parent(data, parent_page))?;
                 return Ok(());
             }
             Err(e) => {
@@ -775,13 +670,12 @@ impl<'a> BTree<'a> {
 
         // Allocate a new internal page for the right half
         let new_internal = self.pager.allocate_page()?;
-        {
-            let ni = self.pager.get_page(new_internal)?;
-            set_node_type(&mut ni.data, NODE_INTERNAL);
-            set_is_root(&mut ni.data, false);
-            set_parent(&mut ni.data, 0); // will fix below
-            set_cell_count(&mut ni.data, 0);
-        }
+        self.pager.with_page_mut(new_internal, |data| {
+            set_node_type(data, NODE_INTERNAL);
+            set_is_root(data, false);
+            set_parent(data, 0); // will fix below
+            set_cell_count(data, 0);
+        })?;
         self.write_all_to_internal(new_internal, right_keys, right_children)?;
 
         debug!(
@@ -792,8 +686,8 @@ impl<'a> BTree<'a> {
 
         // Update parent pointers for all children of new_internal
         for &child in right_children {
-            let c = self.pager.get_page(child)?;
-            set_parent(&mut c.data, new_internal);
+            self.pager
+                .with_page_mut(child, |data| set_parent(data, new_internal))?;
         }
 
         // Now we must insert (separator_key, new_internal) into the parent of `page_num`.
@@ -806,30 +700,25 @@ impl<'a> BTree<'a> {
 
             // Create a brand-new root (internal) at a fresh page
             let new_root = self.pager.allocate_page()?;
-            {
-                let nr = self.pager.get_page(new_root)?;
-                set_node_type(&mut nr.data, NODE_INTERNAL);
-                set_is_root(&mut nr.data, true);
-                set_parent(&mut nr.data, 0); // root’s parent = 0
-                set_cell_count(&mut nr.data, 1);
+            self.pager.with_page_mut(new_root, |data| {
+                set_node_type(data, NODE_INTERNAL);
+                set_is_root(data, true);
+                set_parent(data, 0); // root’s parent = 0
+                set_cell_count(data, 1);
 
                 // Leftmost child = old root (page_num)
-                nr.data[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&page_num.to_le_bytes());
+                data[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&page_num.to_le_bytes());
 
                 // One separator: [separator_key][new_internal]
                 let off = HEADER_SIZE + 4;
-                nr.data[off..off + 4].copy_from_slice(&separator_key.to_le_bytes());
-                nr.data[off + 4..off + 8].copy_from_slice(&new_internal.to_le_bytes());
-            }
-            // Update parent pointers of the two children
-            {
-                let p_old = self.pager.get_page(page_num)?;
-                set_parent(&mut p_old.data, new_root);
-            }
-            {
-                let p_new = self.pager.get_page(new_internal)?;
-                set_parent(&mut p_new.data, new_root);
-            }
+                data[off..off + 4].copy_from_slice(&separator_key.to_le_bytes());
+                data[off + 4..off + 8].copy_from_slice(&new_internal.to_le_bytes());
+            })?;
+            // Update parent pointers of the two children (one latch at a time)
+            self.pager
+                .with_page_mut(page_num, |data| set_parent(data, new_root))?;
+            self.pager
+                .with_page_mut(new_internal, |data| set_parent(data, new_root))?;
             // Flush pages
             self.pager.flush_page(page_num)?;
             self.pager.flush_page(new_internal)?;
@@ -843,7 +732,7 @@ impl<'a> BTree<'a> {
         }
 
         // Otherwise, normal case: insert separator into parent of page_num
-        let parent_page = get_parent(&self.pager.get_page(page_num)?.data);
+        let parent_page = get_parent(&self.pager.read_page(page_num)?);
 
         debug!(
             "  → Inserting separator {} into parent {}.",
@@ -855,25 +744,30 @@ impl<'a> BTree<'a> {
     }
 
     /// Read back every row from a leaf page.  We assume `HEADER_SIZE=12`.
-    fn read_all_rows_from_leaf(&mut self, page_num: u32) -> io::Result<Vec<Row>> {
-        let page = self.pager.get_page(page_num)?;
-        if get_node_type(&page.data) != NODE_LEAF {
+    fn read_all_rows_from_leaf(&self, page_num: u32) -> io::Result<Vec<Row>> {
+        Self::parse_leaf(&self.pager.read_page(page_num)?)
+    }
+
+    /// Decode a leaf page image. Takes bytes rather than a page number so the
+    /// caller can latch once, copy, and then parse with the latch released.
+    fn parse_leaf(data: &PageData) -> io::Result<Vec<Row>> {
+        if get_node_type(data) != NODE_LEAF {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "read_all_rows_from_leaf: not a leaf",
             ));
         }
 
-        let cell_count = get_cell_count(&page.data) as usize;
+        let cell_count = get_cell_count(data) as usize;
         let mut rows = Vec::with_capacity(cell_count);
         let mut offset = HEADER_SIZE; // 12
 
         for _ in 0..cell_count {
             // 1) 4 bytes key
-            let key = i32::from_le_bytes(page.data[offset..offset + 4].try_into().unwrap());
+            let key = i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             // 2) 4 bytes payload length
             let payload_len =
-                u32::from_le_bytes(page.data[offset + 4..offset + 8].try_into().unwrap()) as usize;
+                u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
             // 3) payload bytes
             let start = offset + 8;
             let end = start + payload_len;
@@ -883,8 +777,7 @@ impl<'a> BTree<'a> {
                     "read_all_rows_from_leaf: corrupt payload length",
                 ));
             }
-            let bytes = &page.data[start..end];
-            let row = Row::deserialize_mvcc_payload(key, bytes)?;
+            let row = Row::deserialize_mvcc_payload(key, &data[start..end])?;
 
             rows.push(row);
             offset = end;
@@ -894,17 +787,14 @@ impl<'a> BTree<'a> {
     }
 
     /// Write a complete sorted list of rows into a leaf page.
+    ///
+    /// Serialization and the overflow check happen *before* the page is latched,
+    /// so an overflow (which triggers a split) never leaves a latch held, and the
+    /// exclusive latch covers only the memcpy.
     fn write_all_rows_to_leaf(&mut self, page_num: u32, rows: &[Row]) -> io::Result<()> {
-        let page = self.pager.get_page(page_num)?;
-
-        // 1) Compute total size of all row‐bodies (4B key + 4B length + payload.len())
-        let mut total_size: usize = 0;
-        for row in rows {
-            let bytes = row.serialize_mvcc_payload();
-            total_size += 4; // key
-            total_size += 4; // length
-            total_size += bytes.len();
-        }
+        // 1) Serialize once and compute the total body size (4B key + 4B length + payload).
+        let payloads: Vec<Vec<u8>> = rows.iter().map(Row::serialize_mvcc_payload).collect();
+        let total_size: usize = payloads.iter().map(|bytes| 8 + bytes.len()).sum();
 
         // 2) Check overflow: if HEADER_SIZE + total_size > PAGE_SIZE, it truly won't fit
         if HEADER_SIZE + total_size > PAGE_SIZE {
@@ -914,33 +804,31 @@ impl<'a> BTree<'a> {
             ));
         }
 
-        // 3) Zero‐out everything AFTER the 12B header (we do NOT touch offsets [0..12))
-        for idx in HEADER_SIZE..PAGE_SIZE {
-            page.data[idx] = 0;
-        }
+        self.pager.with_page_mut(page_num, |data| {
+            // 3) Zero‐out everything AFTER the 12B header (we do NOT touch offsets [0..12))
+            data[HEADER_SIZE..PAGE_SIZE].fill(0);
 
-        // 4) Pack each row at offset = HEADER_SIZE
-        let mut offset = HEADER_SIZE;
-        for row in rows {
-            let bytes = row.serialize_mvcc_payload();
-            // 4A: 4 bytes for key
-            let key_bytes = row.key.to_le_bytes();
-            page.data[offset..offset + 4].copy_from_slice(&key_bytes);
+            // 4) Pack each row at offset = HEADER_SIZE
+            let mut offset = HEADER_SIZE;
+            for (row, bytes) in rows.iter().zip(&payloads) {
+                // 4A: 4 bytes for key
+                data[offset..offset + 4].copy_from_slice(&row.key.to_le_bytes());
 
-            // 4B: 4 bytes for payload length
-            let plen = (bytes.len() as u32).to_le_bytes();
-            page.data[offset + 4..offset + 8].copy_from_slice(&plen);
+                // 4B: 4 bytes for payload length
+                data[offset + 4..offset + 8]
+                    .copy_from_slice(&(bytes.len() as u32).to_le_bytes());
 
-            // 4C: payload bytes
-            let start = offset + 8;
-            let end = start + bytes.len();
-            page.data[start..end].copy_from_slice(&bytes);
+                // 4C: payload bytes
+                let start = offset + 8;
+                let end = start + bytes.len();
+                data[start..end].copy_from_slice(bytes);
 
-            offset = end;
-        }
+                offset = end;
+            }
 
-        // 5) Update the cell_count (u16) at offsets 6..8
-        set_cell_count(&mut page.data, rows.len() as u16);
+            // 5) Update the cell_count (u16) at offsets 6..8
+            set_cell_count(data, rows.len() as u16);
+        })?;
 
         // 6) Flush so that the “next_leaf” field (bytes 8..12) is preserved
         self.pager.flush_page(page_num)?;
@@ -952,37 +840,35 @@ impl<'a> BTree<'a> {
     /// Returns:
     ///   keys: Vec<i32> of length = cell_count
     ///   children: Vec<u32> of length = cell_count + 1
-    fn read_all_from_internal(&mut self, page_num: u32) -> io::Result<(Vec<i32>, Vec<u32>)> {
-        let page = self.pager.get_page(page_num)?;
-        let node_type = get_node_type(&page.data);
-        if node_type != NODE_INTERNAL {
+    fn read_all_from_internal(&self, page_num: u32) -> io::Result<(Vec<i32>, Vec<u32>)> {
+        let data = self.pager.read_page(page_num)?;
+        if get_node_type(&data) != NODE_INTERNAL {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "read_all_from_internal: not internal",
             ));
         }
 
-        let cell_count = get_cell_count(&page.data) as usize;
+        let cell_count = get_cell_count(&data) as usize;
         let mut keys = Vec::with_capacity(cell_count);
         let mut children = Vec::with_capacity(cell_count + 1);
 
         // Read leftmost child
         let mut offset = HEADER_SIZE;
-        let leftmost_bytes = &page.data[offset..offset + 4];
-        let leftmost = u32::from_le_bytes(leftmost_bytes.try_into().unwrap());
-        children.push(leftmost);
+        children.push(u32::from_le_bytes(
+            data[offset..offset + 4].try_into().unwrap(),
+        ));
         offset += 4;
 
         for _ in 0..cell_count {
-            let key_bytes = &page.data[offset..offset + 4];
-            let key = i32::from_le_bytes(key_bytes.try_into().unwrap());
+            keys.push(i32::from_le_bytes(
+                data[offset..offset + 4].try_into().unwrap(),
+            ));
             offset += 4;
-            let child_bytes = &page.data[offset..offset + 4];
-            let child = u32::from_le_bytes(child_bytes.try_into().unwrap());
+            children.push(u32::from_le_bytes(
+                data[offset..offset + 4].try_into().unwrap(),
+            ));
             offset += 4;
-
-            keys.push(key);
-            children.push(child);
         }
 
         Ok((keys, children))
@@ -1014,35 +900,31 @@ impl<'a> BTree<'a> {
             ));
         }
 
-        let page = self.pager.get_page(page_num)?;
-        // Zero out body:
-        for idx in HEADER_SIZE..PAGE_SIZE {
-            page.data[idx] = 0;
-        }
+        self.pager.with_page_mut(page_num, |data| {
+            // Zero out body:
+            data[HEADER_SIZE..PAGE_SIZE].fill(0);
 
-        // Write leftmost child
-        let mut offset = HEADER_SIZE;
-        let left_child_bytes = children[0].to_le_bytes();
-        page.data[offset..offset + 4].copy_from_slice(&left_child_bytes);
-        offset += 4;
-
-        // Write each [key][child] pair
-        for i in 0..keys.len() {
-            let key_bytes = keys[i].to_le_bytes();
-            page.data[offset..offset + 4].copy_from_slice(&key_bytes);
+            // Write leftmost child
+            let mut offset = HEADER_SIZE;
+            data[offset..offset + 4].copy_from_slice(&children[0].to_le_bytes());
             offset += 4;
-            let child_bytes = children[i + 1].to_le_bytes();
-            page.data[offset..offset + 4].copy_from_slice(&child_bytes);
-            offset += 4;
-        }
 
-        // Update cell_count
-        set_cell_count(&mut page.data, keys.len() as u16);
+            // Write each [key][child] pair
+            for i in 0..keys.len() {
+                data[offset..offset + 4].copy_from_slice(&keys[i].to_le_bytes());
+                offset += 4;
+                data[offset..offset + 4].copy_from_slice(&children[i + 1].to_le_bytes());
+                offset += 4;
+            }
+
+            // Update cell_count
+            set_cell_count(data, keys.len() as u16);
+        })?;
         self.pager.flush_page(page_num)?;
         Ok(())
     }
 
-    pub fn open_root(pager: &'a mut Pager, root_page: u32) -> io::Result<Self> {
+    pub fn open_root(pager: &'a Pager, root_page: u32) -> io::Result<Self> {
         Ok(BTree { root_page, pager })
     }
 
@@ -1052,14 +934,14 @@ impl<'a> BTree<'a> {
         self.root_page
     }
 
-    pub fn scan_all_rows(&'a mut self) -> RowCursor<'a> {
+    pub fn scan_all_rows(&self) -> RowCursor<'a> {
         self.scan_rows_with_bounds(0, None)
     }
 
     /// Return one visible version per logical key for `snapshot`.
-    pub fn scan_visible(&mut self, snapshot: &Snapshot) -> io::Result<Vec<Row>> {
+    pub fn scan_visible(&self, snapshot: &Snapshot) -> io::Result<Vec<Row>> {
         let mut rows = self.collect_all_rows()?;
-        let tx_table = self.pager.transaction_table().clone();
+        let tx_table = self.pager.transaction_table();
         rows.retain(|row| Self::row_visible(row, snapshot, &tx_table));
         rows.sort_by_key(|row| (row.key, std::cmp::Reverse(row.created_tx)));
 
@@ -1075,21 +957,14 @@ impl<'a> BTree<'a> {
         Ok(visible)
     }
 
-    pub fn scan_rows_with_bounds(&'a mut self, skip: usize, limit: Option<usize>) -> RowCursor<'a> {
-        // 1) Find leftmost leaf
-        let mut page_num = self.root_page;
-        loop {
-            let page = self.pager.get_page(page_num).unwrap();
-            if get_node_type(&page.data) == NODE_LEAF {
-                break;
-            }
-            let left_child =
-                u32::from_le_bytes(page.data[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
-            page_num = left_child;
-        }
+    pub fn scan_rows_with_bounds(&self, skip: usize, limit: Option<usize>) -> RowCursor<'a> {
+        let page_num = self
+            .leftmost_leaf_page()
+            .expect("leftmost leaf must be reachable");
         RowCursor {
-            btree: self,
+            pager: self.pager,
             current_page: page_num,
+            page: self.pager.read_page(page_num).expect("leaf page readable"),
             offset: HEADER_SIZE,
             rows_in_page: 0,
             skip,
@@ -1098,7 +973,7 @@ impl<'a> BTree<'a> {
         }
     }
 
-    pub fn scan_rows_desc_with_bounds(&'a mut self, skip: usize, limit: Option<usize>) -> Vec<Row> {
+    pub fn scan_rows_desc_with_bounds(&self, skip: usize, limit: Option<usize>) -> Vec<Row> {
         let mut rows: Vec<Row> = self.scan_rows_with_bounds(0, None).collect();
         rows.reverse();
         let start = skip.min(rows.len());
@@ -1109,7 +984,7 @@ impl<'a> BTree<'a> {
         rows[start..end].to_vec()
     }
 
-    /// Flush all cached pages to disk (for final cleanup).
+    /// Flush all resident pages to disk (for final cleanup).
     pub fn flush_all(&mut self) -> io::Result<()> {
         for i in 0..self.pager.num_pages() {
             self.pager.flush_page(i)?;
@@ -1118,9 +993,16 @@ impl<'a> BTree<'a> {
     }
 }
 
+/// A forward scan over the leaf chain.
+///
+/// The cursor holds a *copy* of the leaf page it is currently walking rather
+/// than a borrow of the frame, so it never keeps a page latched between calls to
+/// `next()` — a scan cannot block a concurrent writer on the page it happens to
+/// be sitting on.
 pub struct RowCursor<'b> {
-    btree: &'b mut BTree<'b>,
+    pager: &'b Pager,
     current_page: u32,
+    page: PageData,
     offset: usize,
     rows_in_page: usize,
     skip: usize,
@@ -1133,15 +1015,14 @@ impl<'b> Iterator for RowCursor<'b> {
 
     fn next(&mut self) -> Option<Row> {
         loop {
-            let page = self.btree.pager.get_page(self.current_page).ok()?;
-            let cell_count = get_cell_count(&page.data) as usize;
+            let cell_count = get_cell_count(&self.page) as usize;
 
             if self.rows_in_page < cell_count {
                 // Deserialize one row from this page
                 let key =
-                    i32::from_le_bytes(page.data[self.offset..self.offset + 4].try_into().unwrap());
+                    i32::from_le_bytes(self.page[self.offset..self.offset + 4].try_into().unwrap());
                 let payload_len = u32::from_le_bytes(
-                    page.data[self.offset + 4..self.offset + 8]
+                    self.page[self.offset + 4..self.offset + 8]
                         .try_into()
                         .unwrap(),
                 ) as usize;
@@ -1150,8 +1031,7 @@ impl<'b> Iterator for RowCursor<'b> {
                 if end > PAGE_SIZE {
                     return None;
                 }
-                let bytes = &page.data[start..end];
-                let row = Row::deserialize_mvcc_payload(key, bytes).ok()?;
+                let row = Row::deserialize_mvcc_payload(key, &self.page[start..end]).ok()?;
 
                 // Advance offsets
                 self.offset = end;
@@ -1176,13 +1056,14 @@ impl<'b> Iterator for RowCursor<'b> {
             }
 
             // If we’re here, this leaf is exhausted. Jump to the next leaf page.
-            let next_leaf = get_next_leaf(&page.data);
+            let next_leaf = get_next_leaf(&self.page);
             if next_leaf == 0 {
                 // No more leaves
                 return None;
             }
-            // Move into the next leaf
+            // Move into the next leaf, taking a fresh copy of its image.
             self.current_page = next_leaf;
+            self.page = self.pager.read_page(next_leaf).ok()?;
             self.offset = HEADER_SIZE;
             self.rows_in_page = 0;
         }
@@ -1206,8 +1087,8 @@ mod tests {
     #[test]
     fn write_conflict_detects_version_created_after_snapshot() {
         let file = NamedTempFile::new().unwrap();
-        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
-        let mut btree = BTree::new(&mut pager).unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&pager).unwrap();
         btree.insert_version(row_with_tx(1, "before", 1)).unwrap();
         let snapshot = Snapshot::new_for_transaction(2, 3, vec![]);
         let visible = btree.find_visible(1, &snapshot).unwrap().unwrap();
@@ -1224,8 +1105,8 @@ mod tests {
     #[test]
     fn write_conflict_detects_delete_after_snapshot() {
         let file = NamedTempFile::new().unwrap();
-        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
-        let mut btree = BTree::new(&mut pager).unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&pager).unwrap();
         btree.insert_version(row_with_tx(1, "before", 1)).unwrap();
         let snapshot = Snapshot::new_for_transaction(2, 3, vec![]);
         let visible = btree.find_visible(1, &snapshot).unwrap().unwrap();
@@ -1242,8 +1123,8 @@ mod tests {
     #[test]
     fn write_conflict_absent_for_unchanged_key() {
         let file = NamedTempFile::new().unwrap();
-        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
-        let mut btree = BTree::new(&mut pager).unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&pager).unwrap();
         btree.insert_version(row_with_tx(1, "before", 1)).unwrap();
         let snapshot = Snapshot::new_for_transaction(2, 3, vec![]);
         let visible = btree.find_visible(1, &snapshot).unwrap().unwrap();
@@ -1259,8 +1140,8 @@ mod tests {
     #[test]
     fn write_conflict_detects_writer_live_at_snapshot() {
         let file = NamedTempFile::new().unwrap();
-        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
-        let mut btree = BTree::new(&mut pager).unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&pager).unwrap();
         btree.insert_version(row_with_tx(1, "before", 1)).unwrap();
         // Transaction 4 was still live when the snapshot was captured.
         let snapshot = Snapshot::new_for_transaction(2, 10, vec![4]);
@@ -1275,8 +1156,8 @@ mod tests {
     #[test]
     fn write_conflict_ignores_own_write() {
         let file = NamedTempFile::new().unwrap();
-        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
-        let mut btree = BTree::new(&mut pager).unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&pager).unwrap();
         // The current transaction (id 3) wrote the only version; its own write
         // sits at/after the snapshot bound but must not be flagged as a conflict.
         let snapshot = Snapshot::new_for_transaction(3, 3, vec![]);
@@ -1293,8 +1174,8 @@ mod tests {
     #[test]
     fn vacuum_prunes_only_committed_deletes_below_global_xmin() {
         let file = NamedTempFile::new().unwrap();
-        let mut pager = Pager::new(file.path().to_str().unwrap()).unwrap();
-        let mut btree = BTree::new(&mut pager).unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&pager).unwrap();
         let mut removable = row_with_tx(1, "old", 1);
         removable.deleted_tx = Some(3);
         let mut active_delete = row_with_tx(2, "active-delete", 1);
