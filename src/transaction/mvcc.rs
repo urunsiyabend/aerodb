@@ -43,6 +43,14 @@ fn committed_before_snapshot(
     // active. A tx id that is *absent* from the table is treated as committed
     // (frozen): the WAL is truncated on commit, so long-committed transactions
     // leave no status record behind, yet their versions must stay visible.
+    //
+    // This is also why the frozen watermark
+    // ([`crate::storage::pager::Pager::advance_frozen_xid`]) needs no special
+    // case here: reclaiming an id's clog status makes it absent, and absent below
+    // the snapshot bound already means committed. The watermark only ever moves
+    // to `global_xmin`, so a reclaimed id is always below every live snapshot's
+    // bound, and ids at or above the bound are never reclaimed -- there is no
+    // case where an absent id must be *forced* committed above the bound.
     tx_id == COMMITTED_BOOTSTRAP_TX
         || (tx_id < snapshot.xmax
             && snapshot.active_tx_ids.binary_search(&tx_id).is_err()
@@ -102,6 +110,23 @@ mod tests {
         tx_table.insert(8, TransactionStatus::Committed(1));
         tx_table.insert(12, TransactionStatus::Active);
         assert!(is_visible(&row(8, Some(12)), &snapshot(), &tx_table));
+    }
+
+    #[test]
+    fn frozen_creator_with_no_status_entry_is_visible() {
+        // What a compacted clog looks like to visibility: the creator's status
+        // entry has been reclaimed below the frozen watermark, so it is absent
+        // from the table and must read as committed.
+        let tx_table = TransactionTable::new();
+        assert!(is_visible(&row(8, None), &snapshot(), &tx_table));
+    }
+
+    #[test]
+    fn frozen_deleter_with_no_status_entry_hides_old_version() {
+        // Same for a reclaimed *deleter*: absent below the bound means the delete
+        // committed, so the old version stays hidden after compaction.
+        let tx_table = TransactionTable::new();
+        assert!(!is_visible(&row(8, Some(12)), &snapshot(), &tx_table));
     }
 
     #[test]

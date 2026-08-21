@@ -1,16 +1,26 @@
 # Spec: MVCC follow-ups — clog compaction + per-page latching
 
-Status: **Draft — plan for a follow-up session**
+Status: **Phase 6 implemented; Phase 7 not started**
 Depends on: `specs/mvcc-concurrent-transactions.md` phases 1–5 (all merged).
 Scope: two independent follow-ups. **Phase 6** is small and low-risk (do first).
 **Phase 7** is the large per-page-latching rewrite (§11 of the parent spec).
 
 Each numbered step must compile, keep the existing suite green (202 tests / 38
-suites at time of writing), and add its own tests before moving on.
+suites at time of writing; 214 / 39 after Phase 6), and add its own tests before
+moving on.
 
 ---
 
 ## Phase 6 — vacuum-driven `frozen_xid` advancement + clog compaction
+
+Status: **✅ implemented.** `Clog::compact`, `Pager::advance_frozen_xid` /
+`Pager::frozen_xid`, `Catalog::vacuum_all`, `Engine::vacuum_all` /
+`Database::vacuum_all` (+ `frozen_xid()` accessors), tests in
+`tests/mvcc_frozen_xid.rs`. Option A (advance only from an all-tables sweep) was
+taken; the array was **not** rebased onto a stored base offset, so the clog file
+does not shrink — one byte per four transaction ids was judged small enough that
+the extra indirection is not worth it (documented on `Clog::compact`).
+`committed_before_snapshot` needed no change, as predicted by step 5.
 
 ### Problem
 `frozen_xid` is persisted in page-0 meta (`Pager`, bytes 24..32) but is **never

@@ -799,6 +799,36 @@ impl Catalog {
         })
     }
 
+    /// The durable frozen watermark; see [`Catalog::vacuum_all`].
+    pub fn frozen_xid(&self) -> TransactionId {
+        self.pager.frozen_xid()
+    }
+
+    /// Vacuum **every** table in one pass, then advance the durable frozen
+    /// watermark to `global_xmin` and reclaim the clog statuses below it.
+    ///
+    /// The watermark is only advanced from here, never from the per-table
+    /// [`Catalog::vacuum_table`]: a status entry may be dropped only once no
+    /// remaining on-disk version needs it, and a single-table pass cannot know
+    /// whether another table still holds versions created by those transactions.
+    /// Sweeping all tables discharges that condition -- an aborted transaction's
+    /// versions are reclaimable immediately (the aborted-creator rule), so after a
+    /// full sweep no version below `global_xmin` depends on being able to tell an
+    /// aborted id from a frozen one.
+    pub fn vacuum_all(&mut self, global_xmin: TransactionId) -> io::Result<VacuumReport> {
+        let table_names: Vec<String> = self.all_tables().into_iter().map(|t| t.name).collect();
+
+        let mut report = VacuumReport::default();
+        for name in table_names {
+            let table_report = self.vacuum_table(&name, global_xmin)?;
+            report.versions_removed += table_report.versions_removed;
+            report.indexes_cleaned += table_report.indexes_cleaned;
+        }
+
+        self.pager.advance_frozen_xid(global_xmin)?;
+        Ok(report)
+    }
+
     fn rebuild_indexes_for_table(&mut self, table_name: &str) -> io::Result<usize> {
         let table = self.get_table(table_name)?.clone();
         let index_names: Vec<String> = self

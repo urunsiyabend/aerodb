@@ -29,4 +29,19 @@ impl Engine {
         let global_xmin = self.transaction_manager.global_xmin(&self.catalog);
         self.catalog.vacuum_table(table_name, global_xmin)
     }
+
+    /// Vacuum every table in one pass and advance the durable frozen watermark,
+    /// reclaiming the clog statuses below it. Use this rather than repeated
+    /// [`Engine::vacuum_table`] calls when the goal is to bound clog growth: the
+    /// watermark can only be advanced from an all-tables sweep.
+    pub fn vacuum_all(&mut self) -> std::io::Result<VacuumReport> {
+        let global_xmin = self.transaction_manager.global_xmin(&self.catalog);
+        self.catalog.vacuum_all(global_xmin)
+    }
+
+    /// The durable frozen watermark: transaction ids below it have had their clog
+    /// status reclaimed and are unconditionally treated as committed.
+    pub fn frozen_xid(&self) -> crate::transaction::TransactionId {
+        self.catalog.frozen_xid()
+    }
 }

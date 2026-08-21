@@ -319,6 +319,38 @@ impl Pager {
         self.next_transaction_id
     }
 
+    /// The frozen watermark: every transaction id below it is unconditionally
+    /// treated as committed, and its clog status has been reclaimed.
+    pub fn frozen_xid(&self) -> TransactionId {
+        self.frozen_xid
+    }
+
+    /// Advance the frozen watermark to `watermark` and reclaim the clog statuses
+    /// below it.
+    ///
+    /// Only safe once (a) no live snapshot can still be evaluating a transaction
+    /// below `watermark` -- guaranteed by passing `global_xmin`, which never
+    /// exceeds the oldest live transaction id -- and (b) every version created or
+    /// deleted by those transactions has been vacuumed, so no on-disk version
+    /// still needs their status to be seen as aborted. Condition (b) is why the
+    /// only caller is the all-tables vacuum ([`crate::catalog::Catalog::vacuum_all`]):
+    /// a single-table pass cannot know whether another table still holds versions
+    /// belonging to those ids.
+    ///
+    /// Reclaiming a status is safe because MVCC visibility treats an *absent* id
+    /// below the snapshot boundary as committed (the "frozen rule" in
+    /// [`crate::transaction::mvcc`]), which is exactly the meaning the watermark
+    /// assigns to it.
+    pub fn advance_frozen_xid(&mut self, watermark: TransactionId) -> io::Result<()> {
+        if watermark <= self.frozen_xid {
+            return Ok(());
+        }
+        self.frozen_xid = watermark;
+        self.clog.compact(watermark)?;
+        self.persist_meta()?;
+        Ok(())
+    }
+
     /// Read the durable counters from page 0. Returns `None` when page 0 is
     /// missing or does not carry the meta magic (legacy databases).
     fn read_meta_page(

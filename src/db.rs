@@ -136,4 +136,20 @@ impl Database {
         let global_xmin = manager.global_xmin(catalog);
         Ok(catalog.vacuum_table(table, global_xmin)?)
     }
+
+    /// Vacuum every table in one pass, then advance the durable frozen watermark
+    /// and reclaim the clog statuses below it. Only an all-tables sweep may move
+    /// the watermark, so this is the entry point that bounds clog growth.
+    pub fn vacuum_all(&self) -> DbResult<crate::storage::vacuum::VacuumReport> {
+        let mut core = self.lock();
+        let Core { catalog, manager } = &mut *core;
+        let global_xmin = manager.global_xmin(catalog);
+        Ok(catalog.vacuum_all(global_xmin)?)
+    }
+
+    /// The durable frozen watermark: transaction ids below it have had their clog
+    /// status reclaimed and are unconditionally treated as committed.
+    pub fn frozen_xid(&self) -> TransactionId {
+        self.lock().catalog.frozen_xid()
+    }
 }

@@ -69,6 +69,53 @@ impl Clog {
         Clog::write_header(&mut self.file)
     }
 
+    /// Drop the recorded status of every transaction below `below`, making those
+    /// slots read back as absent (and therefore, under the MVCC frozen rule, as
+    /// committed). Called from [`crate::storage::pager::Pager::advance_frozen_xid`]
+    /// once a vacuum pass proves no live snapshot and no remaining on-disk version
+    /// still needs to distinguish those transactions.
+    ///
+    /// The packed array is absolute-indexed by transaction id, so compaction
+    /// zeroes bytes in place rather than shrinking the file. Rebasing the array
+    /// onto a stored base offset would let it shrink, but the file is one byte per
+    /// four transactions -- small enough that the extra indirection is not worth
+    /// it.
+    pub fn compact(&mut self, below: TransactionId) -> io::Result<()> {
+        if below == 0 {
+            return Ok(());
+        }
+
+        let len = self.file.metadata()?.len();
+        if len <= HEADER_LEN {
+            return Ok(());
+        }
+
+        // Bytes wholly below the watermark are zeroed; the byte straddling it
+        // keeps the slots at or above `below`.
+        let whole_bytes = ((below / 4) as u64).min(len - HEADER_LEN);
+        if whole_bytes > 0 {
+            let zeros = vec![0u8; whole_bytes as usize];
+            self.file.seek(SeekFrom::Start(HEADER_LEN))?;
+            self.file.write_all(&zeros)?;
+        }
+
+        let partial_slots = below % 4;
+        let partial_offset = HEADER_LEN + whole_bytes;
+        if partial_slots > 0 && partial_offset < len {
+            let mut byte = [0u8; 1];
+            self.file.seek(SeekFrom::Start(partial_offset))?;
+            self.file.read_exact(&mut byte)?;
+            for slot in 0..partial_slots {
+                byte[0] &= !(0b11 << (slot * 2));
+            }
+            self.file.seek(SeekFrom::Start(partial_offset))?;
+            self.file.write_all(&byte)?;
+        }
+
+        self.file.sync_all()?;
+        Ok(())
+    }
+
     fn byte_offset(tx_id: TransactionId) -> u64 {
         HEADER_LEN + tx_id / 4
     }
@@ -210,6 +257,51 @@ mod tests {
         let mut clog = Clog::open(&path).unwrap();
         assert_eq!(clog.load().unwrap().get(&7), Some(&TransactionStatus::Aborted));
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn compact_drops_statuses_below_watermark() {
+        let path = temp_path("compact");
+        let _ = std::fs::remove_file(&path);
+        let mut clog = Clog::open(&path).unwrap();
+        clog.record(1, TransactionStatus::Committed(1)).unwrap();
+        clog.record(2, TransactionStatus::Aborted).unwrap();
+        clog.record(3, TransactionStatus::Committed(3)).unwrap();
+        clog.record(4, TransactionStatus::Aborted).unwrap();
+        clog.record(5, TransactionStatus::Committed(5)).unwrap();
+
+        // Watermark 4 straddles a packed byte (ids 4..7 share byte 1), so this
+        // exercises both the whole-byte and partial-byte paths.
+        clog.compact(4).unwrap();
+
+        let table = clog.load().unwrap();
+        assert_eq!(table.get(&1), None, "committed below watermark is dropped");
+        assert_eq!(table.get(&2), None, "aborted below watermark is dropped");
+        assert_eq!(table.get(&3), None);
+        assert_eq!(table.get(&4), Some(&TransactionStatus::Aborted));
+        assert_eq!(table.get(&5), Some(&TransactionStatus::Committed(0)));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn compact_survives_reopen_and_tolerates_out_of_range_watermarks() {
+        let path = temp_path("compact-reopen");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut clog = Clog::open(&path).unwrap();
+            clog.record(9, TransactionStatus::Aborted).unwrap();
+            // A watermark past everything recorded clears the whole array...
+            clog.compact(400).unwrap();
+            assert!(clog.load().unwrap().is_empty());
+            // ...and compaction is a no-op on an empty array or a zero watermark.
+            clog.compact(0).unwrap();
+            clog.compact(7).unwrap();
+        }
+
+        let mut clog = Clog::open(&path).unwrap();
+        assert!(clog.load().unwrap().is_empty(), "compaction is durable");
         let _ = std::fs::remove_file(&path);
     }
 
