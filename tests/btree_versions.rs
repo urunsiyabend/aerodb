@@ -6,8 +6,8 @@
 //! point lookups must stay correct when that happens.
 
 use aerodb::{
-    engine::Engine, execution::runtime::execute_select_with_indexes,
-    sql::parser::parse_statement, storage::row::ColumnValue,
+    engine::Engine, execution::runtime::execute_select_with_indexes, sql::parser::parse_statement,
+    storage::row::ColumnValue,
 };
 use std::fs;
 
@@ -46,7 +46,10 @@ fn payload(tag: usize) -> String {
 fn heavily_updated_key_keeps_exactly_one_visible_version() {
     let filename = "btree_versions_hot_key.db";
     let mut engine = fresh_engine(filename);
-    exec(&mut engine, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+    exec(
+        &mut engine,
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)",
+    );
     for id in [1, 2, 3] {
         exec(
             &mut engine,
@@ -65,7 +68,11 @@ fn heavily_updated_key_keeps_exactly_one_visible_version() {
             vec![1, 2, 3],
             "round {round}: every key has exactly one visible version"
         );
-        assert_eq!(visible[1].1, payload(round), "round {round}: newest value wins");
+        assert_eq!(
+            visible[1].1,
+            payload(round),
+            "round {round}: newest value wins"
+        );
     }
 }
 
@@ -74,7 +81,10 @@ fn hot_key_survives_reopen_and_further_updates() {
     let filename = "btree_versions_hot_key_reopen.db";
     {
         let mut engine = fresh_engine(filename);
-        exec(&mut engine, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+        exec(
+            &mut engine,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)",
+        );
         for id in 1..=5 {
             exec(
                 &mut engine,

@@ -651,13 +651,10 @@ impl<'a> BTree<'a> {
         // would land the new sibling *before* `old_page` among equal separators,
         // misrouting later descents away from the leaf chain's order.
         let Some(old_idx) = children.iter().position(|&child| child == old_page) else {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "insert_in_parent: page {} is not a child of {}",
-                    old_page, parent_page
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "insert_in_parent: page {} is not a child of {}",
+                old_page, parent_page
+            )));
         };
         children.insert(old_idx + 1, new_page);
         keys.insert(old_idx, separator_key);
@@ -1283,7 +1280,10 @@ mod tests {
         assert_eq!(visible.created_tx, 2);
 
         let latest = Snapshot::new_for_transaction(100, 101, vec![]);
-        assert_eq!(btree.find_visible(5, &latest).unwrap().unwrap().created_tx, 60);
+        assert_eq!(
+            btree.find_visible(5, &latest).unwrap().unwrap().created_tx,
+            60
+        );
         for key in (1..=9).filter(|&k| k != 5) {
             assert_eq!(btree.find_visible(key, &latest).unwrap().unwrap().key, key);
         }

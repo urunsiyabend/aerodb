@@ -31,7 +31,10 @@ fn main() {
     cleanup();
 
     let mut engine = Engine::new(&filename);
-    exec(&mut engine, "CREATE TABLE t (id INTEGER, v INTEGER, pad TEXT)");
+    exec(
+        &mut engine,
+        "CREATE TABLE t (id INTEGER, v INTEGER, pad TEXT)",
+    );
     exec(&mut engine, "CREATE INDEX idx_t_v ON t (v)");
 
     let started = Instant::now();

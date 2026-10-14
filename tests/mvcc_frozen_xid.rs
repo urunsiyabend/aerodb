@@ -125,7 +125,10 @@ fn rolled_back_delete_survives_compaction_and_reopen() {
 
     {
         let mut engine = fresh_engine(filename);
-        exec(&mut engine, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+        exec(
+            &mut engine,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)",
+        );
         exec(&mut engine, "INSERT INTO t VALUES (1, 'a')");
         exec(&mut engine, "INSERT INTO t VALUES (2, 'b')");
         exec(&mut engine, "BEGIN");

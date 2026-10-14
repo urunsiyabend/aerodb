@@ -511,9 +511,10 @@ impl Pager {
     }
 
     /// Run `f` against the shared transaction-status table under its read lock.
-    /// Preferred over [`Pager::transaction_table`] on hot paths: the table holds
-    /// a status for every transaction since the last frozen-watermark advance,
-    /// so cloning it per point lookup costs O(transactions). Do not touch pages
+    /// Preferred over [`Pager::transaction_table`] on hot paths: the in-memory
+    /// table is never pruned (advancing the frozen watermark compacts only the
+    /// durable clog), so it keeps growing with every transaction of the session,
+    /// and cloning it per point lookup would cost O(transactions). Do not touch pages
     /// inside `f` (lock order: `tx_table` before page latches is fine, but keep
     /// the critical section to visibility checks).
     pub(crate) fn with_transaction_table<R>(&self, f: impl FnOnce(&TransactionTable) -> R) -> R {

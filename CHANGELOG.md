@@ -38,10 +38,22 @@ may still change between minor versions.
   probes, the INSERT duplicate check and FK parent probes) no longer scan every
   leaf of the tree and clone the whole transaction-status table. They descend to
   the first leaf that may hold the key and walk only that key's version chain,
-  evaluating visibility under a read lock. Release-build measurements with
-  `examples/point_lookup_bench.rs` at 8000 rows: indexed equality lookup
-  1051.9 → 9.5 µs/probe, bulk insert 1260.2 → 70.6 µs/row, single-row update
-  5490 → 2758 µs/row. Insert and lookup cost is now flat in table size.
+  evaluating visibility under a read lock.
+- Measured with `examples/point_lookup_bench.rs` (release build, 8000 rows,
+  2000 probes, 200 updates). These are single local runs, not guarantees, and
+  results vary by machine and run:
+
+  | Metric (µs/op)         | Developer run    | Independent run   |
+  |------------------------|------------------|-------------------|
+  | Indexed equality probe | 1051.9 → 9.5     | 1060.8 → 9.8      |
+  | Bulk INSERT, per row   | 1260.2 → 70.6    | 1266.1 → 180.5    |
+  | Single-row UPDATE      | 5490.4 → 2758.3  | 5599.5 → 6731.6   |
+
+  The indexed-lookup improvement reproduced. The INSERT gain varied between
+  runs. UPDATE did **not** consistently improve: it was faster in one run and
+  slower in the other. `UPDATE ... WHERE` still finds its rows with a full
+  table scan (see Known issues), so this change does not claim to speed up
+  UPDATE.
 
 ### Changed
 

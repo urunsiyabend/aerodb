@@ -47,11 +47,9 @@ pub fn aborted_creator_is_removable(
 /// be cleared before the frozen watermark passes that transaction: once its clog
 /// status is reclaimed, an absent id reads as committed and the still-live
 /// version would disappear.
-pub fn aborted_deleter_is_clearable(
+pub(crate) fn aborted_deleter_is_clearable(
     deleted_tx: Option<TransactionId>,
     tx_table: &TransactionTable,
 ) -> bool {
-    deleted_tx.is_some_and(|tx_id| {
-        matches!(tx_table.get(&tx_id), Some(TransactionStatus::Aborted))
-    })
+    deleted_tx.is_some_and(|tx_id| matches!(tx_table.get(&tx_id), Some(TransactionStatus::Aborted)))
 }
