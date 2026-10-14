@@ -237,6 +237,35 @@ fn require_character(b: &Bound, what: &str) -> DbResult<()> {
     require(b, |c| c == Category::Character, what, "a character type")
 }
 
+/// Convert result alternative `e` (bound as `b`) to the unified numeric
+/// type `target` when it is a narrower numeric kind: integers to DECIMAL
+/// (exact, scale 0 as in PostgreSQL, without a precision limit so no value
+/// that fitted before overflows) or DOUBLE, DECIMAL to DOUBLE. A literal is
+/// converted in place, any other expression is wrapped in a CAST (whose
+/// static type is the target, so this is idempotent). DECIMALs of
+/// different precision/scale are left as they are.
+fn widen_result(e: &mut Expr, b: &Bound, target: &SqlType) -> DbResult<()> {
+    let to = match (b.ty, *target) {
+        (from, SqlType::Decimal { .. }) if is_integer(&from) => SqlType::Decimal {
+            precision: crate::sql::decimal::MAX_PRECISION,
+            scale: 0,
+        },
+        (from, SqlType::Double) if is_integer(&from) || matches!(from, SqlType::Decimal { .. }) => {
+            SqlType::Double
+        }
+        _ => return Ok(()),
+    };
+    match e {
+        Expr::Literal(Value::Null) => {}
+        Expr::Literal(v) => *v = v.cast_to(&to)?,
+        _ => {
+            let inner = std::mem::replace(e, Expr::Literal(Value::Null));
+            *e = Expr::Cast { expr: Box::new(inner), ty: to };
+        }
+    }
+    Ok(())
+}
+
 fn is_integer(ty: &SqlType) -> bool {
     matches!(ty, SqlType::Integer | SqlType::SmallInt | SqlType::BigInt)
 }
@@ -593,6 +622,32 @@ impl Binder<'_> {
         scope: &Scope,
         outer: &[Scope],
     ) -> DbResult<Bound> {
+        self.bind_alternatives(exprs, start, what, scope, outer, false)
+    }
+
+    /// [`Binder::alternatives`] for the *results* of CASE / COALESCE: in
+    /// addition, a numeric alternative of a narrower kind than the unified
+    /// type (INTEGER next to DECIMAL, or INTEGER/DECIMAL next to DOUBLE) is
+    /// converted to it, so every row yields a value of the result type.
+    fn result_alternatives<'e>(
+        &self,
+        exprs: impl IntoIterator<Item = &'e mut Expr>,
+        what: &str,
+        scope: &Scope,
+        outer: &[Scope],
+    ) -> DbResult<Bound> {
+        self.bind_alternatives(exprs, Bound::unknown(), what, scope, outer, true)
+    }
+
+    fn bind_alternatives<'e>(
+        &self,
+        exprs: impl IntoIterator<Item = &'e mut Expr>,
+        start: Bound,
+        what: &str,
+        scope: &Scope,
+        outer: &[Scope],
+        results: bool,
+    ) -> DbResult<Bound> {
         let mut bound: Vec<(&'e mut Expr, Bound)> = Vec::new();
         let mut acc = start;
         for e in exprs {
@@ -602,6 +657,9 @@ impl Binder<'_> {
         }
         for (e, b) in bound {
             coerce_to(e, &b, &acc)?;
+            if results {
+                widen_result(e, &b, &acc.ty)?;
+            }
         }
         Ok(acc)
     }
@@ -766,7 +824,7 @@ impl Binder<'_> {
                 if let Some(e) = else_result {
                     results.push(&mut **e);
                 }
-                self.alternatives(results, Bound::unknown(), "CASE", scope, outer)
+                self.result_alternatives(results, "CASE", scope, outer)
             }
             Expr::Cast { expr, ty } => {
                 let from = self.expr(expr, scope, outer)?;
@@ -781,9 +839,8 @@ impl Binder<'_> {
             }
             Expr::Function { name, args } => {
                 if name.as_str() == "COALESCE" {
-                    return self.alternatives(
+                    return self.result_alternatives(
                         args.iter_mut(),
-                        Bound::unknown(),
                         "COALESCE",
                         scope,
                         outer,
