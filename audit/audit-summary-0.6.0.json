@@ -1,5 +1,6 @@
 {
-  "head": "80258e789e8ffbd2d755e65cf56ff45ff88cf91b",
+  "head": "ec6679f0d254c7935ea50fccf31fa5c05aed6663",
+  "code_head": "7c61351df17b58658318ccd5a4fb861dfc9eae3d",
   "version": "0.6.0",
   "case_count": 92,
   "sql_statement_count": 309,
@@ -26,7 +27,7 @@
   "bug_cases": [],
   "partial_cases": [],
   "command": "python3 audit/run_probes.py /home/urunsiyabend/development/aerodb-sql-0.6.0 /home/urunsiyabend/development/aerodb-sql-0.6.0/audit/results",
-  "results_file": "audit/results-0.6.0.json (byte-identical copy of audit/results/results.json, sha256 11673d39017979008f7ffd39aea4fbcf4ab721236ae327fcc1bd956044c31926)",
+  "results_file": "audit/results-0.6.0.json (byte-identical copy of audit/results/results.json, sha256 671a4bc3347b29f8caf9ca8045157f380cc0875d8e8c7b1f1bd06eb0420b665e)",
   "baseline_0_5_1_statuses": {
     "implemented": 34,
     "bug": 28,
@@ -36,7 +37,8 @@
   },
   "notes": [
     "The runner's embedded summary in results-0.6.0.json says \"version\": \"0.5.1\". That is a hard-coded string in the immutable 0.5.1 harness (audit/run_probes.py), not the build version; the audited build is Cargo package version 0.6.0.",
-    "head is the commit the audit ran at. Source code (src/, tests/) last changed in fd7985824cd71b185fe16345a54230d74fb04013; 80258e7 only adds documentation. The commit that adds this file and results-0.6.0.json changes nothing else.",
+    "head is the commit the audit ran at (after the final-review fix wave). Source code (src/, tests/) last changed in code_head 7c61351df17b58658318ccd5a4fb861dfc9eae3d; ec6679f only changes documentation. The commit that adds this file and results-0.6.0.json changes nothing else, so the branch HEAD is one commit after head.",
+    "Re-run of the audit after the final-review fix wave (index buckets, identifier rule for object names, CLI line handler, AUTO_INCREMENT sequences, CASE typing). Statuses are unchanged from the earlier run at 80258e7.",
     "The audit harness, cases and oracle patterns (audit/run_probes.py, audit/sql_audit.rs, audit/cases.json) are the unmodified 0.5.1 files.",
     "comment is unverified because the harness feeds a comment-only line to parse_statement as one statement (42601 'empty statement') and has no empty-statement API; parse_script on the same text returns [] (tests/sql_parser.rs::comment_only_script_is_empty).",
     "Not a SQL:2023 certification and no overall conformance percentage. See specs/sql-conformance-0.6.0.md."
