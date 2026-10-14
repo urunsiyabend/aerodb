@@ -107,6 +107,11 @@ impl<'a> BTree<'a> {
         self.find_latest_logical(key)
     }
 
+    /// Every stored version of physical key `key`, visible or not.
+    pub fn versions_of(&self, key: i32) -> io::Result<Vec<Row>> {
+        Ok(self.key_versions(key)?.into_iter().map(|(_, row)| row).collect())
+    }
+
     /// Return the newest version of `key` visible to `snapshot`.
     pub fn find_visible(&mut self, key: i32, snapshot: &Snapshot) -> io::Result<Option<Row>> {
         let versions = self.key_versions(key)?;

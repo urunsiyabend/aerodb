@@ -357,23 +357,41 @@ impl Catalog {
     /// lazily from the table's versions, so it survives reopen without being
     /// persisted; it is never rewound (a rolled-back allocation leaves a gap).
     pub fn allocate_rowid(&mut self, table_name: &str) -> crate::error::DbResult<i32> {
-        let next: i64 = match self.rowid_counters.get(table_name) {
+        let root = self.get_table(table_name)?.root_page;
+        let mut tree = BTree::open_root(&self.pager, root)?;
+        let mut next: i64 = match self.rowid_counters.get(table_name) {
             Some(next) => *next,
             None => {
-                let root = self.get_table(table_name)?.root_page;
-                let mut tree = BTree::open_root(&self.pager, root)?;
                 let max = tree.all_versions()?.iter().map(|r| r.key).max();
                 max.map_or(1, |m| m as i64 + 1)
             }
         };
-        let key = i32::try_from(next).map_err(|_| {
-            crate::error::DbError::NumericOverflow(format!(
-                "row ids of table \"{}\" are exhausted",
-                table_name
-            ))
-        })?;
-        self.rowid_counters.insert(table_name.to_string(), next + 1);
-        Ok(key)
+        loop {
+            let Ok(key) = i32::try_from(next) else {
+                self.rowid_counters.insert(table_name.to_string(), next);
+                return Err(crate::error::DbError::NumericOverflow(format!(
+                    "row ids of table \"{}\" are exhausted",
+                    table_name
+                )));
+            };
+            next += 1;
+            // Defence in depth: skip keys that already hold any version
+            // (e.g. written without going through `note_rowid_used`).
+            if tree.versions_of(key)?.is_empty() {
+                self.rowid_counters.insert(table_name.to_string(), next);
+                return Ok(key);
+            }
+        }
+    }
+
+    /// Record that physical key `key` of `table_name` now holds a version, so
+    /// [`Catalog::allocate_rowid`] never hands it out. Alias-keyed writes
+    /// call this; an uninitialised counter is left alone (its lazy scan sees
+    /// the version).
+    pub fn note_rowid_used(&mut self, table_name: &str, key: i32) {
+        if let Some(next) = self.rowid_counters.get_mut(table_name) {
+            *next = (*next).max(key as i64 + 1);
+        }
     }
 
     /// Look up a table named by an SQL identifier: unquoted names match
@@ -1328,6 +1346,48 @@ mod tests {
         // 0.5.1 stored literal text unquoted; it stays a text literal coerced on insert.
         assert_eq!(decode_default_expr("18").unwrap(), Expr::Literal(Value::Text("18".into())));
         assert!(decode_default_expr(&format!("{}{}", DEFAULT_SQL_MARKER, "1 +")).is_err());
+    }
+
+    fn catalog_with_table() -> (tempfile::TempDir, Catalog) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rowid.db");
+        let pager = Pager::new(path.to_str().unwrap()).unwrap();
+        let mut catalog = Catalog::open(pager).unwrap();
+        let stmt = crate::sql::parser::parse_sql("CREATE TABLE n (s TEXT)").unwrap();
+        crate::execution::runtime::handle_statement(&mut catalog, stmt).unwrap();
+        (dir, catalog)
+    }
+
+    #[test]
+    fn allocate_rowid_exhaustion_is_numeric_overflow() {
+        let (_dir, mut catalog) = catalog_with_table();
+        catalog.rowid_counters.insert("n".into(), i32::MAX as i64);
+        assert_eq!(catalog.allocate_rowid("n").unwrap(), i32::MAX);
+        assert!(matches!(catalog.allocate_rowid("n"), Err(crate::error::DbError::NumericOverflow(_))));
+        assert!(matches!(catalog.allocate_rowid("n"), Err(crate::error::DbError::NumericOverflow(_))));
+    }
+
+    #[test]
+    fn allocate_rowid_skips_keys_that_have_versions() {
+        let (_dir, mut catalog) = catalog_with_table();
+        assert_eq!(catalog.allocate_rowid("n").unwrap(), 1);
+        // Versions written behind the counter's back (e.g. raw tree writes).
+        let root = catalog.get_table("n").unwrap().root_page;
+        let mut tree = BTree::open_root(&catalog.pager, root).unwrap();
+        tree.insert(2, RowData(vec![ColumnValue::Text("a".into())])).unwrap();
+        tree.insert(3, RowData(vec![ColumnValue::Text("b".into())])).unwrap();
+        tree.delete(3).unwrap();
+        drop(tree);
+        assert_eq!(catalog.allocate_rowid("n").unwrap(), 4);
+    }
+
+    #[test]
+    fn note_rowid_used_advances_counter() {
+        let (_dir, mut catalog) = catalog_with_table();
+        assert_eq!(catalog.allocate_rowid("n").unwrap(), 1);
+        catalog.note_rowid_used("n", 10);
+        catalog.note_rowid_used("n", 5);
+        assert_eq!(catalog.allocate_rowid("n").unwrap(), 11);
     }
 
     #[test]

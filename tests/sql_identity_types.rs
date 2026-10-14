@@ -326,6 +326,21 @@ fn self_referencing_fk() {
 }
 
 #[test]
+fn on_delete_cascade_self_referencing_cycle() {
+    let (_dir, mut e) = engine();
+    exec(
+        &mut e,
+        "CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER, \
+         FOREIGN KEY (boss) REFERENCES emp(id) ON DELETE CASCADE)",
+    );
+    exec(&mut e, "INSERT INTO emp VALUES (1, NULL), (2, 1), (3, NULL)");
+    exec(&mut e, "UPDATE emp SET boss = 2 WHERE id = 1");
+    // 1 → 2 → 1: deleting either deletes both, and the cascade terminates.
+    exec(&mut e, "DELETE FROM emp WHERE id = 1");
+    assert_eq!(q(&mut e, "SELECT id FROM emp"), table(&[&["3"]]));
+}
+
+#[test]
 fn same_tx_child_insert_then_parent_delete_is_rejected() {
     let (_dir, mut e) = engine();
     exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY)");

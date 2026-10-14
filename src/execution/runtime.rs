@@ -137,8 +137,9 @@ fn set_root(catalog: &mut Catalog, table_name: &str, old_root: u32, new_root: u3
 }
 
 /// Mark the visible versions `rows` of `table_name` deleted by the current
-/// transaction (after first-committer-wins conflict checks on all of them)
-/// and record their write intents so commit can re-validate.
+/// transaction (after first-committer-wins conflict checks on all of them).
+/// Callers record the write intents with [`record_write_intents`] once all
+/// of the statement's writes to the table are done.
 fn delete_versions(catalog: &mut Catalog, table_name: &str, rows: &[Row]) -> DbResult<()> {
     let snapshot = read_snapshot(catalog);
     let tx_id = current_tx_id(catalog);
@@ -153,22 +154,34 @@ fn delete_versions(catalog: &mut Catalog, table_name: &str, rows: &[Row]) -> DbR
     let new_root = tree.root_page();
     drop(tree);
     set_root(catalog, table_name, root, new_root)?;
-    for r in rows {
-        catalog.pager.record_write_intent(new_root, r.key, r.created_tx);
-    }
     // Index entries intentionally remain until vacuum: indexed lookups
     // re-check base-table visibility with find_visible().
     Ok(())
 }
 
-/// Physical key for a new row version of a table with a rowid alias whose
-/// alias value is `alias`: the value itself, unless another visible row
-/// already occupies that physical key (possible in files written by 0.5.1,
-/// whose key was the first column) — then a fresh row id.
-fn alias_key(catalog: &mut Catalog, table_name: &str, alias: i32) -> DbResult<i32> {
+/// Record write intents for the replaced/deleted versions `rows` against the
+/// table's current root, so commit re-validation searches the right tree.
+fn record_write_intents(catalog: &mut Catalog, table_name: &str, rows: &[Row]) -> DbResult<()> {
     let root = catalog.get_table(table_name)?.root_page;
-    let occupied = BTree::open_root(&catalog.pager, root)?.find(alias)?.is_some();
-    if occupied { catalog.allocate_rowid(table_name) } else { Ok(alias) }
+    for r in rows {
+        catalog.pager.record_write_intent(root, r.key, r.created_tx);
+    }
+    Ok(())
+}
+
+/// Physical key for a new row version of a table with a rowid alias (column
+/// `alias_idx`) whose alias value is `alias`: the value itself, unless that
+/// physical key holds any version (live or dead) of a row with a different
+/// alias value (possible in files written by 0.5.1, whose key was the first
+/// column, or after a fallback) — then a fresh row id. Dead versions of the
+/// same alias value share the chain, as in 0.5.1.
+fn alias_key(catalog: &mut Catalog, table_name: &str, alias_idx: usize, alias: i32) -> DbResult<i32> {
+    let root = catalog.get_table(table_name)?.root_page;
+    let foreign = BTree::open_root(&catalog.pager, root)?
+        .versions_of(alias)?
+        .iter()
+        .any(|r| r.data.0.get(alias_idx) != Some(&ColumnValue::Integer(alias)));
+    if foreign { catalog.allocate_rowid(table_name) } else { Ok(alias) }
 }
 
 /// Write `data` as a new version with physical key `key` and index it.
@@ -186,6 +199,7 @@ fn write_version(catalog: &mut Catalog, table_name: &str, key: i32, data: RowDat
     let new_root = tree.root_page();
     drop(tree);
     set_root(catalog, table_name, root, new_root)?;
+    catalog.note_rowid_used(table_name, key);
     catalog.insert_into_indexes(table_name, key, &data)?;
     Ok(())
 }
@@ -206,6 +220,9 @@ pub fn execute_delete(
     let batches = keys::plan_delete(catalog, &info, rows, &snapshot)?;
     for (table, batch) in &batches {
         delete_versions(catalog, &table.name, batch)?;
+    }
+    for (table, batch) in &batches {
+        record_write_intents(catalog, &table.name, batch)?;
     }
     Ok(count)
 }
@@ -280,13 +297,15 @@ pub fn execute_update(
     for (old, new) in ops {
         let key = match alias {
             Some(i) if new.0[i] != old.data.0[i] => match new.0[i] {
-                ColumnValue::Integer(v) => alias_key(catalog, table_name, v)?,
+                ColumnValue::Integer(v) => alias_key(catalog, table_name, i, v)?,
                 _ => return Err(DbError::NullViolation(info.columns[i].0.clone())),
             },
             _ => old.key,
         };
         write_version(catalog, table_name, key, new, false)?;
     }
+    // After the new versions: their inserts may have split the root.
+    record_write_intents(catalog, table_name, &old_rows)?;
     Ok(count)
 }
 
@@ -384,10 +403,10 @@ pub fn execute_insert(
 
         let key = match alias {
             Some(i) => match row_data.0[i] {
-                ColumnValue::Integer(v) => alias_key(catalog, table_name, v)?,
+                ColumnValue::Integer(v) => alias_key(catalog, table_name, i, v)?,
                 _ => return Err(DbError::NullViolation(info.columns[i].0.clone())),
             },
-            None => catalog.allocate_rowid(table_name)?,
+            None =>catalog.allocate_rowid(table_name)?,
         };
         write_version(catalog, table_name, key, row_data, true)?;
         inserted += 1;
@@ -737,6 +756,133 @@ mod tests {
         assert_eq!(seen[0], (1, vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]));
         // Key 1 was taken by the legacy row, so (2, 1) got a fresh row id.
         assert_eq!(seen[1], (2, vec![ColumnValue::Integer(2), ColumnValue::Integer(1)]));
+    }
+
+    /// Catalog over a fresh file with the 0.5.1-style table
+    /// `p(id INTEGER, n INTEGER PRIMARY KEY)` holding (1, 100) at physical key 1.
+    fn legacy_p() -> (tempfile::TempDir, Catalog) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let pager = crate::storage::pager::Pager::new(path.to_str().unwrap()).unwrap();
+        let mut catalog = Catalog::open(pager).unwrap();
+        run(&mut catalog, "CREATE TABLE p (id INTEGER, n INTEGER PRIMARY KEY)").unwrap();
+        let root = catalog.get_table("p").unwrap().root_page;
+        BTree::open_root(&catalog.pager, root)
+            .unwrap()
+            .insert(1, RowData(vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]))
+            .unwrap();
+        (dir, catalog)
+    }
+
+    fn run(catalog: &mut Catalog, sql: &str) -> DbResult<()> {
+        handle_statement(catalog, crate::sql::parser::parse_sql(sql).unwrap())
+    }
+
+    /// Every stored version of `p` as (physical key, n).
+    fn p_versions(catalog: &Catalog) -> Vec<(i32, ColumnValue)> {
+        let root = catalog.get_table("p").unwrap().root_page;
+        let mut out: Vec<(i32, ColumnValue)> = BTree::open_root(&catalog.pager, root)
+            .unwrap()
+            .all_versions()
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.key, r.data.0[1].clone()))
+            .collect();
+        out.sort_by_key(|(k, _)| *k);
+        out
+    }
+
+    /// Fallback row ids and alias keys interleave without colliding: alias
+    /// writes advance the row id counter.
+    #[test]
+    fn fallback_and_alias_inserts_interleave_without_collision() {
+        let (_dir, mut catalog) = legacy_p();
+        run(&mut catalog, "INSERT INTO p VALUES (2, 1)").unwrap(); // key 1 taken → fallback 2
+        run(&mut catalog, "INSERT INTO p VALUES (3, 3)").unwrap(); // alias key 3
+        run(&mut catalog, "INSERT INTO p VALUES (4, 2)").unwrap(); // key 2 taken → fallback must skip 3
+        run(&mut catalog, "INSERT INTO p VALUES (5, 5)").unwrap();
+        let versions = p_versions(&catalog);
+        let mut keys: Vec<i32> = versions.iter().map(|(k, _)| *k).collect();
+        keys.dedup();
+        assert_eq!(keys.len(), 5, "{versions:?}");
+        let mut ns: Vec<ColumnValue> = versions.into_iter().map(|(_, n)| n).collect();
+        ns.sort_by_key(|n| match n {
+            ColumnValue::Integer(i) => *i,
+            _ => i32::MIN,
+        });
+        assert_eq!(ns, [1, 2, 3, 5, 100].map(ColumnValue::Integer).to_vec());
+    }
+
+    /// A fallback row id never lands on a key that only holds dead versions
+    /// of another logical row.
+    #[test]
+    fn fallback_rowid_skips_key_with_dead_versions() {
+        let (_dir, mut catalog) = legacy_p();
+        run(&mut catalog, "INSERT INTO p VALUES (2, 1)").unwrap(); // fallback key 2, counter 3
+        run(&mut catalog, "INSERT INTO p VALUES (3, 3)").unwrap(); // alias key 3
+        run(&mut catalog, "DELETE FROM p WHERE n = 3").unwrap(); // key 3: dead version only
+        run(&mut catalog, "INSERT INTO p VALUES (4, 2)").unwrap(); // key 2 taken → fallback
+        let versions = p_versions(&catalog);
+        let at3: Vec<&ColumnValue> = versions.iter().filter(|(k, _)| *k == 3).map(|(_, n)| n).collect();
+        assert_eq!(at3, vec![&ColumnValue::Integer(3)], "{versions:?}");
+    }
+
+    /// An alias key whose physical slot holds dead versions of a different
+    /// logical row is not shared with that row's version chain.
+    #[test]
+    fn alias_key_skips_dead_versions_of_another_row() {
+        let (_dir, mut catalog) = legacy_p();
+        run(&mut catalog, "INSERT INTO p VALUES (2, 1)").unwrap(); // fallback key 2
+        run(&mut catalog, "DELETE FROM p WHERE n = 1").unwrap(); // key 2: dead n=1
+        run(&mut catalog, "INSERT INTO p VALUES (3, 2)").unwrap(); // alias 2 must not reuse key 2
+        let versions = p_versions(&catalog);
+        let at2: Vec<&ColumnValue> = versions.iter().filter(|(k, _)| *k == 2).map(|(_, n)| n).collect();
+        assert_eq!(at2, vec![&ColumnValue::Integer(1)], "{versions:?}");
+    }
+
+    /// UPDATE write intents name the table's root after the new versions are
+    /// written, even when writing them splits the root leaf.
+    #[test]
+    fn update_write_intents_use_final_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("intents.db");
+        let pager = crate::storage::pager::Pager::new(path.to_str().unwrap()).unwrap();
+        let mut catalog = Catalog::open(pager).unwrap();
+        run(&mut catalog, "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)").unwrap();
+        let root0 = catalog.get_table("t").unwrap().root_page;
+        let pad = "x".repeat(300);
+        let mut n = 0;
+        // Fill the root leaf as far as it goes without splitting.
+        loop {
+            let root = catalog.get_table("t").unwrap().root_page;
+            let mut tree = BTree::open_root(&catalog.pager, root).unwrap();
+            tree.insert(n + 1, RowData(vec![ColumnValue::Integer(n + 1), ColumnValue::Text(pad.clone())]))
+                .unwrap();
+            if tree.root_page() != root0 {
+                // Went one too far: start over with n rows.
+                break;
+            }
+            n += 1;
+        }
+        assert!(n >= 2, "leaf holds {n} rows");
+        run(&mut catalog, "DROP TABLE t").unwrap();
+        run(&mut catalog, "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)").unwrap();
+        for i in 1..=n {
+            run(&mut catalog, &format!("INSERT INTO t VALUES ({i}, '{pad}')")).unwrap();
+        }
+        let before = catalog.get_table("t").unwrap().root_page;
+
+        let mut tm = crate::transaction::TransactionManager::new();
+        tm.begin(&mut catalog, None, crate::transaction::IsolationLevel::default()).unwrap();
+        run(&mut catalog, "UPDATE t SET s = 'y'").unwrap();
+        let after = catalog.get_table("t").unwrap().root_page;
+        assert_ne!(before, after, "precondition: the UPDATE split the root");
+        let intents = catalog.pager.transaction_write_set();
+        assert_eq!(intents.len(), n as usize);
+        for intent in intents {
+            assert_eq!(intent.table_root, after, "intent for key {} recorded against a stale root", intent.key);
+        }
+        tm.rollback(&mut catalog).unwrap();
     }
 
     #[test]

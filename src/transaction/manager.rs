@@ -1,6 +1,6 @@
 use crate::storage::btree::BTree;
 use crate::{catalog::Catalog, error::DbError, error::DbResult, sql::ast::Statement};
-use log::debug;
+use log::{debug, error};
 use std::collections::{BTreeSet, HashMap};
 use std::io;
 
@@ -80,9 +80,9 @@ impl TransactionManager {
         debug!("Transaction committed: {:?}", transaction_id);
         if let Some(transaction_id) = transaction_id {
             if let Err(err) = catalog.recheck_constraints_for_commit(transaction_id) {
-                self.rollback(catalog)?;
+                let rollback = self.rollback(catalog);
                 self.mode = TransactionMode::None;
-                return Err(err);
+                return Err(commit_failure(err, rollback));
             }
         }
         catalog.pager.commit_transaction()?;
@@ -303,5 +303,33 @@ impl TransactionManager {
         }
         self.mode = TransactionMode::None;
         result
+    }
+}
+
+/// The error a commit reports after its constraint recheck failed with
+/// `original` and the transaction was rolled back with result `rollback`:
+/// always the constraint error; a rollback failure is logged, not surfaced
+/// in its place.
+fn commit_failure(original: DbError, rollback: io::Result<()>) -> DbError {
+    if let Err(e) = rollback {
+        error!("rollback after failed commit recheck ({}) also failed: {}", original, e);
+    }
+    original
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_rollback_keeps_the_constraint_error() {
+        let original = DbError::ForeignKeyViolation("p 1".into());
+        let rollback = Err(io::Error::new(io::ErrorKind::Other, "disk gone"));
+        assert!(matches!(
+            commit_failure(original, rollback),
+            DbError::ForeignKeyViolation(ref m) if m == "p 1"
+        ));
+        let ok = commit_failure(DbError::DuplicateKey("1".into()), Ok(()));
+        assert!(matches!(ok, DbError::DuplicateKey(ref k) if k == "1"));
     }
 }
