@@ -25,6 +25,11 @@ fn parse_index_lookup_value(value: &str, col_type: ColumnType) -> ColumnValue {
             _ => ColumnValue::Text(value.to_string()),
         },
         ColumnType::Char(_) => ColumnValue::Char(value.to_string()),
+        ColumnType::Varchar(_) => ColumnValue::Text(value.to_string()),
+        ColumnType::Decimal { precision, scale } => crate::sql::decimal::Decimal::parse(value)
+            .and_then(|d| d.rescale(precision, scale))
+            .map(ColumnValue::Decimal)
+            .unwrap_or_else(|_| ColumnValue::Text(value.to_string())),
         ColumnType::Double { .. } => value
             .parse::<f64>()
             .map(ColumnValue::Double)
@@ -194,6 +199,27 @@ pub fn execute_update(
                         s.push_str(&" ".repeat(len - s.len()));
                     }
                     ColumnValue::Char(s)
+                }
+                ColumnType::Varchar(len) => {
+                    if val.chars().count() > len {
+                        return Err(DbError::InvalidValue(format!(
+                            "Value '{}' for column '{}' exceeds length {}",
+                            val, col, len
+                        )));
+                    }
+                    ColumnValue::Text(val.clone())
+                }
+                ColumnType::Decimal { precision, scale } => {
+                    let d = crate::sql::decimal::Decimal::parse(&val)
+                        .and_then(|d| d.rescale(precision, scale))
+                        .map_err(|e| match e {
+                            crate::sql::decimal::DecimalError::Overflow => DbError::Overflow,
+                            other => DbError::InvalidValue(format!(
+                                "Invalid DECIMAL for column '{}': {:?}",
+                                col, other
+                            )),
+                        })?;
+                    ColumnValue::Decimal(d)
                 }
                 ColumnType::SmallInt { unsigned, .. } => {
                     let i = val

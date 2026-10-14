@@ -8,6 +8,11 @@ pub enum ColumnType {
     Text,
     Boolean,
     Char(usize),
+    Varchar(usize),
+    Decimal {
+        precision: u8,
+        scale: u8,
+    },
     SmallInt {
         width: usize,
         unsigned: bool,
@@ -30,7 +35,10 @@ pub enum ColumnType {
 
 impl ColumnType {
     pub fn from_str(s: &str) -> Option<Self> {
-        let upper = s.to_uppercase();
+        let upper = s.trim().to_uppercase();
+        if let Some(ty) = Self::parse_varchar_or_decimal(&upper) {
+            return ty;
+        }
         if upper.starts_with("CHAR") {
             if let Some(start) = s.find('(') {
                 if let Some(end) = s.find(')') {
@@ -132,8 +140,67 @@ impl ColumnType {
         }
     }
 
+    /// Parses VARCHAR/CHARACTER VARYING/DECIMAL/NUMERIC. Returns `None` when the
+    /// text is not one of those families, `Some(None)` when it is but invalid.
+    fn parse_varchar_or_decimal(upper: &str) -> Option<Option<Self>> {
+        let (name, args) = match upper.find('(') {
+            Some(start) => {
+                if !upper.ends_with(')') {
+                    // Only claim the family if the name matches, so garbage is rejected.
+                    let name = upper[..start].trim();
+                    return matches!(
+                        name,
+                        "VARCHAR" | "CHARACTER VARYING" | "DECIMAL" | "NUMERIC"
+                    )
+                    .then_some(None);
+                }
+                (
+                    upper[..start].trim(),
+                    Some(&upper[start + 1..upper.len() - 1]),
+                )
+            }
+            None => (upper.trim(), None),
+        };
+        match name {
+            "VARCHAR" | "CHARACTER VARYING" => {
+                let n = args.and_then(|a| a.trim().parse::<usize>().ok());
+                Some(match n {
+                    Some(n) if (1..=65535).contains(&n) => Some(ColumnType::Varchar(n)),
+                    _ => None,
+                })
+            }
+            "DECIMAL" | "NUMERIC" => {
+                let (p, sc) = match args {
+                    None => (Some(18u8), Some(0u8)),
+                    Some(a) => {
+                        let parts: Vec<&str> = a.split(',').map(str::trim).collect();
+                        match parts.as_slice() {
+                            [p] => (p.parse::<u8>().ok(), Some(0)),
+                            [p, sc] => (p.parse::<u8>().ok(), sc.parse::<u8>().ok()),
+                            _ => (None, None),
+                        }
+                    }
+                };
+                Some(match (p, sc) {
+                    (Some(p), Some(sc)) if (1..=38).contains(&p) && sc <= p => {
+                        Some(ColumnType::Decimal {
+                            precision: p,
+                            scale: sc,
+                        })
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> String {
         match self {
+            ColumnType::Varchar(n) => format!("VARCHAR({})", n),
+            ColumnType::Decimal { precision, scale } => {
+                format!("DECIMAL({},{})", precision, scale)
+            }
             ColumnType::Integer => "INTEGER".into(),
             ColumnType::Text => "TEXT".into(),
             ColumnType::Boolean => "BOOLEAN".into(),
@@ -201,6 +268,11 @@ impl ColumnType {
             10 => Some(ColumnType::Timestamp),
             11 => Some(ColumnType::Time),
             12 => Some(ColumnType::Year),
+            13 => Some(ColumnType::Varchar(0)),
+            14 => Some(ColumnType::Decimal {
+                precision: 18,
+                scale: 0,
+            }),
             _ => None,
         }
     }
@@ -219,6 +291,8 @@ impl ColumnType {
             ColumnType::Timestamp => 10,
             ColumnType::Time => 11,
             ColumnType::Year => 12,
+            ColumnType::Varchar(_) => 13,
+            ColumnType::Decimal { .. } => 14,
         }
     }
 }
@@ -236,6 +310,7 @@ pub enum ColumnValue {
     Timestamp(i64),
     Time(i32),
     Year(u16),
+    Decimal(crate::sql::decimal::Decimal),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,6 +375,11 @@ impl RowData {
                 ColumnValue::Year(y) => {
                     buf.push(0x0A);
                     buf.extend(&y.to_le_bytes());
+                }
+                ColumnValue::Decimal(d) => {
+                    buf.push(0x0B);
+                    buf.extend(&d.mantissa().to_le_bytes());
+                    buf.push(d.scale());
                 }
             }
         }
@@ -416,6 +496,19 @@ impl RowData {
                     offset += 2;
                     cols.push(ColumnValue::Year(val));
                 }
+                0x0B => {
+                    if offset + 17 > bytes.len() {
+                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                    }
+                    let mantissa =
+                        i128::from_le_bytes(bytes[offset..offset + 16].try_into().unwrap());
+                    let scale = bytes[offset + 16];
+                    offset += 17;
+                    let d = crate::sql::decimal::Decimal::new(mantissa, scale).map_err(|_| {
+                        io::Error::new(io::ErrorKind::Other, "Invalid decimal value")
+                    })?;
+                    cols.push(ColumnValue::Decimal(d));
+                }
                 _ => {
                     return Err(io::Error::new(io::ErrorKind::Other, "Unknown type tag"));
                 }
@@ -466,6 +559,26 @@ pub fn build_row_data(
                     ));
                 }
             },
+            ColumnType::Varchar(n) => {
+                if v.chars().count() > *n {
+                    return Err(format!(
+                        "Value '{}' for column '{}' exceeds length {}",
+                        v, name, n
+                    ));
+                }
+                cols.push(ColumnValue::Text(v.clone()));
+            }
+            ColumnType::Decimal { precision, scale } => {
+                let d = crate::sql::decimal::Decimal::parse(v)
+                    .and_then(|d| d.rescale(*precision, *scale))
+                    .map_err(|_| {
+                        format!(
+                            "Value '{}' for column '{}' is not a valid DECIMAL({},{})",
+                            v, name, precision, scale
+                        )
+                    })?;
+                cols.push(ColumnValue::Decimal(d));
+            }
             ColumnType::Char(len) => {
                 if v.len() > *len {
                     return Err(format!(
@@ -731,6 +844,7 @@ impl ColumnValue {
                 format!("{}{:02}:{:02}:{:02}", if neg { "-" } else { "" }, h, m, sec)
             }
             ColumnValue::Year(y) => format!("{:04}", y),
+            ColumnValue::Decimal(d) => d.to_string(),
         }
     }
 }
@@ -823,5 +937,92 @@ mod mvcc_tests {
         assert_eq!(decoded.created_tx, COMMITTED_BOOTSTRAP_TX);
         assert_eq!(decoded.deleted_tx, None);
         assert_eq!(decoded.version_ptr, None);
+    }
+
+    #[test]
+    fn decimal_column_value_round_trips() {
+        use crate::sql::decimal::Decimal;
+        let row = RowData(vec![
+            ColumnValue::Decimal(Decimal::parse("-123.4500").unwrap()),
+            ColumnValue::Decimal(Decimal::parse("0.30").unwrap()),
+            ColumnValue::Integer(1),
+        ]);
+        let bytes = row.serialize();
+        assert_eq!(bytes[2], 0x0B);
+        let back = RowData::deserialize(&bytes).unwrap();
+        assert_eq!(back, row);
+        if let ColumnValue::Decimal(d) = &back.0[0] {
+            assert_eq!(d.scale(), 4);
+        }
+        assert_eq!(back.0[1].to_string_value(), "0.30");
+    }
+
+    #[test]
+    fn truncated_decimal_is_an_error() {
+        let row = RowData(vec![ColumnValue::Decimal(
+            crate::sql::decimal::Decimal::parse("1.5").unwrap(),
+        )]);
+        let mut bytes = row.serialize();
+        bytes.truncate(bytes.len() - 1);
+        assert!(RowData::deserialize(&bytes).is_err());
+    }
+
+    #[test]
+    fn column_type_parses_decimal_and_varchar() {
+        assert_eq!(
+            ColumnType::from_str("DECIMAL(10,2)"),
+            Some(ColumnType::Decimal { precision: 10, scale: 2 })
+        );
+        assert_eq!(
+            ColumnType::from_str("numeric"),
+            Some(ColumnType::Decimal { precision: 18, scale: 0 })
+        );
+        assert_eq!(
+            ColumnType::from_str("DECIMAL(5)"),
+            Some(ColumnType::Decimal { precision: 5, scale: 0 })
+        );
+        assert_eq!(
+            ColumnType::from_str("VARCHAR(10)"),
+            Some(ColumnType::Varchar(10))
+        );
+        assert_eq!(
+            ColumnType::from_str("character varying(7)"),
+            Some(ColumnType::Varchar(7))
+        );
+        assert_eq!(ColumnType::from_str("DECIMAL(40,2)"), None);
+        assert_eq!(ColumnType::from_str("DECIMAL(5,6)"), None);
+        assert_eq!(ColumnType::from_str("DECIMAL(0)"), None);
+        assert_eq!(ColumnType::from_str("VARCHAR"), None);
+        assert_eq!(ColumnType::from_str("VARCHAR(0)"), None);
+        assert_eq!(ColumnType::from_str("VARCHAR(70000)"), None);
+        assert_eq!(ColumnType::from_str("CHAR(4)"), Some(ColumnType::Char(4)));
+    }
+
+    #[test]
+    fn column_type_text_and_codes() {
+        assert_eq!(ColumnType::Varchar(9).as_str(), "VARCHAR(9)");
+        assert_eq!(
+            ColumnType::Decimal { precision: 10, scale: 2 }.as_str(),
+            "DECIMAL(10,2)"
+        );
+        assert_eq!(ColumnType::Varchar(9).to_code(), 13);
+        assert_eq!(ColumnType::Decimal { precision: 1, scale: 0 }.to_code(), 14);
+        assert!(matches!(ColumnType::from_code(13), Some(ColumnType::Varchar(_))));
+        assert!(matches!(ColumnType::from_code(14), Some(ColumnType::Decimal { .. })));
+    }
+
+    #[test]
+    fn build_row_data_handles_varchar_and_decimal() {
+        let cols = vec![
+            ("v".to_string(), ColumnType::Varchar(3)),
+            ("d".to_string(), ColumnType::Decimal { precision: 5, scale: 2 }),
+        ];
+        let ok = build_row_data(&["abc".into(), "1.005".into()], &cols).unwrap();
+        assert_eq!(ok.0[0], ColumnValue::Text("abc".into()));
+        assert_eq!(ok.0[1].to_string_value(), "1.01");
+        let e = build_row_data(&["abcd".into(), "1".into()], &cols).unwrap_err();
+        assert!(e.contains("exceeds length"), "{e}");
+        assert!(build_row_data(&["a".into(), "1000".into()], &cols).is_err());
+        assert!(build_row_data(&["a".into(), "x".into()], &cols).is_err());
     }
 }

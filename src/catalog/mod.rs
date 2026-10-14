@@ -581,6 +581,7 @@ impl Catalog {
             ColumnValue::Timestamp(ts) => ColumnValue::Timestamp(*ts).to_string_value(),
             ColumnValue::Time(t) => ColumnValue::Time(*t).to_string_value(),
             ColumnValue::Year(y) => ColumnValue::Year(*y).to_string_value(),
+            ColumnValue::Decimal(d) => d.to_string(),
         }
     }
 
@@ -613,6 +614,13 @@ impl Catalog {
             ColumnValue::Timestamp(ts) => (*ts % i32::MAX as i64) as i32,
             ColumnValue::Time(t) => *t,
             ColumnValue::Year(y) => *y as i32,
+            ColumnValue::Decimal(d) => {
+                use std::hash::{Hash, Hasher};
+                // Normalize so numerically equal values (1.0, 1.00) hash alike.
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                d.normalize().hash(&mut h);
+                (h.finish() as i64 & 0x7FFF_FFFF) as i32
+            }
         }
     }
 
@@ -936,6 +944,11 @@ impl Catalog {
             vals.push(ColumnValue::Integer(ty.to_code()));
             match ty {
                 ColumnType::Char(size) => vals.push(ColumnValue::Integer(*size as i32)),
+                ColumnType::Varchar(size) => vals.push(ColumnValue::Integer(*size as i32)),
+                ColumnType::Decimal { precision, scale } => {
+                    vals.push(ColumnValue::Integer(*precision as i32));
+                    vals.push(ColumnValue::Integer(*scale as i32));
+                }
                 ColumnType::SmallInt { width, unsigned } => {
                     vals.push(ColumnValue::Integer(*width as i32));
                     vals.push(ColumnValue::Integer(if *unsigned { 1 } else { 0 }));
@@ -1055,6 +1068,27 @@ impl Catalog {
                     };
                     idx += 1;
                     ColumnType::Char(size)
+                }
+                Some(ColumnType::Varchar(_)) => {
+                    let size = match values.get(idx) {
+                        Some(ColumnValue::Integer(sz)) => *sz as usize,
+                        _ => return Err(io::Error::new(io::ErrorKind::Other, "varchar size")),
+                    };
+                    idx += 1;
+                    ColumnType::Varchar(size)
+                }
+                Some(ColumnType::Decimal { .. }) => {
+                    let precision = match values.get(idx) {
+                        Some(ColumnValue::Integer(p)) => *p as u8,
+                        _ => return Err(io::Error::new(io::ErrorKind::Other, "decimal precision")),
+                    };
+                    idx += 1;
+                    let scale = match values.get(idx) {
+                        Some(ColumnValue::Integer(sc)) => *sc as u8,
+                        _ => return Err(io::Error::new(io::ErrorKind::Other, "decimal scale")),
+                    };
+                    idx += 1;
+                    ColumnType::Decimal { precision, scale }
                 }
                 Some(ColumnType::SmallInt { .. }) => {
                     let width = match values.get(idx) {
