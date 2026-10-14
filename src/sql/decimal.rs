@@ -4,10 +4,33 @@ use std::cmp::Ordering;
 use std::fmt;
 
 /// value = mantissa / 10^scale, with |mantissa| < 10^38 and scale <= 38.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Equality, hashing and ordering are *numeric* and mutually consistent:
+/// `1.0 == 1.00` (as in SQL), and equal values hash alike. The stored scale is
+/// still part of the value's representation, observable through
+/// [`Decimal::scale`] and `Display` ("1.00"); use [`Decimal::same_repr`] to
+/// compare representations.
+#[derive(Debug, Clone, Copy)]
 pub struct Decimal {
     mantissa: i128,
     scale: u8,
+}
+
+impl PartialEq for Decimal {
+    fn eq(&self, o: &Self) -> bool {
+        self.cmp(o) == Ordering::Equal
+    }
+}
+
+impl Eq for Decimal {}
+
+impl std::hash::Hash for Decimal {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Numerically equal values share one normalized form.
+        let n = self.normalize();
+        n.mantissa.hash(state);
+        n.scale.hash(state);
+    }
 }
 
 pub const MAX_PRECISION: u8 = 38;
@@ -299,9 +322,15 @@ impl Decimal {
         Self::parse_inner(&format!("{}", v), true)
     }
 
-    /// Numeric equality (1.0 equals 1.00), unlike the structural `==`.
+    /// Numeric equality (1.0 equals 1.00); the same as `==`.
     pub fn num_eq(&self, o: &Self) -> bool {
         self.cmp(o) == Ordering::Equal
+    }
+
+    /// Representation equality: same value *and* same scale (1.0 vs 1.00
+    /// differ).
+    pub fn same_repr(&self, o: &Self) -> bool {
+        self.mantissa == o.mantissa && self.scale == o.scale
     }
 }
 
@@ -433,11 +462,37 @@ mod tests {
     fn ordering_ignores_scale() {
         assert_eq!(d("1.0").cmp(&d("1.00")), Ordering::Equal);
         assert!(d("1.0").num_eq(&d("1.00")));
-        assert_ne!(d("1.0"), d("1.00"));
+        assert_eq!(d("1.0"), d("1.00"));
         assert_eq!(d("-2").cmp(&d("1")), Ordering::Less);
         assert_eq!(d("0.5").cmp(&d("0.49")), Ordering::Greater);
         let big = d("99999999999999999999999999999999999999");
         assert_eq!(big.cmp(&d("0.00000000000000000001")), Ordering::Greater);
+    }
+
+    /// `Eq`, `Hash` and `Ord` agree (SQL numeric equality: 1.0 = 1.00); the
+    /// stored scale stays observable through `scale()` / `Display`.
+    #[test]
+    fn eq_hash_and_ord_are_consistent() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let hash = |v: &Decimal| {
+            let mut h = DefaultHasher::new();
+            v.hash(&mut h);
+            h.finish()
+        };
+        let pairs = [("1.0", "1.00"), ("0", "0.000"), ("-2.50", "-2.5"), ("100", "100.0"), ("1.5", "1.50")];
+        for (a, b) in pairs {
+            let (x, y) = (d(a), d(b));
+            assert_eq!(x.cmp(&y), Ordering::Equal, "{a} vs {b}");
+            assert_eq!(x, y, "{a} == {b}");
+            assert_eq!(hash(&x), hash(&y), "hash {a} vs {b}");
+        }
+        assert_ne!(d("1.0"), d("1.01"));
+        assert_eq!(d("1.0").scale(), 1);
+        assert_eq!(d("1.00").to_string(), "1.00");
+        let mut set = std::collections::HashSet::new();
+        set.insert(d("2.0"));
+        assert!(set.contains(&d("2.000")));
     }
 
     #[test]
