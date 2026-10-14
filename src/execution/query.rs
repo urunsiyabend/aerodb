@@ -641,8 +641,43 @@ impl GroupCheck<'_> {
 /// explicit, exactly-quoted column references. CREATE VIEW stores the
 /// expanded text, so a view keeps the column set it had when it was created
 /// even if a table gains columns later (ALTER TABLE ... ADD COLUMN).
+/// Subqueries inside expressions (IN / EXISTS / scalar, at any depth) are
+/// expanded too: `x IN (SELECT * FROM t2)` must keep one column.
 pub fn expand_wildcards(catalog: &Catalog, query: &mut Query) -> DbResult<()> {
-    expand_body_wildcards(catalog, &mut query.body)
+    expand_body_wildcards(catalog, &mut query.body)?;
+    for item in &mut query.order_by {
+        expand_expr_wildcards(catalog, &mut item.expr)?;
+    }
+    Ok(())
+}
+
+/// Expand wildcards in every subquery nested in `expr`.
+fn expand_expr_wildcards(catalog: &Catalog, expr: &mut Expr) -> DbResult<()> {
+    let mut failure = None;
+    let rebuilt = expr.transform(&mut |e| {
+        let expand = |q: &Query, failure: &mut Option<DbError>| -> Box<Query> {
+            let mut q = q.clone();
+            if failure.is_none() {
+                if let Err(err) = expand_wildcards(catalog, &mut q) {
+                    *failure = Some(err);
+                }
+            }
+            Box::new(q)
+        };
+        match e {
+            Expr::ScalarSubquery(q) => Expr::ScalarSubquery(expand(&q, &mut failure)),
+            Expr::Exists { query, negated } => Expr::Exists { query: expand(&query, &mut failure), negated },
+            Expr::InSubquery { expr, query, negated } => {
+                Expr::InSubquery { expr, query: expand(&query, &mut failure), negated }
+            }
+            other => other,
+        }
+    });
+    if let Some(err) = failure {
+        return Err(err);
+    }
+    *expr = rebuilt;
+    Ok(())
 }
 
 fn expand_body_wildcards(catalog: &Catalog, body: &mut SetExpr) -> DbResult<()> {
@@ -656,6 +691,19 @@ fn expand_body_wildcards(catalog: &Catalog, body: &mut SetExpr) -> DbResult<()> 
                 if let TableRef::Subquery { query, .. } = tref {
                     expand_wildcards(catalog, query)?;
                 }
+            }
+            let Select { projection, joins, selection, group_by, having, .. } = &mut **sel;
+            let item_exprs = projection.iter_mut().filter_map(|i| match i {
+                SelectItem::Expr { expr, .. } => Some(expr),
+                _ => None,
+            });
+            for e in item_exprs
+                .chain(joins.iter_mut().filter_map(|j| j.predicate.as_mut()))
+                .chain(selection.as_mut())
+                .chain(group_by.iter_mut())
+                .chain(having.as_mut())
+            {
+                expand_expr_wildcards(catalog, e)?;
             }
             if !sel.projection.iter().any(|i| !matches!(i, SelectItem::Expr { .. })) {
                 return Ok(());

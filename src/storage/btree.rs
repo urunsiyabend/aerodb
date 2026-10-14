@@ -192,9 +192,10 @@ impl<'a> BTree<'a> {
             self.root_page, key
         );
 
-        let res = self.insert_into_page(self.root_page, key, data);
+        let root = self.root_page;
+        self.insert_into_page(root, key, data)?;
         debug!("insert() complete for key={}", key);
-        res
+        self.keep_root(root)
     }
 
     /// Insert an already-versioned row without applying logical-key uniqueness checks.
@@ -204,7 +205,24 @@ impl<'a> BTree<'a> {
             "insert_version() → starting at root {} for key={} created_tx={}",
             self.root_page, row.key, row.created_tx
         );
-        self.insert_row_version_into_page(self.root_page, row)
+        let root = self.root_page;
+        self.insert_row_version_into_page(root, row)?;
+        self.keep_root(root)
+    }
+
+    /// A tree's root page number never changes: after a root split the new
+    /// root's content is moved back into the original root page
+    /// ([`BTree::pin_root`]). Catalog rows, index maps and write intents name
+    /// trees by root page, and ROLLBACK restores those names; data pages are
+    /// not reverted on abort (MVCC logical abort), so a split done by an
+    /// aborted transaction must stay reachable from the same root page.
+    /// (Page 0 is only the root of legacy test trees, where 0 also means "no
+    /// parent"; those keep the old moving-root behaviour.)
+    fn keep_root(&mut self, original: u32) -> io::Result<()> {
+        if original == 0 {
+            return Ok(());
+        }
+        self.pin_root(original)
     }
 
     /// Delete a logical key by marking its newest visible version as deleted.
@@ -216,9 +234,16 @@ impl<'a> BTree<'a> {
         self.mark_deleted(key, deleted_tx)
     }
 
-    /// Mark the newest visible version of `key` as deleted without physically rebuilding the tree.
+    /// Mark the newest live version of `key` as deleted without physically
+    /// rebuilding the tree. Like [`BTree::find`], the lookup recognises the
+    /// active transaction's own versions, so a row inserted earlier in the
+    /// same transaction is found (a transaction-less snapshot would hide it
+    /// as uncommitted and the delete would silently do nothing).
     pub fn mark_deleted(&mut self, key: i32, deleted_tx: TransactionId) -> io::Result<bool> {
-        let snapshot = Snapshot::new(TransactionId::MAX, Vec::new());
+        let snapshot = match self.pager.transaction_id() {
+            Some(current) => Snapshot::new_for_transaction(current, TransactionId::MAX, Vec::new()),
+            None => Snapshot::new(TransactionId::MAX, Vec::new()),
+        };
         self.mark_deleted_visible(key, &snapshot, deleted_tx)
     }
 
@@ -256,8 +281,46 @@ impl<'a> BTree<'a> {
         };
         row.deleted_tx = Some(deleted_tx);
         let leaf_page = slot.page;
-        self.write_all_rows_to_leaf(leaf_page, &rows)?;
-        Ok(true)
+        match self.write_all_rows_to_leaf(leaf_page, &rows) {
+            Ok(()) => Ok(true),
+            // The deleter stamp makes the row longer; a full leaf splits
+            // exactly as on insert.
+            Err(e) if e.to_string().starts_with("Leaf overflow") => {
+                let root = self.root_page;
+                self.split_leaf(leaf_page, rows)?;
+                self.keep_root(root)?;
+                Ok(true)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Physically remove every stored version of `key` (visible or not) and
+    /// return how many were removed. Only for trees that are not
+    /// MVCC-versioned, i.e. the catalog trees, whose aborted changes are
+    /// undone by reverting their pages; never for table data.
+    pub fn remove_all_versions(&mut self, key: i32) -> io::Result<usize> {
+        let mut by_page: Vec<(u32, Vec<usize>)> = Vec::new();
+        for (slot, _) in self.key_versions(key)? {
+            match by_page.iter_mut().find(|(p, _)| *p == slot.page) {
+                Some((_, idx)) => idx.push(slot.index),
+                None => by_page.push((slot.page, vec![slot.index])),
+            }
+        }
+        let mut removed = 0;
+        for (page, indexes) in by_page {
+            let rows = self.read_all_rows_from_leaf(page)?;
+            let before = rows.len();
+            let kept: Vec<Row> = rows
+                .into_iter()
+                .enumerate()
+                .filter(|(i, row)| !(indexes.contains(i) && row.key == key))
+                .map(|(_, row)| row)
+                .collect();
+            removed += before - kept.len();
+            self.write_all_rows_to_leaf(page, &kept)?;
+        }
+        Ok(removed)
     }
 
     /// Every physical version of `key`, paired with the slot holding it.
@@ -508,8 +571,23 @@ impl<'a> BTree<'a> {
     /// - Let `separator_key` = first key of right half.
     /// - Call `insert_in_parent(leaf_page_num, separator_key, new_leaf_page)`.
     fn split_leaf(&mut self, leaf_page_num: u32, all_rows: Vec<Row>) -> io::Result<()> {
-        let total = all_rows.len();
-        let split_index = total / 2;
+        // Split by bytes, not by row count: rows differ in size (versions
+        // with deleter stamps, rows widened by ALTER TABLE), and a count
+        // split can leave one half too large for a page.
+        let sizes: Vec<usize> = all_rows.iter().map(|r| 8 + r.serialize_mvcc_payload().len()).collect();
+        let total_bytes: usize = sizes.iter().sum();
+        // The cut (1..len) that minimises the larger half.
+        let mut split_index = 1;
+        let mut best = usize::MAX;
+        let mut left_bytes = 0;
+        for (i, size) in sizes.iter().enumerate().take(sizes.len() - 1) {
+            left_bytes += size;
+            let larger = left_bytes.max(total_bytes - left_bytes);
+            if larger < best {
+                best = larger;
+                split_index = i + 1;
+            }
+        }
         let left_rows = &all_rows[..split_index];
         let right_rows = &all_rows[split_index..];
 

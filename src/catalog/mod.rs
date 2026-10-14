@@ -281,31 +281,33 @@ impl Catalog {
         Ok(max + 1)
     }
 
-    /// Replace (`Some`) or delete (`None`) the page-1 row `key`, keeping the
-    /// catalog tree rooted at page 1.
-    fn write_catalog_row(&mut self, key: i32, data: Option<RowData>) -> io::Result<()> {
+    /// Write the page-1 row `key`: `existing` says whether the row must
+    /// already exist (replace / delete) or must not (create); `data` is the
+    /// new content (`None` = delete). Keeps the catalog tree rooted at page 1.
+    ///
+    /// The catalog is not MVCC-versioned (ROLLBACK reverts its pages), so
+    /// the old row is removed physically. Marking it deleted with an MVCC
+    /// stamp could miss a row created earlier in the same transaction (it
+    /// is invisible to a transaction-less snapshot) and silently keep it.
+    fn write_catalog_row(&mut self, key: i32, existing: bool, data: Option<RowData>) -> io::Result<()> {
         let mut tree = BTree::open_root(&self.pager, 1)?;
-        if tree.find(key)?.is_some() {
-            tree.delete(key)?;
+        // Live = what the page-1 scanners see. Files written before 0.6.0
+        // may also hold dead (deleted-stamped) versions of a key; they are
+        // dropped together with the live one.
+        let live = tree.versions_of(key)?.iter().filter(|r| r.deleted_tx.is_none()).count();
+        if live != usize::from(existing) {
+            return Err(io::Error::other(format!(
+                "internal error: catalog row {key} has {live} live version(s), expected {}",
+                usize::from(existing)
+            )));
         }
+        tree.remove_all_versions(key)?;
         if let Some(data) = data {
             tree.insert(key, data)?;
         }
         // A root split moved the root off page 1: move it back (the catalog
         // tree is always opened at page 1).
         tree.pin_root(1)
-    }
-
-    pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
-        let target = Self::catalog_entries(&self.pager)?.into_iter().find_map(|(key, e)| match e {
-            CatalogEntry::Table(info) if info.name == name => Some((key, info)),
-            _ => None,
-        });
-        if let Some((key, mut info)) = target {
-            info.root_page = new_root;
-            self.write_catalog_row(key, Some(Self::serialize_catalog_row(&info)))?;
-        }
-        Ok(())
     }
 
     /// Persist new metadata for an existing table (ALTER TABLE): rewrites its
@@ -315,7 +317,7 @@ impl Catalog {
         let key = self.catalog_key(false, &info.name)?.ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, format!("No such table: {}", info.name))
         })?;
-        self.write_catalog_row(key, Some(Self::serialize_catalog_row(&info)))?;
+        self.write_catalog_row(key, true, Some(Self::serialize_catalog_row(&info)))?;
         self.tables.insert(info.name.clone(), info);
         Ok(())
     }
@@ -329,7 +331,7 @@ impl Catalog {
             ));
         }
         let key = self.next_catalog_key()?;
-        self.write_catalog_row(key, Some(Self::serialize_view_row(&view)))?;
+        self.write_catalog_row(key, false, Some(Self::serialize_view_row(&view)))?;
         self.views.insert(view.name.clone(), view);
         Ok(())
     }
@@ -339,9 +341,10 @@ impl Catalog {
         if !self.views.contains_key(name) {
             return Ok(false);
         }
-        if let Some(key) = self.catalog_key(true, name)? {
-            self.write_catalog_row(key, None)?;
-        }
+        let key = self.catalog_key(true, name)?.ok_or_else(|| {
+            io::Error::other(format!("internal error: view {name} has no catalog row"))
+        })?;
+        self.write_catalog_row(key, true, None)?;
         self.views.remove(name);
         Ok(true)
     }
@@ -692,7 +695,7 @@ impl Catalog {
         // A synthetic key not used by any table or view row (a count-based
         // key could collide once a relation was dropped).
         let key = self.next_catalog_key()?;
-        self.write_catalog_row(key, Some(Self::serialize_catalog_row(&info)))?;
+        self.write_catalog_row(key, false, Some(Self::serialize_catalog_row(&info)))?;
         self.tables.insert(name.to_string(), info);
         Ok(())
     }
@@ -778,7 +781,11 @@ impl Catalog {
             if let ColumnValue::Text(ref s) = existing.data.0[0] {
                 if *s == Self::value_to_string(&value) {
                     existing.data.0.push(ColumnValue::Integer(row_key));
-                    index_tree.delete(hash)?;
+                    if !index_tree.delete(hash)? {
+                        return Err(io::Error::other(format!(
+                            "internal error: index entry {hash} found but not deleted"
+                        )));
+                    }
                     index_tree.insert(hash, existing.data)?;
                     return Ok(index_tree.root_page());
                 }
@@ -876,6 +883,15 @@ impl Catalog {
         Ok(())
     }
 
+    /// Physically remove sequence row `key` before rewriting it. Page 2 is
+    /// not MVCC-versioned (ROLLBACK reverts it), like the table catalog.
+    fn remove_sequence_row(tree: &mut BTree, key: i32) -> io::Result<()> {
+        if tree.remove_all_versions(key)? == 0 {
+            return Err(io::Error::other(format!("internal error: sequence row {key} not found")));
+        }
+        Ok(())
+    }
+
     pub fn next_sequence_value(&mut self, name: &str) -> io::Result<i64> {
         let info = self.sequences.get_mut(name).ok_or_else(|| {
             io::Error::new(
@@ -886,7 +902,7 @@ impl Catalog {
         info.current_value += info.increment;
         {
             let mut tree = BTree::open_root(&self.pager, 2)?;
-            tree.delete(info.key)?;
+            Self::remove_sequence_row(&mut tree, info.key)?;
             tree.insert(
                 info.key,
                 Self::serialize_sequence_row(
@@ -908,7 +924,7 @@ impl Catalog {
         if new_current > info.current_value {
             info.current_value = new_current;
             let mut tree = BTree::open_root(&self.pager, 2)?;
-            tree.delete(info.key)?;
+            Self::remove_sequence_row(&mut tree, info.key)?;
             tree.insert(
                 info.key,
                 Self::serialize_sequence_row(
@@ -1118,14 +1134,13 @@ impl Catalog {
         }
 
         // Find catalog row key corresponding to this table
-        if let Some(key) = self.catalog_key(false, name)? {
-            self.write_catalog_row(key, None)?;
-            self.tables.remove(name);
-            self.rowid_counters.remove(name);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        let key = self.catalog_key(false, name)?.ok_or_else(|| {
+            io::Error::other(format!("internal error: table {name} has no catalog row"))
+        })?;
+        self.write_catalog_row(key, true, None)?;
+        self.tables.remove(name);
+        self.rowid_counters.remove(name);
+        Ok(true)
     }
 
     /// Serialize a catalog row into a UTF-8 string:

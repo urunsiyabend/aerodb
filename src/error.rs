@@ -63,6 +63,10 @@ pub enum DbError {
     DuplicateObject(String),
     #[error("column \"{0}\" already exists")]
     DuplicateColumn(String),
+    /// A DROP TABLE named a view or a DROP VIEW named a table; the message
+    /// is e.g. "v is not a table".
+    #[error("{0}")]
+    WrongObjectType(String),
 }
 
 impl DbError {
@@ -98,6 +102,7 @@ impl DbError {
             DbError::DependentObjects(_) => "2BP01",
             DbError::DuplicateObject(_) => "42P07",
             DbError::DuplicateColumn(_) => "42701",
+            DbError::WrongObjectType(_) => "42809",
         }
     }
 }

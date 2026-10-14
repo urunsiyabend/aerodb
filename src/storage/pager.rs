@@ -787,11 +787,39 @@ impl Pager {
         // its scans are not visibility-filtered, so aborted CREATE/DROP TABLE
         // rows there would otherwise be read back as live. DDL is serialized
         // by a coarse catalog lock, so reverting just those two pages is safe.
+        let is_catalog = |page_num: u32| {
+            page_num == CATALOG_TABLE_PAGE
+                || page_num == CATALOG_SEQUENCE_PAGE
+                || catalog_pages.contains(&page_num)
+        };
+        // The data pages stay as the aborted transaction left them, and that
+        // includes its *structural* changes: leaf/internal splits, new pages
+        // and the content moved into a pinned root. Later transactions build
+        // on that structure (a committed row may land in a leaf the aborted
+        // transaction split off) but only write back the pages they touch
+        // themselves, so the structure must be made durable here, or a
+        // reopen would pair the old on-disk parent pages with newer leaves.
+        // The images only add aborted (invisible) versions on top of
+        // committed state, and the abort record above is already durable.
+        let data_images: Vec<(u32, PageData)> = transaction
+            .touched_pages()
+            .filter(|&page_num| !is_catalog(page_num))
+            .filter_map(|page_num| self.resident_image(page_num).map(|data| (page_num, data)))
+            .collect();
+        if !data_images.is_empty() {
+            let mut io = self.io();
+            for (page_num, data) in &data_images {
+                io.wal.append_page(*page_num, data)?;
+            }
+            for (page_num, data) in &data_images {
+                io.write_page_raw(*page_num, data)?;
+            }
+            io.wal.append_checkpoint()?;
+            io.wal.truncate()?;
+            io.file.sync_all()?;
+        }
         for page_num in transaction.touched_pages() {
-            if page_num != CATALOG_TABLE_PAGE
-                && page_num != CATALOG_SEQUENCE_PAGE
-                && !catalog_pages.contains(&page_num)
-            {
+            if !is_catalog(page_num) {
                 continue;
             }
             let mut buf = [0u8; PAGE_SIZE];

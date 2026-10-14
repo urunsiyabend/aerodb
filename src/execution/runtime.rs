@@ -126,15 +126,6 @@ fn matching_rows(catalog: &Catalog, info: &TableInfo, selection: Option<&Expr>) 
     Ok(out)
 }
 
-/// Record a table's new B-tree root (in memory and in the catalog page).
-fn set_root(catalog: &mut Catalog, table_name: &str, old_root: u32, new_root: u32) -> DbResult<()> {
-    if new_root != old_root {
-        catalog.get_table_mut(table_name)?.root_page = new_root;
-        catalog.update_catalog_root(table_name, new_root)?;
-    }
-    Ok(())
-}
-
 /// Mark the visible versions `rows` of `table_name` deleted by the current
 /// transaction (after first-committer-wins conflict checks on all of them).
 /// Callers record the write intents with [`record_write_intents`] once all
@@ -148,11 +139,14 @@ fn delete_versions(catalog: &mut Catalog, table_name: &str, rows: &[Row]) -> DbR
         ensure_no_write_conflict(&mut tree, r.key, r.created_tx, &snapshot)?;
     }
     for r in rows {
-        tree.mark_deleted_visible(r.key, &snapshot, tx_id)?;
+        if !tree.mark_deleted_visible(r.key, &snapshot, tx_id)? {
+            return Err(std::io::Error::other(format!(
+                "internal error: version of row {} in {table_name} vanished before it was deleted",
+                r.key
+            ))
+            .into());
+        }
     }
-    let new_root = tree.root_page();
-    drop(tree);
-    set_root(catalog, table_name, root, new_root)?;
     // Index entries intentionally remain until vacuum: indexed lookups
     // re-check base-table visibility with find_visible().
     Ok(())
@@ -213,9 +207,10 @@ fn write_version(catalog: &mut Catalog, table_name: &str, key: i32, data: RowDat
         row.deleted_tx = None;
         tree.insert_version(row)?;
     }
-    let new_root = tree.root_page();
+    // The root page never moves (`BTree::keep_root`), so the catalog row and
+    // the in-memory TableInfo stay valid without a rewrite.
+    debug_assert_eq!(tree.root_page(), root);
     drop(tree);
-    set_root(catalog, table_name, root, new_root)?;
     catalog.note_rowid_used(table_name, key);
     catalog.insert_into_indexes(table_name, key, &data)?;
     Ok(())
@@ -802,6 +797,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
         }
         Statement::DropTable { table_name, if_exists } => {
             if catalog.get_table(&table_name).is_err() {
+                if catalog.get_view(&table_name).is_some() {
+                    return Err(DbError::WrongObjectType(format!("{table_name} is not a table")));
+                }
                 if if_exists {
                     return Ok(());
                 }
@@ -817,6 +815,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
         }
         Statement::DropView { name, if_exists } => {
             if catalog.get_view(&name).is_none() {
+                if catalog.get_table(&name).is_ok() {
+                    return Err(DbError::WrongObjectType(format!("{name} is not a view")));
+                }
                 if if_exists {
                     return Ok(());
                 }
@@ -1069,16 +1070,21 @@ mod tests {
         assert_eq!(at2, vec![&ColumnValue::Integer(1)], "{versions:?}");
     }
 
-    /// UPDATE write intents name the table's root after the new versions are
-    /// written, even when writing them splits the root leaf.
+    /// UPDATE write intents name the table's root, which stays the same page
+    /// even when writing the new versions splits the root leaf.
     #[test]
     fn update_write_intents_use_final_root() {
+        use crate::storage::page::{NODE_LEAF, get_node_type};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("intents.db");
         let pager = crate::storage::pager::Pager::new(path.to_str().unwrap()).unwrap();
         let mut catalog = Catalog::open(pager).unwrap();
         run(&mut catalog, "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)").unwrap();
         let root0 = catalog.get_table("t").unwrap().root_page;
+        let root_is_leaf = |catalog: &Catalog| {
+            let root = catalog.get_table("t").unwrap().root_page;
+            get_node_type(&catalog.pager.read_page(root).unwrap()) == NODE_LEAF
+        };
         let pad = "x".repeat(300);
         let mut n = 0;
         // Fill the root leaf as far as it goes without splitting.
@@ -1087,7 +1093,8 @@ mod tests {
             let mut tree = BTree::open_root(&catalog.pager, root).unwrap();
             tree.insert(n + 1, RowData(vec![ColumnValue::Integer(n + 1), ColumnValue::Text(pad.clone())]))
                 .unwrap();
-            if tree.root_page() != root0 {
+            assert_eq!(tree.root_page(), root0, "the root page never moves");
+            if !root_is_leaf(&catalog) {
                 // Went one too far: start over with n rows.
                 break;
             }
@@ -1100,12 +1107,14 @@ mod tests {
             run(&mut catalog, &format!("INSERT INTO t VALUES ({i}, '{pad}')")).unwrap();
         }
         let before = catalog.get_table("t").unwrap().root_page;
+        assert!(root_is_leaf(&catalog));
 
         let mut tm = crate::transaction::TransactionManager::new();
         tm.begin(&mut catalog, None, crate::transaction::IsolationLevel::default()).unwrap();
         run(&mut catalog, "UPDATE t SET s = 'y'").unwrap();
         let after = catalog.get_table("t").unwrap().root_page;
-        assert_ne!(before, after, "precondition: the UPDATE split the root");
+        assert!(!root_is_leaf(&catalog), "precondition: the UPDATE split the root");
+        assert_eq!(before, after);
         let intents = catalog.pager.transaction_write_set();
         assert_eq!(intents.len(), n as usize);
         for intent in intents {
