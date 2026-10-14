@@ -269,12 +269,13 @@ Bunlar audit'te probe'lanmadı; hepsi açıkça reddedilir, sessizce yok sayılm
   - Bozuk view açıklama yolu (`view V cannot be described`) testsizdir; SQL ile bugün ulaşılamaz.
 
 **Depolama ve performans:**
-- **Satır boyutu:** Bir satır tek bir 4 KiB sayfaya sığmalıdır (yaklaşık 4 KB serileştirilmiş veri). Daha büyük satırlar yazmadan önce 54000 ile reddedilir.
+- **Satır boyutu:** Bir satır tek bir 4 KiB sayfaya sığmalıdır (yaklaşık 4 KB serileştirilmiş veri). Daha büyük tablo satırları yazmadan önce 54000 ile reddedilir.
 - **İndeksler:** İkincil indeksler reopen'dan sonra kalıcı değildir (0.5.1'den beri). Tek kolonlu eşitlik içindir. Final review düzeltmesi: indeks girdileri kayıplı bir hash ile anahtarlandığı için aynı hash'e sahip ikinci bir değer (NULL ve 0, DOUBLE 1.5 ve 1.7, TEXT/DECIMAL çakışmaları) 58030 veriyordu; artık her hash kovası değer başına bir grup tutar, arama yalnız tam değerin grubunu kullanır ve NULL indekslenmez (test: `tests/sql_final_review.rs`, `src/catalog/mod.rs` unit).
 - **Performans:**
   - FK kontrolleri parent satırlarını tarar (O(n·m)).
   - `UPDATE/DELETE … WHERE`, PK ve UNIQUE kontrolleri görünür satırları tarar.
   - Aynı indeks değerine sahip çok satır tek transaction'da karesel büyür.
+- **İndeks girdisi sayfa sınırı:** İkincil indeks, farklı her değer için o değere sahip tüm satır anahtarlarını tutan tek bir girdi saklar ve bu girdi tek sayfaya sığmalıdır. İndeksli bir kolonda aynı değere sahip yaklaşık 810 satırda (INTEGER: 811. INSERT; TEXT 'active': 810. satır) `INSERT` 58030 "Leaf overflow: not enough space" ile başarısız olur; aynı değeri tekrarlayan 1000 satırlık çok satırlı INSERT başarısız olur (200 satır geçer). Yaklaşık 810'dan fazla eşit değer üzerinde `CREATE INDEX` de başarısız olur; indeksler reopen'da kalıcı olmadığı için reopen sonrası yeniden oluşturma bu veride başarısız olur. `CREATE INDEX` her saklı satır sürümünü okur (henüz vacuum edilmemiş iptal edilmiş/silinmiş olanlar dahil), bu yüzden sınıra 810 görünür satırdan önce ulaşılabilir. Ret temizdir: kısmi ifade etkisi yoktur, `BEGIN` içinde transaction başarısız olur (25P02 politikası). Sınırlama 0.6.0'dan öncedir (0.5.1 aynı girdi düzenini kullanıyordu). Planlanan çözüm: bileşik (hash, satır anahtarı) indeks anahtarları veya taşma kovaları. 54000 yalnızca TABLO satırları içindir; bu durum 58030'dur.
 - **Dayanıklılık maliyeti:**
   - ROLLBACK, iptal edilen transaction'ın sayfalarını kalıcı yazar (commit gibi fsync).
   - İptal edilen transaction'ların veya root pinleme sonucu terk edilen sayfalar yeniden kullanılmaz; free-page listesi yoktur.

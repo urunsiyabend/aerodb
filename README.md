@@ -351,7 +351,9 @@ ORDER BY ordinal_position
 | `YEAR` | `0000` or `1901` through `2155` |
 
 A stored row must fit in one 4 KiB page, about 4 KB of serialized data.
-Larger rows are rejected with 54000 before anything is written.
+Larger table rows are rejected with 54000 before anything is written. (An
+index entry that outgrows a page is a different case, 58030; see Current
+limitations.)
 
 ### Error codes (SQLSTATE)
 
@@ -648,8 +650,20 @@ Storage and performance:
 - Secondary-index metadata is kept in memory and is not rebuilt when the
   database is reopened. Recreate indexes after opening a new process.
 - Secondary indexes optimize single-column equality predicates only.
-- A row must fit in one page (about 4 KB serialized); otherwise the write
-  fails with 54000.
+- A table row must fit in one page (about 4 KB serialized); otherwise the
+  write fails with 54000. This applies to table rows only.
+- A secondary index keeps one entry per distinct value holding all row keys
+  with that value, and the entry must fit in one page. About 810 rows sharing
+  one value on an indexed column (INTEGER: INSERT number 811; TEXT 'active':
+  row 810) make `INSERT` fail with 58030 "Leaf overflow: not enough space". A
+  1000-row multi-row `INSERT` with one repeated value fails (200 succeed).
+  `CREATE INDEX` over more than about 810 equal values fails, and because
+  indexes are not persisted across reopen, recreating them on such data after
+  reopen fails. `CREATE INDEX` reads every stored row version (including
+  aborted or deleted ones not yet vacuumed), so the limit can be hit before
+  810 visible rows. The rejection is clean: no partial statement effect, and
+  inside `BEGIN` the transaction fails (25P02 policy). This predates 0.6.0.
+  Planned fix: composite (hash, row key) index keys or overflow buckets.
 - `UPDATE`/`DELETE … WHERE`, primary-key and `UNIQUE` checks scan the visible
   rows. Foreign-key checks scan the parent rows (O(n·m)).
 - `ROLLBACK` writes the aborted transaction's pages durably, so it costs

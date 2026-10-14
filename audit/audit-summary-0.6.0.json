@@ -38,7 +38,7 @@
   "notes": [
     "The runner's embedded summary in results-0.6.0.json says \"version\": \"0.5.1\". That is a hard-coded string in the immutable 0.5.1 harness (audit/run_probes.py), not the build version; the audited build is Cargo package version 0.6.0.",
     "head is the commit the audit ran at (after the final-review fix wave). Source code (src/, tests/) last changed in code_head 7c61351df17b58658318ccd5a4fb861dfc9eae3d; ec6679f only changes documentation. The commit that adds this file and results-0.6.0.json changes nothing else, so the branch HEAD is one commit after head.",
-    "Re-run of the audit after the final-review fix wave (index buckets, identifier rule for object names, CLI line handler, AUTO_INCREMENT sequences, CASE typing). Statuses are unchanged from the earlier run at 80258e7.",
+    "Re-run of the audit after the final-review fix wave (index buckets, identifier rule for object names, CLI line handler, AUTO_INCREMENT sequences, CASE typing). Statuses are identical to both earlier runs: the run at 80258e7 (Task 8) and the fix-wave run at ec6679f.",
     "The audit harness, cases and oracle patterns (audit/run_probes.py, audit/sql_audit.rs, audit/cases.json) are the unmodified 0.5.1 files.",
     "comment is unverified because the harness feeds a comment-only line to parse_statement as one statement (42601 'empty statement') and has no empty-statement API; parse_script on the same text returns [] (tests/sql_parser.rs::comment_only_script_is_empty).",
     "Not a SQL:2023 certification and no overall conformance percentage. See specs/sql-conformance-0.6.0.md."

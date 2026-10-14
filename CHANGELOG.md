@@ -114,7 +114,9 @@ These are the 0.5.1 audit bugs.
   - A failed statement left 0.5.1's transaction installed.
   - DML on a missing table affected 0 rows instead of failing.
   - `CREATE TABLE t (x INTEGER, x INTEGER)` was accepted.
-  - An oversized row failed with an I/O "Leaf overflow".
+  - An oversized table row failed with an I/O "Leaf overflow" (now 54000
+    before any write). Index entries with many rows per value still fail with
+    58030, see Known limitations.
 - Found in the final review of this release (the first three also affected
   0.5.1):
   - Secondary indexes keyed entries by a lossy hash. A second value with the
@@ -261,6 +263,20 @@ These are the 0.5.1 audit bugs.
     rows.
   - Many rows with the same indexed value in one transaction grow
     quadratically.
+  - A secondary index stores one entry per distinct indexed value holding
+    every row key with that value, and that entry must fit in one page. About
+    810 rows sharing one value on an indexed column (INTEGER: INSERT number
+    811 fails; TEXT 'active': row 810) make `INSERT` fail with 58030 "Leaf
+    overflow: not enough space". A 1000-row multi-row `INSERT` into an
+    indexed table with one repeated value fails (200 rows succeed).
+    `CREATE INDEX` over more than about 810 equal values fails too; since
+    indexes are not persisted across reopen, recreating them after reopen
+    fails on such data. `CREATE INDEX` reads every stored row version
+    (including aborted or deleted ones not yet vacuumed), so the limit can be
+    reached before 810 visible rows. The rejection is clean: no partial
+    statement effect, and inside `BEGIN` the transaction fails (25P02
+    policy). This predates 0.6.0 (0.5.1 used the same entry layout). Planned
+    fix: composite (hash, row key) index keys or overflow buckets.
 - Durability costs and space:
   - ROLLBACK writes the aborted transaction's pages durably and costs fsyncs
     proportional to the pages it touched, plus a metadata write.
