@@ -1,0 +1,44 @@
+{
+  "head": "80258e789e8ffbd2d755e65cf56ff45ff88cf91b",
+  "version": "0.6.0",
+  "case_count": 92,
+  "sql_statement_count": 309,
+  "statuses": {
+    "implemented": 83,
+    "unsupported": 8,
+    "unverified": 1
+  },
+  "reasons": {
+    "result_matches": 67,
+    "expected_error_enforced": 15,
+    "syntax_rejected": 7,
+    "setup_parse_error": 1,
+    "empty_statement_api": 1,
+    "invalid_syntax_rejected": 1
+  },
+  "step_statuses": {
+    "OK": 282,
+    "EXEC_ERROR": 16,
+    "PARSE_ERROR": 11
+  },
+  "unsupported_cases": ["timestamp_literal", "savepoint", "serializable", "readonly", "cte", "window", "json_value", "cursor"],
+  "unverified_cases": ["comment"],
+  "bug_cases": [],
+  "partial_cases": [],
+  "command": "python3 audit/run_probes.py /home/urunsiyabend/development/aerodb-sql-0.6.0 /home/urunsiyabend/development/aerodb-sql-0.6.0/audit/results",
+  "results_file": "audit/results-0.6.0.json (byte-identical copy of audit/results/results.json, sha256 11673d39017979008f7ffd39aea4fbcf4ab721236ae327fcc1bd956044c31926)",
+  "baseline_0_5_1_statuses": {
+    "implemented": 34,
+    "bug": 28,
+    "unsupported": 28,
+    "partial": 1,
+    "unverified": 1
+  },
+  "notes": [
+    "The runner's embedded summary in results-0.6.0.json says \"version\": \"0.5.1\". That is a hard-coded string in the immutable 0.5.1 harness (audit/run_probes.py), not the build version; the audited build is Cargo package version 0.6.0.",
+    "head is the commit the audit ran at. Source code (src/, tests/) last changed in fd7985824cd71b185fe16345a54230d74fb04013; 80258e7 only adds documentation. The commit that adds this file and results-0.6.0.json changes nothing else.",
+    "The audit harness, cases and oracle patterns (audit/run_probes.py, audit/sql_audit.rs, audit/cases.json) are the unmodified 0.5.1 files.",
+    "comment is unverified because the harness feeds a comment-only line to parse_statement as one statement (42601 'empty statement') and has no empty-statement API; parse_script on the same text returns [] (tests/sql_parser.rs::comment_only_script_is_empty).",
+    "Not a SQL:2023 certification and no overall conformance percentage. See specs/sql-conformance-0.6.0.md."
+  ]
+}

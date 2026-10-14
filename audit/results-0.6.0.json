@@ -1,0 +1,4823 @@
+{
+  "summary": {
+    "head": "80258e789e8ffbd2d755e65cf56ff45ff88cf91b",
+    "version": "0.5.1",
+    "case_count": 92,
+    "sql_statement_count": 309,
+    "statuses": {
+      "implemented": 83,
+      "unsupported": 8,
+      "unverified": 1
+    },
+    "reasons": {
+      "result_matches": 67,
+      "expected_error_enforced": 15,
+      "syntax_rejected": 7,
+      "setup_parse_error": 1,
+      "empty_statement_api": 1,
+      "invalid_syntax_rejected": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "select_filter",
+      "feature": "E061-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE v = 20",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE v = 20",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n4\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "4"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "arithmetic",
+      "feature": "E011-04",
+      "setup": [],
+      "sql": "SELECT 2 + 3",
+      "expected_rows": [
+        [
+          "5"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "SELECT 2 + 3",
+          "status": "OK",
+          "error": null,
+          "output": "EXPR INTEGER\n5\n",
+          "rows": [
+            [
+              "5"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "divide_zero",
+      "feature": "E011-04",
+      "setup": [],
+      "sql": "SELECT 1 / 0",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "zero|division",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "SELECT 1 / 0",
+          "status": "EXEC_ERROR",
+          "error": "DivisionByZero :: division by zero",
+          "output": "",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "null_eq",
+      "feature": "E131",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE v = NULL",
+      "expected_rows": [],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE v = NULL",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "null_neq",
+      "feature": "E131",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE v <> NULL",
+      "expected_rows": [],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE v <> NULL",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "null_arithmetic",
+      "feature": "E131",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT v + 1 FROM t WHERE id = 3",
+      "expected_rows": [
+        [
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT v + 1 FROM t WHERE id = 3",
+          "status": "OK",
+          "error": null,
+          "output": "EXPR INTEGER\nNULL\n",
+          "rows": [
+            [
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "null_predicate",
+      "feature": "E061-06",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE v IS NULL",
+      "expected_rows": [
+        [
+          "3"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE v IS NULL",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n3\n",
+          "rows": [
+            [
+              "3"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "three_value_or",
+      "feature": "E061-14",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE v = NULL OR id = 2",
+      "expected_rows": [
+        [
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE v = NULL OR id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n2\n",
+          "rows": [
+            [
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "three_value_and",
+      "feature": "E061-14",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE v = NULL AND id = 3",
+      "expected_rows": [],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE v = NULL AND id = 3",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "boolean_type",
+      "feature": "T031",
+      "setup": [
+        "CREATE TABLE b (id INTEGER PRIMARY KEY, b BOOLEAN)",
+        "INSERT INTO b VALUES (1, TRUE), (2, FALSE), (3, NULL)"
+      ],
+      "sql": "SELECT b FROM b",
+      "expected_rows": [
+        [
+          "true"
+        ],
+        [
+          "false"
+        ],
+        [
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE b (id INTEGER PRIMARY KEY, b BOOLEAN)",
+          "status": "OK",
+          "error": null,
+          "output": "Table b created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO b VALUES (1, TRUE), (2, FALSE), (3, NULL)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT b FROM b",
+          "status": "OK",
+          "error": null,
+          "output": "b BOOLEAN\ntrue\nfalse\nNULL\n",
+          "rows": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ],
+            [
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "distinct",
+      "feature": "E051-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT DISTINCT v FROM t",
+      "expected_rows": [
+        [
+          "20"
+        ],
+        [
+          "10"
+        ],
+        [
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT DISTINCT v FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "v INTEGER\n20\n10\nNULL\n",
+          "rows": [
+            [
+              "20"
+            ],
+            [
+              "10"
+            ],
+            [
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "order_desc",
+      "feature": "F850",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t ORDER BY id DESC",
+      "expected_rows": [
+        [
+          "4"
+        ],
+        [
+          "3"
+        ],
+        [
+          "2"
+        ],
+        [
+          "1"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": true,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t ORDER BY id DESC",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n4\n3\n2\n1\n",
+          "rows": [
+            [
+              "4"
+            ],
+            [
+              "3"
+            ],
+            [
+              "2"
+            ],
+            [
+              "1"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "order_nonselected",
+      "feature": "E121-02",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT s FROM t ORDER BY id DESC",
+      "expected_rows": [
+        [
+          "b"
+        ],
+        [
+          "c"
+        ],
+        [
+          "a"
+        ],
+        [
+          "b"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": true,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT s FROM t ORDER BY id DESC",
+          "status": "OK",
+          "error": null,
+          "output": "s TEXT\nb\nc\na\nb\n",
+          "rows": [
+            [
+              "b"
+            ],
+            [
+              "c"
+            ],
+            [
+              "a"
+            ],
+            [
+              "b"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "order_expr",
+      "feature": "E121-03",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t ORDER BY 0 - id",
+      "expected_rows": [
+        [
+          "4"
+        ],
+        [
+          "3"
+        ],
+        [
+          "2"
+        ],
+        [
+          "1"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": true,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t ORDER BY 0 - id",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n4\n3\n2\n1\n",
+          "rows": [
+            [
+              "4"
+            ],
+            [
+              "3"
+            ],
+            [
+              "2"
+            ],
+            [
+              "1"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "order_nulls",
+      "feature": "F850",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT v FROM t ORDER BY v NULLS FIRST",
+      "expected_rows": [
+        [
+          "NULL"
+        ],
+        [
+          "10"
+        ],
+        [
+          "20"
+        ],
+        [
+          "20"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": true,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT v FROM t ORDER BY v NULLS FIRST",
+          "status": "OK",
+          "error": null,
+          "output": "v INTEGER\nNULL\n10\n20\n20\n",
+          "rows": [
+            [
+              "NULL"
+            ],
+            [
+              "10"
+            ],
+            [
+              "20"
+            ],
+            [
+              "20"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "in_list",
+      "feature": "E061-03",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE id IN (1, 4)",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE id IN (1, 4)",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n4\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "4"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "like",
+      "feature": "E061-04",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE s LIKE 'a%'",
+      "expected_rows": [
+        [
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE s LIKE 'a%'",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n2\n",
+          "rows": [
+            [
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "between",
+      "feature": "E061-02",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE v BETWEEN 10 AND 20",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "2"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE v BETWEEN 10 AND 20",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n2\n4\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ],
+            [
+              "4"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "inner_join",
+      "feature": "F041-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT t.id, u.n FROM t JOIN u ON t.id = u.id",
+      "expected_rows": [
+        [
+          "2",
+          "two"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT t.id, u.n FROM t JOIN u ON t.id = u.id",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER | n TEXT\n2 | two\n",
+          "rows": [
+            [
+              "2",
+              "two"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "left_join",
+      "feature": "F041-03",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT t.id, u.n FROM t LEFT JOIN u ON t.id = u.id",
+      "expected_rows": [
+        [
+          "1",
+          "NULL"
+        ],
+        [
+          "2",
+          "two"
+        ],
+        [
+          "3",
+          "NULL"
+        ],
+        [
+          "4",
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT t.id, u.n FROM t LEFT JOIN u ON t.id = u.id",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER | n TEXT\n1 | NULL\n2 | two\n3 | NULL\n4 | NULL\n",
+          "rows": [
+            [
+              "1",
+              "NULL"
+            ],
+            [
+              "2",
+              "two"
+            ],
+            [
+              "3",
+              "NULL"
+            ],
+            [
+              "4",
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "right_join",
+      "feature": "F041-04",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT t.id, u.n FROM t RIGHT JOIN u ON t.id = u.id",
+      "expected_rows": [
+        [
+          "2",
+          "two"
+        ],
+        [
+          "NULL",
+          "five"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT t.id, u.n FROM t RIGHT JOIN u ON t.id = u.id",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER | n TEXT\n2 | two\nNULL | five\n",
+          "rows": [
+            [
+              "2",
+              "two"
+            ],
+            [
+              "NULL",
+              "five"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "full_join",
+      "feature": "F406",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT t.id, u.n FROM t FULL JOIN u ON t.id = u.id",
+      "expected_rows": [
+        [
+          "1",
+          "NULL"
+        ],
+        [
+          "2",
+          "two"
+        ],
+        [
+          "3",
+          "NULL"
+        ],
+        [
+          "4",
+          "NULL"
+        ],
+        [
+          "NULL",
+          "five"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT t.id, u.n FROM t FULL JOIN u ON t.id = u.id",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER | n TEXT\n1 | NULL\n2 | two\n3 | NULL\n4 | NULL\nNULL | five\n",
+          "rows": [
+            [
+              "1",
+              "NULL"
+            ],
+            [
+              "2",
+              "two"
+            ],
+            [
+              "3",
+              "NULL"
+            ],
+            [
+              "4",
+              "NULL"
+            ],
+            [
+              "NULL",
+              "five"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "aggregate_count",
+      "feature": "E091-02",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT COUNT(*), COUNT(v) FROM t",
+      "expected_rows": [
+        [
+          "4",
+          "3"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT COUNT(*), COUNT(v) FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "COUNT(*) INTEGER | COUNT(v) INTEGER\n4 | 3\n",
+          "rows": [
+            [
+              "4",
+              "3"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "aggregate_sum",
+      "feature": "E091-05",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT SUM(v) FROM t",
+      "expected_rows": [
+        [
+          "50"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT SUM(v) FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "SUM(v) INTEGER\n50\n",
+          "rows": [
+            [
+              "50"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "aggregate_avg",
+      "feature": "E091-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT AVG(v) FROM t",
+      "expected_rows": [
+        [
+          "16.666666666666668"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT AVG(v) FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "AVG(v) DOUBLE\n16.666666666666668\n",
+          "rows": [
+            [
+              "16.666666666666668"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "aggregate_empty",
+      "feature": "E091",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT COUNT(*), SUM(v), AVG(v), MIN(v), MAX(v) FROM t WHERE id = 99",
+      "expected_rows": [
+        [
+          "0",
+          "NULL",
+          "NULL",
+          "NULL",
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT COUNT(*), SUM(v), AVG(v), MIN(v), MAX(v) FROM t WHERE id = 99",
+          "status": "OK",
+          "error": null,
+          "output": "COUNT(*) INTEGER | SUM(v) INTEGER | AVG(v) DOUBLE | MIN(v) INTEGER | MAX(v) INTEGER\n0 | NULL | NULL | NULL | NULL\n",
+          "rows": [
+            [
+              "0",
+              "NULL",
+              "NULL",
+              "NULL",
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "aggregate_distinct",
+      "feature": "E091-07",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT COUNT(DISTINCT v) FROM t",
+      "expected_rows": [
+        [
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT COUNT(DISTINCT v) FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "COUNT(DISTINCT v) INTEGER\n2\n",
+          "rows": [
+            [
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "having",
+      "feature": "E051-06",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT s, COUNT(*) FROM t GROUP BY s HAVING COUNT(*) > 1",
+      "expected_rows": [
+        [
+          "b",
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT s, COUNT(*) FROM t GROUP BY s HAVING COUNT(*) > 1",
+          "status": "OK",
+          "error": null,
+          "output": "s TEXT | COUNT(*) INTEGER\nb | 2\n",
+          "rows": [
+            [
+              "b",
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "scalar_one",
+      "feature": "F471",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT (SELECT v FROM t WHERE id = 1)",
+      "expected_rows": [
+        [
+          "20"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT (SELECT v FROM t WHERE id = 1)",
+          "status": "OK",
+          "error": null,
+          "output": "SUBQUERY INTEGER\n20\n",
+          "rows": [
+            [
+              "20"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "scalar_empty",
+      "feature": "F471",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT (SELECT v FROM t WHERE id = 99)",
+      "expected_rows": [
+        [
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT (SELECT v FROM t WHERE id = 99)",
+          "status": "OK",
+          "error": null,
+          "output": "SUBQUERY TEXT\nNULL\n",
+          "rows": [
+            [
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "scalar_cardinality",
+      "feature": "F471",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT (SELECT v FROM t)",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "cardinal|more than one|multiple",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT (SELECT v FROM t)",
+          "status": "EXEC_ERROR",
+          "error": "CardinalityViolation(\"more than one row returned by a subquery used as an expression\") :: cardinality violation: more than one row returned by a subquery used as an expression",
+          "output": "",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "correlated_exists",
+      "feature": "E061-13",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT id FROM t WHERE EXISTS (SELECT id FROM u WHERE u.id = t.id)",
+      "expected_rows": [
+        [
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE EXISTS (SELECT id FROM u WHERE u.id = t.id)",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n2\n",
+          "rows": [
+            [
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "in_subquery",
+      "feature": "E061-11",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT id FROM t WHERE id IN (SELECT id FROM u)",
+      "expected_rows": [
+        [
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE id IN (SELECT id FROM u)",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n2\n",
+          "rows": [
+            [
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "in_subquery_null",
+      "feature": "E061-11",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE v IN (SELECT v FROM t WHERE id = 3)",
+      "expected_rows": [],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE v IN (SELECT v FROM t WHERE id = 3)",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "union",
+      "feature": "E071-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE id = 1 UNION SELECT id FROM t WHERE id = 1",
+      "expected_rows": [
+        [
+          "1"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE id = 1 UNION SELECT id FROM t WHERE id = 1",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n",
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "union_all",
+      "feature": "E071-02",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE id = 1 UNION ALL SELECT id FROM t WHERE id = 1",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "1"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE id = 1 UNION ALL SELECT id FROM t WHERE id = 1",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n1\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "1"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "except",
+      "feature": "E071-03",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT id FROM t EXCEPT SELECT id FROM u",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "3"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t EXCEPT SELECT id FROM u",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n3\n4\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "3"
+            ],
+            [
+              "4"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "intersect",
+      "feature": "F302",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT id FROM t INTERSECT SELECT id FROM u",
+      "expected_rows": [
+        [
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t INTERSECT SELECT id FROM u",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n2\n",
+          "rows": [
+            [
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "cast",
+      "feature": "F201",
+      "setup": [],
+      "sql": "SELECT CAST('12' AS INTEGER)",
+      "expected_rows": [
+        [
+          "12"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "SELECT CAST('12' AS INTEGER)",
+          "status": "OK",
+          "error": null,
+          "output": "EXPR INTEGER\n12\n",
+          "rows": [
+            [
+              "12"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "decimal",
+      "feature": "E011-03",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n DECIMAL(10,2))",
+        "INSERT INTO d VALUES (1, 0.30)"
+      ],
+      "sql": "SELECT n FROM d",
+      "expected_rows": [
+        [
+          "0.30"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n DECIMAL(10,2))",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, 0.30)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT n FROM d",
+          "status": "OK",
+          "error": null,
+          "output": "n DECIMAL(10,2)\n0.30\n",
+          "rows": [
+            [
+              "0.30"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "varchar",
+      "feature": "E021-02",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n VARCHAR(10))",
+        "INSERT INTO d VALUES (1, 'ok')"
+      ],
+      "sql": "SELECT n FROM d",
+      "expected_rows": [
+        [
+          "ok"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n VARCHAR(10))",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, 'ok')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT n FROM d",
+          "status": "OK",
+          "error": null,
+          "output": "n VARCHAR(10)\nok\n",
+          "rows": [
+            [
+              "ok"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "char_padding",
+      "feature": "E021-01",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n CHAR(3))",
+        "INSERT INTO d VALUES (1, 'a')"
+      ],
+      "sql": "SELECT n FROM d",
+      "expected_rows": [
+        [
+          "a  "
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n CHAR(3))",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, 'a')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT n FROM d",
+          "status": "OK",
+          "error": null,
+          "output": "n CHAR(3)\na  \n",
+          "rows": [
+            [
+              "a  "
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "date_storage",
+      "feature": "F051-01",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n DATE)",
+        "INSERT INTO d VALUES (1, '2024-02-29')"
+      ],
+      "sql": "SELECT n FROM d",
+      "expected_rows": [
+        [
+          "2024-02-29"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "Storage subset only: typed literal tested separately",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n DATE)",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, '2024-02-29')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT n FROM d",
+          "status": "OK",
+          "error": null,
+          "output": "n DATE\n2024-02-29\n",
+          "rows": [
+            [
+              "2024-02-29"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "date_literal",
+      "feature": "F051-01",
+      "setup": [],
+      "sql": "SELECT DATE '2024-02-29'",
+      "expected_rows": [
+        [
+          "2024-02-29"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "SELECT DATE '2024-02-29'",
+          "status": "OK",
+          "error": null,
+          "output": "2024-02-29 DATE\n2024-02-29\n",
+          "rows": [
+            [
+              "2024-02-29"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "bad_date",
+      "feature": "F051-01",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n DATE)"
+      ],
+      "sql": "INSERT INTO d VALUES (1, '2024-02-30')",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "not a valid DATE|Invalid DATE",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n DATE)",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, '2024-02-30')",
+          "status": "EXEC_ERROR",
+          "error": "InvalidCast(\"'2024-02-30' is not a valid DATE\") :: invalid value for cast: '2024-02-30' is not a valid DATE",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "timestamp_literal",
+      "feature": "F051-03",
+      "setup": [],
+      "sql": "SELECT TIMESTAMP '2024-02-29 12:30:00.123456'",
+      "expected_rows": [
+        [
+          "2024-02-29 12:30:00.123456"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "unsupported",
+      "reason": "syntax_rejected",
+      "steps": [
+        {
+          "sql": "SELECT TIMESTAMP '2024-02-29 12:30:00.123456'",
+          "status": "PARSE_ERROR",
+          "error": "feature not supported: TIMESTAMP/TIME typed literals",
+          "output": "",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "not_null",
+      "feature": "E141-01",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)"
+      ],
+      "sql": "INSERT INTO d VALUES (1, NULL)",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "NullViolation",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, NULL)",
+          "status": "EXEC_ERROR",
+          "error": "NullViolation(\"n\") :: null value in column 'n' violates not-null constraint",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "pk_duplicate",
+      "feature": "E141-03",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "INSERT INTO t VALUES (1, 99, 'x')",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "DuplicateKey",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 99, 'x')",
+          "status": "EXEC_ERROR",
+          "error": "DuplicateKey(\"1\") :: duplicate primary key 1",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "pk_null",
+      "feature": "E141-08",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "INSERT INTO t VALUES (NULL, 99, 'x')",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "NullViolation",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (NULL, 99, 'x')",
+          "status": "EXEC_ERROR",
+          "error": "NullViolation(\"id\") :: null value in column 'id' violates not-null constraint",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "unique",
+      "feature": "E141-02",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n INTEGER NOT NULL UNIQUE)",
+        "INSERT INTO d VALUES (1, 1)"
+      ],
+      "sql": "INSERT INTO d VALUES (2, 1)",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n INTEGER NOT NULL UNIQUE)",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, 1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (2, 1)",
+          "status": "EXEC_ERROR",
+          "error": "UniqueViolation { constraint: \"d_n_key\", key: \"(n)=(1)\" } :: duplicate key value violates unique constraint d_n_key: (n)=(1)",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "check",
+      "feature": "E141-06",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n INTEGER CHECK (n > 0))"
+      ],
+      "sql": "INSERT INTO d VALUES (1, -1)",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n INTEGER CHECK (n > 0))",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, -1)",
+          "status": "EXEC_ERROR",
+          "error": "CheckViolation { constraint: \"d_n_check\" } :: new row violates check constraint d_n_check",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "composite_pk",
+      "feature": "E141-03",
+      "setup": [
+        "CREATE TABLE d (a INTEGER, b INTEGER, PRIMARY KEY (a,b))",
+        "INSERT INTO d VALUES (1, 2)"
+      ],
+      "sql": "INSERT INTO d VALUES (1, 2)",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "DuplicateKey",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (a INTEGER, b INTEGER, PRIMARY KEY (a,b))",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, 2)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, 2)",
+          "status": "EXEC_ERROR",
+          "error": "DuplicateKey(\"(1, 2)\") :: duplicate primary key (1, 2)",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "fk_insert",
+      "feature": "E141-04",
+      "setup": [
+        "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+        "INSERT INTO p VALUES (1)",
+        "INSERT INTO ch VALUES (1, 1)"
+      ],
+      "sql": "INSERT INTO ch VALUES (2, 99)",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "ForeignKeyViolation",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (2, 99)",
+          "status": "EXEC_ERROR",
+          "error": "ForeignKeyViolation(\"insert or update on table \\\"ch\\\" violates foreign key constraint \\\"ch_pid_fkey\\\": key (pid) = 99 is not present in table \\\"p\\\"\") :: foreign key violation: insert or update on table \"ch\" violates foreign key constraint \"ch_pid_fkey\": key (pid) = 99 is not present in table \"p\"",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "fk_delete_no_action",
+      "feature": "E141-04",
+      "setup": [
+        "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+        "INSERT INTO p VALUES (1)",
+        "INSERT INTO ch VALUES (1, 1)"
+      ],
+      "sql": "DELETE FROM p WHERE id = 1",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "ForeignKeyViolation",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "DELETE FROM p WHERE id = 1",
+          "status": "EXEC_ERROR",
+          "error": "ForeignKeyViolation(\"delete on table \\\"p\\\" violates foreign key constraint \\\"ch_pid_fkey\\\" on table \\\"ch\\\": rows still reference (id) without a parent\") :: foreign key violation: delete on table \"p\" violates foreign key constraint \"ch_pid_fkey\" on table \"ch\": rows still reference (id) without a parent",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "fk_update_no_action",
+      "feature": "E141-04",
+      "setup": [
+        "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+        "INSERT INTO p VALUES (1)",
+        "INSERT INTO ch VALUES (1, 1)"
+      ],
+      "sql": "UPDATE p SET id = 2 WHERE id = 1",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "ForeignKeyViolation",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "UPDATE p SET id = 2 WHERE id = 1",
+          "status": "EXEC_ERROR",
+          "error": "ForeignKeyViolation(\"update on table \\\"p\\\" violates foreign key constraint \\\"ch_pid_fkey\\\" on table \\\"ch\\\": rows still reference (id) without a parent\") :: foreign key violation: update on table \"p\" violates foreign key constraint \"ch_pid_fkey\" on table \"ch\": rows still reference (id) without a parent",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "fk_delete_cascade",
+      "feature": "F191",
+      "setup": [
+        "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) ON DELETE CASCADE)",
+        "INSERT INTO p VALUES (1)",
+        "INSERT INTO ch VALUES (1, 1)",
+        "DELETE FROM p WHERE id = 1"
+      ],
+      "sql": "SELECT id FROM ch",
+      "expected_rows": [],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) ON DELETE CASCADE)",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "DELETE FROM p WHERE id = 1",
+          "status": "OK",
+          "error": null,
+          "output": "1 row(s) deleted\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM ch",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "fk_update_cascade",
+      "feature": "F701",
+      "setup": [
+        "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) ON UPDATE CASCADE)",
+        "INSERT INTO p VALUES (1)",
+        "INSERT INTO ch VALUES (1, 1)",
+        "UPDATE p SET id = 2 WHERE id = 1"
+      ],
+      "sql": "SELECT pid FROM ch",
+      "expected_rows": [
+        [
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) ON UPDATE CASCADE)",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "UPDATE p SET id = 2 WHERE id = 1",
+          "status": "OK",
+          "error": null,
+          "output": "1 row(s) updated\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT pid FROM ch",
+          "status": "OK",
+          "error": null,
+          "output": "pid INTEGER\n2\n",
+          "rows": [
+            [
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "default",
+      "feature": "E141-07",
+      "setup": [
+        "CREATE TABLE d (id INTEGER PRIMARY KEY, n INTEGER DEFAULT 7)",
+        "INSERT INTO d (id) VALUES (1)"
+      ],
+      "sql": "SELECT n FROM d",
+      "expected_rows": [
+        [
+          "7"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id INTEGER PRIMARY KEY, n INTEGER DEFAULT 7)",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d (id) VALUES (1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT n FROM d",
+          "status": "OK",
+          "error": null,
+          "output": "n INTEGER\n7\n",
+          "rows": [
+            [
+              "7"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "alter_add",
+      "feature": "F031-04",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "ALTER TABLE t ADD COLUMN n INTEGER"
+      ],
+      "sql": "SELECT n FROM t",
+      "expected_rows": [
+        [
+          "NULL"
+        ],
+        [
+          "NULL"
+        ],
+        [
+          "NULL"
+        ],
+        [
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "ALTER TABLE t ADD COLUMN n INTEGER",
+          "status": "OK",
+          "error": null,
+          "output": "Table t altered\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT n FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "n INTEGER\nNULL\nNULL\nNULL\nNULL\n",
+          "rows": [
+            [
+              "NULL"
+            ],
+            [
+              "NULL"
+            ],
+            [
+              "NULL"
+            ],
+            [
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "view",
+      "feature": "F031-02",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE VIEW vv AS SELECT id FROM t WHERE id = 1"
+      ],
+      "sql": "SELECT id FROM vv",
+      "expected_rows": [
+        [
+          "1"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE VIEW vv AS SELECT id FROM t WHERE id = 1",
+          "status": "OK",
+          "error": null,
+          "output": "View vv created\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM vv",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n",
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "drop_table",
+      "feature": "F031-13",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "DROP TABLE t RESTRICT"
+      ],
+      "sql": "SELECT id FROM t",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "No such table",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "DROP TABLE t RESTRICT",
+          "status": "OK",
+          "error": null,
+          "output": "Table t dropped\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t",
+          "status": "EXEC_ERROR",
+          "error": "TableNotFound(\"t\") :: no such table: t",
+          "output": "",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "rollback",
+      "feature": "E151-02",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "BEGIN",
+        "INSERT INTO t VALUES (5, 30, 'x')",
+        "ROLLBACK"
+      ],
+      "sql": "SELECT id FROM t",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "2"
+        ],
+        [
+          "3"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "BEGIN",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (5, 30, 'x')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "ROLLBACK",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n2\n3\n4\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ],
+            [
+              "3"
+            ],
+            [
+              "4"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "commit",
+      "feature": "E151-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "BEGIN",
+        "INSERT INTO t VALUES (5, 30, 'x')",
+        "COMMIT"
+      ],
+      "sql": "SELECT id FROM t WHERE id = 5",
+      "expected_rows": [
+        [
+          "5"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "BEGIN",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (5, 30, 'x')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "COMMIT",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE id = 5",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n5\n",
+          "rows": [
+            [
+              "5"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "savepoint",
+      "feature": "T271",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "BEGIN",
+        "SAVEPOINT s",
+        "INSERT INTO t VALUES (5, 30, 'x')",
+        "ROLLBACK TO SAVEPOINT s",
+        "COMMIT"
+      ],
+      "sql": "SELECT id FROM t WHERE id = 5",
+      "expected_rows": [],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "unsupported",
+      "reason": "setup_parse_error",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "BEGIN",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SAVEPOINT s",
+          "status": "PARSE_ERROR",
+          "error": "feature not supported: SAVEPOINT",
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (5, 30, 'x')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "ROLLBACK TO SAVEPOINT s",
+          "status": "PARSE_ERROR",
+          "error": "feature not supported: ROLLBACK TO SAVEPOINT",
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "COMMIT",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE id = 5",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n5\n",
+          "rows": [
+            [
+              "5"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "serializable",
+      "feature": "E152-01",
+      "setup": [
+        "BEGIN"
+      ],
+      "sql": "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+      "expected_rows": null,
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "unsupported",
+      "reason": "syntax_rejected",
+      "steps": [
+        {
+          "sql": "BEGIN",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+          "status": "PARSE_ERROR",
+          "error": "feature not supported: SET TRANSACTION",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "readonly",
+      "feature": "E152-02",
+      "setup": [
+        "BEGIN"
+      ],
+      "sql": "SET TRANSACTION READ ONLY",
+      "expected_rows": null,
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "unsupported",
+      "reason": "syntax_rejected",
+      "steps": [
+        {
+          "sql": "BEGIN",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SET TRANSACTION READ ONLY",
+          "status": "PARSE_ERROR",
+          "error": "feature not supported: SET TRANSACTION",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "information_schema",
+      "feature": "F021-02",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT table_name FROM information_schema.tables",
+      "expected_rows": [
+        [
+          "t"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT table_name FROM information_schema.tables",
+          "status": "OK",
+          "error": null,
+          "output": "table_name TEXT\nt\n",
+          "rows": [
+            [
+              "t"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "case",
+      "feature": "F261-02",
+      "setup": [],
+      "sql": "SELECT CASE WHEN 1 = 1 THEN 7 ELSE 9 END",
+      "expected_rows": [
+        [
+          "7"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "SELECT CASE WHEN 1 = 1 THEN 7 ELSE 9 END",
+          "status": "OK",
+          "error": null,
+          "output": "EXPR INTEGER\n7\n",
+          "rows": [
+            [
+              "7"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "coalesce",
+      "feature": "F261-04",
+      "setup": [],
+      "sql": "SELECT COALESCE(NULL, 7)",
+      "expected_rows": [
+        [
+          "7"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "SELECT COALESCE(NULL, 7)",
+          "status": "OK",
+          "error": null,
+          "output": "COALESCE INTEGER\n7\n",
+          "rows": [
+            [
+              "7"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "comment",
+      "feature": "E161",
+      "setup": [],
+      "sql": "-- audit comment SELECT 99",
+      "expected_rows": null,
+      "expected_error": "comment_api",
+      "ordered": false,
+      "note": "Full-line comment should be ignored; runner exposes no empty-statement API",
+      "expected_error_pattern": null,
+      "status": "unverified",
+      "reason": "empty_statement_api",
+      "steps": [
+        {
+          "sql": "-- audit comment SELECT 99",
+          "status": "PARSE_ERROR",
+          "error": "syntax error: empty statement",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "inline_comment",
+      "feature": "E161",
+      "setup": [],
+      "sql": "SELECT 1 -- audit comment",
+      "expected_rows": [
+        [
+          "1"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "SELECT 1 -- audit comment",
+          "status": "OK",
+          "error": null,
+          "output": "1 INTEGER\n1\n",
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "cte",
+      "feature": "T121",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "WITH q AS (SELECT id FROM t) SELECT id FROM q",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "2"
+        ],
+        [
+          "3"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "unsupported",
+      "reason": "syntax_rejected",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "WITH q AS (SELECT id FROM t) SELECT id FROM q",
+          "status": "PARSE_ERROR",
+          "error": "feature not supported: WITH (common table expressions)",
+          "output": "",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "window",
+      "feature": "T611",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id, ROW_NUMBER() OVER (ORDER BY id) FROM t",
+      "expected_rows": [
+        [
+          "1",
+          "1"
+        ],
+        [
+          "2",
+          "2"
+        ],
+        [
+          "3",
+          "3"
+        ],
+        [
+          "4",
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "unsupported",
+      "reason": "syntax_rejected",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id, ROW_NUMBER() OVER (ORDER BY id) FROM t",
+          "status": "PARSE_ERROR",
+          "error": "feature not supported: window functions (OVER)",
+          "output": "",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "json_value",
+      "feature": "T821",
+      "setup": [],
+      "sql": "SELECT JSON_VALUE('{\"a\":1}', '$.a')",
+      "expected_rows": [
+        [
+          "1"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "Optional JSON_VALUE smoke, T821 subset only",
+      "expected_error_pattern": null,
+      "status": "unsupported",
+      "reason": "syntax_rejected",
+      "steps": [
+        {
+          "sql": "SELECT JSON_VALUE('{\"a\":1}', '$.a')",
+          "status": "PARSE_ERROR",
+          "error": "function JSON_VALUE does not exist",
+          "output": "",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "update_null",
+      "feature": "E131",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "UPDATE t SET v = NULL WHERE id = 2"
+      ],
+      "sql": "SELECT v FROM t WHERE id = 2",
+      "expected_rows": [
+        [
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "UPDATE t SET v = NULL WHERE id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "1 row(s) updated\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT v FROM t WHERE id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "v INTEGER\nNULL\n",
+          "rows": [
+            [
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "update_expression",
+      "feature": "E101-03",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "UPDATE t SET v = v + 1 WHERE id = 2"
+      ],
+      "sql": "SELECT v FROM t WHERE id = 2",
+      "expected_rows": [
+        [
+          "11"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "UPDATE t SET v = v + 1 WHERE id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "1 row(s) updated\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT v FROM t WHERE id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "v INTEGER\n11\n",
+          "rows": [
+            [
+              "11"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "pk_text",
+      "feature": "E141-03",
+      "setup": [
+        "CREATE TABLE d (id CHAR(3) PRIMARY KEY)",
+        "INSERT INTO d VALUES ('a')"
+      ],
+      "sql": "SELECT id FROM d",
+      "expected_rows": [
+        [
+          "a  "
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (id CHAR(3) PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES ('a')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM d",
+          "status": "OK",
+          "error": null,
+          "output": "id CHAR(3)\na  \n",
+          "rows": [
+            [
+              "a  "
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "multi_insert_atomic",
+      "feature": "E101-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "!INSERT INTO t VALUES (5, 30, 'x'), (1, 99, 'dup')"
+      ],
+      "sql": "SELECT id FROM t",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "2"
+        ],
+        [
+          "3"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (5, 30, 'x'), (1, 99, 'dup')",
+          "status": "EXEC_ERROR",
+          "error": "DuplicateKey(\"1\") :: duplicate primary key 1",
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n2\n3\n4\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ],
+            [
+              "3"
+            ],
+            [
+              "4"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "update",
+      "feature": "E101-03",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "UPDATE t SET v = 15 WHERE id = 2"
+      ],
+      "sql": "SELECT v FROM t WHERE id = 2",
+      "expected_rows": [
+        [
+          "15"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "UPDATE t SET v = 15 WHERE id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "1 row(s) updated\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT v FROM t WHERE id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "v INTEGER\n15\n",
+          "rows": [
+            [
+              "15"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "delete",
+      "feature": "E101-04",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "DELETE FROM t WHERE id = 2"
+      ],
+      "sql": "SELECT id FROM t",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "3"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "DELETE FROM t WHERE id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "1 row(s) deleted\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n3\n4\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "3"
+            ],
+            [
+              "4"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "union_second_branch",
+      "feature": "E071-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE id = 1 UNION SELECT id FROM t WHERE id = 2",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "2"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE id = 1 UNION SELECT id FROM t WHERE id = 2",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n2\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "union_duplicate_elimination",
+      "feature": "E071-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT v FROM t WHERE id = 1 UNION SELECT v FROM t WHERE id = 4",
+      "expected_rows": [
+        [
+          "20"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT v FROM t WHERE id = 1 UNION SELECT v FROM t WHERE id = 4",
+          "status": "OK",
+          "error": null,
+          "output": "v INTEGER\n20\n",
+          "rows": [
+            [
+              "20"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "composite_pk_distinct",
+      "feature": "E141-03",
+      "setup": [
+        "CREATE TABLE d (a INTEGER, b INTEGER, PRIMARY KEY (a,b))",
+        "INSERT INTO d VALUES (1, 2), (1, 3)"
+      ],
+      "sql": "SELECT a, b FROM d",
+      "expected_rows": [
+        [
+          "1",
+          "2"
+        ],
+        [
+          "1",
+          "3"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE d (a INTEGER, b INTEGER, PRIMARY KEY (a,b))",
+          "status": "OK",
+          "error": null,
+          "output": "Table d created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO d VALUES (1, 2), (1, 3)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT a, b FROM d",
+          "status": "OK",
+          "error": null,
+          "output": "a INTEGER | b INTEGER\n1 | 2\n1 | 3\n",
+          "rows": [
+            [
+              "1",
+              "2"
+            ],
+            [
+              "1",
+              "3"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "fk_nullable",
+      "feature": "E141-04",
+      "setup": [
+        "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+        "INSERT INTO p VALUES (1)",
+        "INSERT INTO ch VALUES (1, 1)",
+        "INSERT INTO ch VALUES (2, NULL)"
+      ],
+      "sql": "SELECT pid FROM ch",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (2, NULL)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT pid FROM ch",
+          "status": "OK",
+          "error": null,
+          "output": "pid INTEGER\n1\nNULL\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "fk_composite_invalid",
+      "feature": "E141-04",
+      "setup": [
+        "CREATE TABLE p (a INTEGER, b INTEGER, PRIMARY KEY (a,b))",
+        "INSERT INTO p VALUES (1, 2)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, FOREIGN KEY (a,b) REFERENCES p(a,b))"
+      ],
+      "sql": "INSERT INTO ch VALUES (1, 1, 999)",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "ForeignKeyViolation",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (a INTEGER, b INTEGER, PRIMARY KEY (a,b))",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1, 2)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, FOREIGN KEY (a,b) REFERENCES p(a,b))",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 1, 999)",
+          "status": "EXEC_ERROR",
+          "error": "ForeignKeyViolation(\"insert or update on table \\\"ch\\\" violates foreign key constraint \\\"ch_a_b_fkey\\\": key (a, b) = (1, 999) is not present in table \\\"p\\\"\") :: foreign key violation: insert or update on table \"ch\" violates foreign key constraint \"ch_a_b_fkey\": key (a, b) = (1, 999) is not present in table \"p\"",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "fk_nonphysical_parent_key",
+      "feature": "E141-04",
+      "setup": [
+        "CREATE TABLE p (id INTEGER, n INTEGER PRIMARY KEY)",
+        "INSERT INTO p VALUES (1, 100)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(n))",
+        "INSERT INTO ch VALUES (1, 100)"
+      ],
+      "sql": "SELECT pid FROM ch",
+      "expected_rows": [
+        [
+          "100"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (id INTEGER, n INTEGER PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1, 100)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(n))",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 100)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT pid FROM ch",
+          "status": "OK",
+          "error": null,
+          "output": "pid INTEGER\n100\n",
+          "rows": [
+            [
+              "100"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "drop_restrict_dependency",
+      "feature": "F031-13",
+      "setup": [
+        "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+        "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+        "INSERT INTO p VALUES (1)",
+        "INSERT INTO ch VALUES (1, 1)"
+      ],
+      "sql": "DROP TABLE p RESTRICT",
+      "expected_rows": null,
+      "expected_error": "runtime",
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": "referenc|depend|ForeignKey",
+      "status": "implemented",
+      "reason": "expected_error_enforced",
+      "steps": [
+        {
+          "sql": "CREATE TABLE p (id INTEGER PRIMARY KEY)",
+          "status": "OK",
+          "error": null,
+          "output": "Table p created\n",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))",
+          "status": "OK",
+          "error": null,
+          "output": "Table ch created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO p VALUES (1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO ch VALUES (1, 1)",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "DROP TABLE p RESTRICT",
+          "status": "EXEC_ERROR",
+          "error": "DependentObjects(\"p\") :: cannot drop p because other objects depend on it",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "cursor",
+      "feature": "E121-01",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "DECLARE cur CURSOR FOR SELECT id FROM t",
+      "expected_rows": null,
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "unsupported",
+      "reason": "syntax_rejected",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "DECLARE cur CURSOR FOR SELECT id FROM t",
+          "status": "PARSE_ERROR",
+          "error": "feature not supported: DECLARE (cursors)",
+          "output": "",
+          "rows": null
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "exists_uncorrelated",
+      "feature": "E061-08",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+        "INSERT INTO u VALUES (2, 'two'), (5, 'five')"
+      ],
+      "sql": "SELECT id FROM t WHERE EXISTS (SELECT id FROM u)",
+      "expected_rows": [
+        [
+          "1"
+        ],
+        [
+          "2"
+        ],
+        [
+          "3"
+        ],
+        [
+          "4"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table u created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO u VALUES (2, 'two'), (5, 'five')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE EXISTS (SELECT id FROM u)",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n1\n2\n3\n4\n",
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ],
+            [
+              "3"
+            ],
+            [
+              "4"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "all_null_aggregate",
+      "feature": "E091",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT COUNT(v), SUM(v), AVG(v), MIN(v), MAX(v) FROM t WHERE id = 3",
+      "expected_rows": [
+        [
+          "0",
+          "NULL",
+          "NULL",
+          "NULL",
+          "NULL"
+        ]
+      ],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT COUNT(v), SUM(v), AVG(v), MIN(v), MAX(v) FROM t WHERE id = 3",
+          "status": "OK",
+          "error": null,
+          "output": "COUNT(v) INTEGER | SUM(v) INTEGER | AVG(v) DOUBLE | MIN(v) INTEGER | MAX(v) INTEGER\n0 | NULL | NULL | NULL | NULL\n",
+          "rows": [
+            [
+              "0",
+              "NULL",
+              "NULL",
+              "NULL",
+              "NULL"
+            ]
+          ]
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "delete_all",
+      "feature": "E101-04",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+        "DELETE FROM t"
+      ],
+      "sql": "SELECT id FROM t",
+      "expected_rows": [],
+      "expected_error": null,
+      "ordered": false,
+      "note": "",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "result_matches",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "DELETE FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "4 row(s) deleted\n",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t",
+          "status": "OK",
+          "error": null,
+          "output": "id INTEGER\n",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    },
+    {
+      "id": "bad_sql_tail",
+      "feature": "E051",
+      "setup": [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')"
+      ],
+      "sql": "SELECT id FROM t WHERE id = 1 NONSENSE",
+      "expected_rows": null,
+      "expected_error": "syntax",
+      "ordered": false,
+      "note": "Invalid syntax must be rejected; special parse oracle below",
+      "expected_error_pattern": null,
+      "status": "implemented",
+      "reason": "invalid_syntax_rejected",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+          "status": "OK",
+          "error": null,
+          "output": "Table t created\n",
+          "rows": null
+        },
+        {
+          "sql": "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+          "status": "OK",
+          "error": null,
+          "output": "",
+          "rows": null
+        },
+        {
+          "sql": "SELECT id FROM t WHERE id = 1 NONSENSE",
+          "status": "PARSE_ERROR",
+          "error": "syntax error: unexpected NONSENSE at byte 30",
+          "output": "",
+          "rows": []
+        }
+      ],
+      "returncode": 0
+    }
+  ]
+}
