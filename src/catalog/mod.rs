@@ -1043,9 +1043,7 @@ impl Catalog {
         let Some(info) = self.sequences.get(name) else {
             return Ok(false);
         };
-        let mut tree = BTree::open_root(&self.pager, 2)?;
-        Self::remove_sequence_row(&mut tree, info.key)?;
-        drop(tree);
+        Self::remove_sequence_row(&mut BTree::open_root(&self.pager, 2)?, info.key)?;
         self.sequences.remove(name);
         Ok(true)
     }
@@ -2065,21 +2063,22 @@ mod tests {
         let (_dir, catalog) = catalog_with_table();
         let root = catalog.pager.allocate_page().unwrap();
         init_leaf_root(&catalog.pager, root).unwrap();
-        let mut tree = BTree::open_root(&catalog.pager, root).unwrap();
-        for (v, k) in [
-            (ColumnValue::Text(a.clone()), 1),
-            (ColumnValue::Text(b.clone()), 2),
-            (ColumnValue::Null, 3),
-            (ColumnValue::Text(a.clone()), 4),
-        ] {
-            Catalog::insert_index_value(&mut tree, v, k).unwrap();
+        {
+            let mut tree = BTree::open_root(&catalog.pager, root).unwrap();
+            for (v, k) in [
+                (ColumnValue::Text(a.clone()), 1),
+                (ColumnValue::Text(b.clone()), 2),
+                (ColumnValue::Null, 3),
+                (ColumnValue::Text(a.clone()), 4),
+                // NULL vs 0 and 1.5 vs 1.7 share a hash too.
+                (ColumnValue::Integer(0), 5),
+                (ColumnValue::Null, 6),
+                (ColumnValue::Double(1.5), 7),
+                (ColumnValue::Double(1.7), 8),
+            ] {
+                Catalog::insert_index_value(&mut tree, v, k).unwrap();
+            }
         }
-        // NULL vs 0 and 1.5 vs 1.7 share a hash too.
-        Catalog::insert_index_value(&mut tree, ColumnValue::Integer(0), 5).unwrap();
-        Catalog::insert_index_value(&mut tree, ColumnValue::Null, 6).unwrap();
-        Catalog::insert_index_value(&mut tree, ColumnValue::Double(1.5), 7).unwrap();
-        Catalog::insert_index_value(&mut tree, ColumnValue::Double(1.7), 8).unwrap();
-        drop(tree);
         let keys = |v: ColumnValue| catalog.index_candidates(root, &v).unwrap();
         assert_eq!(keys(ColumnValue::Text(a.clone())), vec![1, 4]);
         assert_eq!(keys(ColumnValue::Text(b.clone())), vec![2]);
