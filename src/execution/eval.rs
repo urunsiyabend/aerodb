@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use crate::catalog::Catalog;
 use crate::error::{DbError, DbResult};
 use crate::execution::query::{QueryResult, run_query};
-use crate::sql::ast::{BinaryOp, Expr, Query, UnaryOp};
+use crate::sql::ast::{BinaryOp, Expr, Ident, Query, UnaryOp};
 use crate::sql::functions::call_scalar;
 use crate::sql::value::{SqlType, Value};
 
@@ -50,33 +50,29 @@ impl Scope {
         self.columns.is_empty()
     }
 
-    /// Resolve `[table.]name` in this scope. An exact (case-sensitive) match
-    /// wins; otherwise a unique case-insensitive match is accepted. More than
-    /// one match is an ambiguity error; no match yields `Ok(None)`.
-    pub fn resolve(&self, table: Option<&str>, name: &str) -> DbResult<Option<usize>> {
-        let find = |exact: bool| -> Vec<usize> {
-            let eq = |a: &str, b: &str| if exact { a == b } else { a.eq_ignore_ascii_case(b) };
-            self.columns
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| {
-                    eq(&c.name, name)
-                        && match table {
-                            None => true,
-                            Some(t) => c.qualifier.as_deref().is_some_and(|q| eq(q, t)),
-                        }
-                })
-                .map(|(i, _)| i)
-                .collect()
-        };
-        let mut hits = find(true);
-        if hits.is_empty() {
-            hits = find(false);
-        }
+    /// Resolve `[table.]name` in this scope (SQL identifier rules): an
+    /// unquoted identifier matches declared names case-insensitively, a quoted
+    /// one exactly; the same rule applies to the qualifier. One predicate is
+    /// applied (no exact-then-fallback). More than one match is an ambiguity
+    /// error; no match yields `Ok(None)`.
+    pub fn resolve(&self, table: Option<&Ident>, name: &Ident) -> DbResult<Option<usize>> {
+        let hits: Vec<usize> = self
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                name.matches(&c.name)
+                    && match table {
+                        None => true,
+                        Some(t) => c.qualifier.as_deref().is_some_and(|q| t.matches(q)),
+                    }
+            })
+            .map(|(i, _)| i)
+            .collect();
         match hits.len() {
             0 => Ok(None),
             1 => Ok(Some(hits[0])),
-            _ => Err(DbError::AmbiguousColumn(display_column(table, name))),
+            _ => Err(DbError::AmbiguousColumn(display_column(table.map(Ident::as_str), name))),
         }
     }
 }
@@ -103,8 +99,9 @@ impl<'a> Env<'a> {
         Env { scope, row, aggregates: &[], outer }
     }
 
-    /// Value of `[table.]name`, searching the correlation chain outwards.
-    pub fn lookup(&self, table: Option<&str>, name: &str) -> DbResult<Value> {
+    /// Value of `[table.]name`, searching the correlation chain outwards; the
+    /// innermost scope with any match wins.
+    pub fn lookup(&self, table: Option<&Ident>, name: &Ident) -> DbResult<Value> {
         let mut env = Some(self);
         while let Some(e) = env {
             if let Some(i) = e.scope.resolve(table, name)? {
@@ -112,7 +109,19 @@ impl<'a> Env<'a> {
             }
             env = e.outer;
         }
-        Err(DbError::ColumnNotFound(display_column(table, name)))
+        Err(DbError::ColumnNotFound(display_column(table.map(Ident::as_str), name)))
+    }
+
+    /// Whether `[table.]name` resolves in this environment or an outer one.
+    pub fn resolves(&self, table: Option<&Ident>, name: &Ident) -> bool {
+        let mut env = Some(self);
+        while let Some(e) = env {
+            if matches!(e.scope.resolve(table, name), Ok(Some(_)) | Err(_)) {
+                return true;
+            }
+            env = e.outer;
+        }
+        false
     }
 }
 
@@ -300,7 +309,7 @@ pub fn eval_predicate(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<bool> {
 pub fn eval(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<Value> {
     match expr {
         Expr::Literal(v) => Ok(v.clone()),
-        Expr::Column { table, name } => env.lookup(table.as_deref(), name),
+        Expr::Column { table, name } => env.lookup(table.as_ref(), name),
         Expr::Unary { op, expr } => {
             let v = eval(expr, env, cx)?;
             match op {
@@ -549,9 +558,14 @@ mod tests {
         s.push(Some("t".into()), "id".into(), SqlType::Integer);
         s.push(Some("u".into()), "id".into(), SqlType::Integer);
         s.push(Some("u".into()), "Name".into(), SqlType::Text);
-        assert!(matches!(s.resolve(None, "id"), Err(DbError::AmbiguousColumn(_))));
-        assert_eq!(s.resolve(Some("u"), "id").unwrap(), Some(1));
-        assert_eq!(s.resolve(None, "name").unwrap(), Some(2));
-        assert_eq!(s.resolve(None, "zzz").unwrap(), None);
+        let id = |s: &str| Ident::new(s);
+        assert!(matches!(s.resolve(None, &id("id")), Err(DbError::AmbiguousColumn(_))));
+        assert_eq!(s.resolve(Some(&id("u")), &id("id")).unwrap(), Some(1));
+        assert_eq!(s.resolve(Some(&id("U")), &id("ID")).unwrap(), Some(1));
+        assert_eq!(s.resolve(None, &id("name")).unwrap(), Some(2));
+        assert_eq!(s.resolve(None, &Ident::quoted("name")).unwrap(), None);
+        assert_eq!(s.resolve(None, &Ident::quoted("Name")).unwrap(), Some(2));
+        assert_eq!(s.resolve(Some(&Ident::quoted("U")), &id("id")).unwrap(), None);
+        assert_eq!(s.resolve(None, &id("zzz")).unwrap(), None);
     }
 }

@@ -448,10 +448,13 @@ pub fn execute_select_with_indexes(
 
     if let Some(Expr::Binary { op: BinaryOp::Eq, left, right }) = &selection {
         let probe = match (left.as_ref(), right.as_ref()) {
-            (Expr::Column { table, name }, Expr::Literal(v)) | (Expr::Literal(v), Expr::Column { table, name })
-                if table.as_deref().is_none_or(|t| t == table_name) =>
-            {
-                Some((name.clone(), v.clone()))
+            (Expr::Column { table, name }, Expr::Literal(v)) | (Expr::Literal(v), Expr::Column { table, name }) => {
+                // Same identifier rules as the evaluator; a reference that
+                // does not resolve (or is ambiguous) is left to the full scan.
+                match scope.resolve(table.as_ref(), name) {
+                    Ok(Some(i)) => Some((info.columns[i].0.clone(), v.clone())),
+                    _ => None,
+                }
             }
             _ => None,
         };

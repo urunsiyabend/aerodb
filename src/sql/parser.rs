@@ -4,7 +4,7 @@
 
 use crate::error::{DbError, DbResult};
 use crate::sql::ast::{
-    Action, AggFunc, BinaryOp, ColumnDef, CreateSequence, Expr, ForeignKey, JoinClause, JoinType,
+    Action, AggFunc, BinaryOp, ColumnDef, CreateSequence, Expr, ForeignKey, Ident, JoinClause, JoinType,
     OrderByItem, Query, Select, SelectItem, SetExpr, SetOperator, Statement, TableRef, UnaryOp,
     is_reserved_word,
 };
@@ -84,7 +84,7 @@ fn check_top_level(stmt: &Statement) -> DbResult<()> {
                     let mut missing = None;
                     e.walk(&mut |n| {
                         if let Expr::Column { name, .. } = n {
-                            missing.get_or_insert_with(|| name.clone());
+                            missing.get_or_insert_with(|| name.value.clone());
                         }
                     });
                     if let Some(name) = missing {
@@ -103,6 +103,18 @@ fn check_top_level(stmt: &Statement) -> DbResult<()> {
         Statement::Query(q) => check_set(&q.body),
         _ => Ok(()),
     }
+}
+
+/// INSERT column lists and UPDATE SET lists may name each column only once.
+fn reject_duplicate_targets<'a>(names: impl Iterator<Item = &'a str>) -> DbResult<()> {
+    let mut seen: Vec<&str> = Vec::new();
+    for n in names {
+        if seen.contains(&n) {
+            return Err(DbError::Syntax(format!("column \"{}\" specified more than once", n)));
+        }
+        seen.push(n);
+    }
+    Ok(())
 }
 
 fn unsupported(what: &str) -> DbError {
@@ -255,6 +267,13 @@ impl Parser {
         }
     }
 
+    /// Like [`Self::parse_ident`], recording whether the identifier was quoted.
+    fn parse_ident_ref(&mut self) -> DbResult<Ident> {
+        let quoted = matches!(self.peek().kind, TokenKind::QuotedIdent(_));
+        let value = self.parse_ident()?;
+        Ok(Ident { value, quoted })
+    }
+
     fn at_ident(&self) -> bool {
         match &self.peek().kind {
             TokenKind::Ident(s) => !is_reserved_word(s),
@@ -374,7 +393,9 @@ impl Parser {
             if self.is_kw_at(1, "SELECT") {
                 return Err(unsupported("INSERT ... SELECT"));
             }
-            Some(self.parse_ident_list()?)
+            let cols = self.parse_ident_list()?;
+            reject_duplicate_targets(cols.iter().map(String::as_str))?;
+            Some(cols)
         } else {
             None
         };
@@ -427,6 +448,7 @@ impl Parser {
                 break;
             }
         }
+        reject_duplicate_targets(assignments.iter().map(|(c, _)| c.as_str()))?;
         let selection = if self.eat_kw("WHERE") { Some(self.parse_expr()?) } else { None };
         Ok(Statement::Update { table_name, assignments, selection })
     }
@@ -857,7 +879,7 @@ impl Parser {
             return Ok(SelectItem::Wildcard);
         }
         if self.at_ident() && self.peek_at(1).is_symbol(".") && self.peek_at(2).is_symbol("*") {
-            let q = self.parse_ident()?;
+            let q = self.parse_ident_ref()?;
             self.advance();
             self.advance();
             return Ok(SelectItem::QualifiedWildcard(q));
@@ -1011,6 +1033,11 @@ impl Parser {
                     return Err(self.error_here("NULL, TRUE, FALSE or UNKNOWN"));
                 }
                 continue;
+            }
+            if (self.is_kw("SIMILAR") && self.is_kw_at(1, "TO"))
+                || (self.is_kw("NOT") && self.is_kw_at(1, "SIMILAR") && self.is_kw_at(2, "TO"))
+            {
+                return Err(unsupported("SIMILAR TO"));
             }
             let negated = self.is_kw("NOT")
                 && (self.is_kw_at(1, "IN") || self.is_kw_at(1, "BETWEEN") || self.is_kw_at(1, "LIKE"));
@@ -1210,9 +1237,9 @@ impl Parser {
     }
 
     fn parse_column_ref(&mut self) -> DbResult<Expr> {
-        let first = self.parse_ident()?;
+        let first = self.parse_ident_ref()?;
         if self.eat_symbol(".") {
-            let name = self.parse_ident()?;
+            let name = self.parse_ident_ref()?;
             if self.is_symbol(".") {
                 return Err(unsupported("schema-qualified column references"));
             }

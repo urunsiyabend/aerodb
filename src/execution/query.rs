@@ -11,8 +11,8 @@ use crate::error::{DbError, DbResult};
 use crate::execution::eval::{Ctx, Env, Scope, display_column, eval, eval_predicate};
 use crate::execution::runtime::read_snapshot;
 use crate::sql::ast::{
-    AggFunc, BinaryOp, Expr, JoinType, OrderByItem, Query, Select, SelectItem, SetExpr, SetOperator,
-    TableRef, UnaryOp,
+    AggFunc, BinaryOp, Expr, Ident, JoinType, OrderByItem, Query, Select, SelectItem, SetExpr,
+    SetOperator, TableRef, UnaryOp,
 };
 use crate::sql::decimal::Decimal;
 use crate::sql::value::{SqlType, Value};
@@ -38,14 +38,15 @@ pub fn execute_query(catalog: &mut Catalog, query: &Query, outer: Option<&Env>) 
 /// Shared-borrow form of [`execute_query`] used by the evaluator for subqueries.
 pub fn run_query(catalog: &Catalog, query: &Query, outer: Option<&Env>) -> DbResult<QueryResult> {
     let mut result = match &query.body {
-        SetExpr::Select(sel) => run_select(catalog, sel, &query.order_by, outer)?,
+        SetExpr::Select(sel) => run_select(catalog, sel, &query.order_by, outer)?.0,
         body => {
-            let mut r = run_set_expr(catalog, body, outer)?;
+            let (mut r, matchable) = run_set_expr(catalog, body, outer)?;
             if !query.order_by.is_empty() {
+                let names = output_names(&r.columns, &matchable);
                 let keys = query
                     .order_by
                     .iter()
-                    .map(|item| resolve_output_order(item, &output_names(&r.columns), None, None))
+                    .map(|item| resolve_output_order(item, &names, None, None))
                     .collect::<DbResult<Vec<_>>>()?;
                 let keyed: Vec<(Vec<Value>, Vec<Value>)> = r
                     .rows
@@ -217,11 +218,20 @@ struct OutItem {
     expr: Expr,
     direct: Option<usize>,
     name: String,
+    /// Whether ORDER BY may refer to this column by `name`: only explicit
+    /// aliases and plain column references (incl. wildcard expansion), never
+    /// derived names such as literal text, function names or `EXPR`.
+    order_name: bool,
+}
+
+/// Column reference that resolves exactly to scope slot `c`.
+fn exact_column(c: &crate::execution::eval::ScopeColumn) -> Expr {
+    Expr::Column { table: c.qualifier.clone().map(Ident::quoted), name: Ident::quoted(c.name.clone()) }
 }
 
 fn derived_name(expr: &Expr) -> String {
     match expr {
-        Expr::Column { name, .. } => name.clone(),
+        Expr::Column { name, .. } => name.value.clone(),
         Expr::Literal(v) => v.to_string(),
         Expr::Aggregate { .. } => expr.to_sql(),
         Expr::ScalarSubquery(_) => "SUBQUERY".into(),
@@ -236,32 +246,30 @@ fn expand_items(sel: &Select, scope: &Scope) -> DbResult<Vec<OutItem>> {
         match item {
             SelectItem::Wildcard => {
                 for (i, c) in scope.columns.iter().enumerate() {
-                    items.push(OutItem {
-                        expr: Expr::Column { table: c.qualifier.clone(), name: c.name.clone() },
-                        direct: Some(i),
-                        name: c.name.clone(),
-                    });
+                    items.push(OutItem { expr: exact_column(c), direct: Some(i), name: c.name.clone(), order_name: true });
                 }
             }
             SelectItem::QualifiedWildcard(q) => {
                 let before = items.len();
                 for (i, c) in scope.columns.iter().enumerate() {
-                    if c.qualifier.as_deref() == Some(q.as_str()) {
+                    if c.qualifier.as_deref().is_some_and(|cq| q.matches(cq)) {
                         items.push(OutItem {
-                            expr: Expr::Column { table: c.qualifier.clone(), name: c.name.clone() },
+                            expr: exact_column(c),
                             direct: Some(i),
                             name: c.name.clone(),
+                            order_name: true,
                         });
                     }
                 }
                 if items.len() == before {
-                    return Err(DbError::TableNotFound(q.clone()));
+                    return Err(DbError::TableNotFound(q.value.clone()));
                 }
             }
             SelectItem::Expr { expr, alias } => items.push(OutItem {
                 expr: expr.clone(),
                 direct: None,
                 name: alias.clone().unwrap_or_else(|| derived_name(expr)),
+                order_name: alias.is_some() || matches!(expr, Expr::Column { .. }),
             }),
         }
     }
@@ -272,16 +280,24 @@ fn expand_items(sel: &Select, scope: &Scope) -> DbResult<Vec<OutItem>> {
 /// marker so qualified and unqualified spellings compare equal.
 fn canonicalize(expr: &Expr, scope: &Scope) -> Expr {
     expr.transform(&mut |e| match &e {
-        Expr::Column { table, name } => match scope.resolve(table.as_deref(), name) {
-            Ok(Some(i)) => Expr::Column { table: Some(format!("\u{0}{}", i)), name: String::new() },
+        Expr::Column { table, name } => match scope.resolve(table.as_ref(), name) {
+            Ok(Some(i)) => slot_marker(i),
             _ => e,
         },
         _ => e,
     })
 }
 
-fn output_names(cols: &[ResultColumn]) -> Vec<String> {
-    cols.iter().map(|c| c.name.clone()).collect()
+/// Canonical form of a column reference resolved to scope slot `i`.
+fn slot_marker(i: usize) -> Expr {
+    Expr::Column { table: Some(Ident::quoted(format!("\u{0}{}", i))), name: Ident::quoted("") }
+}
+
+/// Output names paired with whether ORDER BY may match them by name.
+type OutputNames = [(String, bool)];
+
+fn output_names(cols: &[ResultColumn], matchable: &[bool]) -> Vec<(String, bool)> {
+    cols.iter().zip(matchable).map(|(c, m)| (c.name.clone(), *m)).collect()
 }
 
 /// Resolve an ORDER BY item to an output column (ordinal, output name, or an
@@ -289,7 +305,7 @@ fn output_names(cols: &[ResultColumn]) -> Vec<String> {
 /// message when the item must reference the select list but does not.
 fn resolve_output_order(
     item: &OrderByItem,
-    names: &[String],
+    names: &OutputNames,
     item_exprs: Option<&[Expr]>,
     scope: Option<&Scope>,
 ) -> DbResult<usize> {
@@ -301,7 +317,7 @@ fn resolve_output_order(
 
 fn try_output_order(
     item: &OrderByItem,
-    names: &[String],
+    names: &OutputNames,
     item_exprs: Option<&[Expr]>,
     scope: Option<&Scope>,
 ) -> DbResult<Option<usize>> {
@@ -313,12 +329,17 @@ fn try_output_order(
             return Err(DbError::Syntax(format!("ORDER BY position {} is not in select list", n)));
         }
         Expr::Column { table: None, name } => {
-            let hits: Vec<usize> = names.iter().enumerate().filter(|(_, n)| *n == name).map(|(i, _)| i).collect();
+            let hits: Vec<usize> = names
+                .iter()
+                .enumerate()
+                .filter(|(_, (n, matchable))| *matchable && name.matches(n))
+                .map(|(i, _)| i)
+                .collect();
             if hits.len() == 1 {
                 return Ok(Some(hits[0]));
             }
             if hits.len() > 1 {
-                return Err(DbError::AmbiguousColumn(name.clone()));
+                return Err(DbError::AmbiguousColumn(name.value.clone()));
             }
         }
         _ => {}
@@ -391,7 +412,7 @@ fn widen_numeric(a: SqlType, b: SqlType) -> SqlType {
 fn static_type(expr: &Expr, scope: &Scope) -> SqlType {
     match expr {
         Expr::Literal(v) => v.sql_type(),
-        Expr::Column { table, name } => match scope.resolve(table.as_deref(), name) {
+        Expr::Column { table, name } => match scope.resolve(table.as_ref(), name) {
             Ok(Some(i)) => scope.columns[i].ty,
             _ => SqlType::Null,
         },
@@ -452,7 +473,7 @@ fn column_types(items: &[OutItem], scope: &Scope, rows: &[Vec<Value>]) -> Vec<Re
             let scoped = match item.direct {
                 Some(slot) => Some(scope.columns[slot].ty),
                 None => match &item.expr {
-                    Expr::Column { table, name } => match scope.resolve(table.as_deref(), name) {
+                    Expr::Column { table, name } => match scope.resolve(table.as_ref(), name) {
                         Ok(Some(slot)) => Some(scope.columns[slot].ty),
                         _ => None,
                     },
@@ -483,25 +504,179 @@ fn collect_aggregates(expr: &Expr, out: &mut Vec<Expr>) {
     });
 }
 
-/// Every column reference outside an aggregate must match a GROUP BY
-/// expression (or be an outer reference).
-fn check_grouped(expr: &Expr, group_canon: &[Expr], scope: &Scope) -> DbResult<()> {
-    if group_canon.contains(&canonicalize(expr, scope)) {
-        return Ok(());
-    }
-    match expr {
-        Expr::Aggregate { .. } => Ok(()),
-        Expr::Column { table, name } => match scope.resolve(table.as_deref(), name)? {
-            Some(_) => Err(DbError::GroupByMismatch(display_column(table.as_deref(), name))),
-            None => Ok(()),
-        },
-        _ => {
-            for child in expr.children() {
-                check_grouped(child, group_canon, scope)?;
+/// What a grouped query's expressions are validated against.
+struct GroupCheck<'a> {
+    catalog: &'a Catalog,
+    scope: &'a Scope,
+    group_canon: &'a [Expr],
+}
+
+impl GroupCheck<'_> {
+    /// Every column reference outside an aggregate must match a GROUP BY
+    /// expression (or be an outer reference). Subqueries are checked too:
+    /// they are evaluated once per group, so any reference they make to this
+    /// query's columns must be to a grouped column.
+    fn check(&self, expr: &Expr) -> DbResult<()> {
+        if self.group_canon.contains(&canonicalize(expr, self.scope)) {
+            return Ok(());
+        }
+        match expr {
+            Expr::Aggregate { .. } => Ok(()),
+            Expr::Column { table, name } => self.check_column(table.as_ref(), name),
+            Expr::ScalarSubquery(q) | Expr::Exists { query: q, .. } => self.check_query(q, &mut Vec::new()),
+            Expr::InSubquery { expr, query, .. } => {
+                self.check(expr)?;
+                self.check_query(query, &mut Vec::new())
             }
-            Ok(())
+            _ => {
+                for child in expr.children() {
+                    self.check(child)?;
+                }
+                Ok(())
+            }
         }
     }
+
+    /// A reference that resolves in the grouped scope must be a grouped column.
+    fn check_column(&self, table: Option<&Ident>, name: &Ident) -> DbResult<()> {
+        match self.scope.resolve(table, name)? {
+            Some(slot) if !self.group_canon.contains(&slot_marker(slot)) => {
+                Err(DbError::GroupByMismatch(display_column(table.map(Ident::as_str), name)))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Walk a nested query; `stack` holds the scopes of the subqueries
+    /// between it and the grouped query (innermost last).
+    fn check_query(&self, query: &Query, stack: &mut Vec<Scope>) -> DbResult<()> {
+        self.check_body(&query.body, &query.order_by, stack)
+    }
+
+    fn check_body(&self, body: &SetExpr, order_by: &[OrderByItem], stack: &mut Vec<Scope>) -> DbResult<()> {
+        match body {
+            // A set operation's ORDER BY names output columns only.
+            SetExpr::SetOp { left, right, .. } => {
+                self.check_body(left, &[], stack)?;
+                self.check_body(right, &[], stack)
+            }
+            SetExpr::Select(sel) => {
+                // FROM-subqueries see the enclosing scopes, not this SELECT's.
+                for tref in sel.from.iter().chain(sel.joins.iter().map(|j| &j.table)) {
+                    if let TableRef::Subquery { query, .. } = tref {
+                        self.check_query(query, stack)?;
+                    }
+                }
+                let scope = static_source_scope(self.catalog, sel)?;
+                let items = expand_items(sel, &scope)?;
+                stack.push(scope);
+                let mut exprs: Vec<&Expr> = items.iter().map(|i| &i.expr).collect();
+                exprs.extend(sel.joins.iter().filter_map(|j| j.predicate.as_ref()));
+                exprs.extend(sel.selection.iter());
+                exprs.extend(sel.group_by.iter());
+                exprs.extend(sel.having.iter());
+                for o in order_by {
+                    let output_name = match &o.expr {
+                        Expr::Column { table: None, name } => {
+                            items.iter().any(|i| i.order_name && name.matches(&i.name))
+                        }
+                        _ => false,
+                    };
+                    if !output_name {
+                        exprs.push(&o.expr);
+                    }
+                }
+                let result = exprs.into_iter().try_for_each(|e| self.check_nested_expr(e, stack));
+                stack.pop();
+                result
+            }
+        }
+    }
+
+    fn check_nested_expr(&self, expr: &Expr, stack: &mut Vec<Scope>) -> DbResult<()> {
+        match expr {
+            Expr::Column { table, name } => {
+                for s in stack.iter().rev() {
+                    if s.resolve(table.as_ref(), name)?.is_some() {
+                        return Ok(());
+                    }
+                }
+                self.check_column(table.as_ref(), name)
+            }
+            Expr::ScalarSubquery(q) | Expr::Exists { query: q, .. } => self.check_query(q, stack),
+            Expr::InSubquery { expr, query, .. } => {
+                self.check_nested_expr(expr, stack)?;
+                self.check_query(query, stack)
+            }
+            _ => expr.children().into_iter().try_for_each(|c| self.check_nested_expr(c, stack)),
+        }
+    }
+}
+
+/// Columns a SELECT's FROM clause exposes, from catalog metadata only (no
+/// rows are read; types are not needed for name resolution).
+fn static_source_scope(catalog: &Catalog, sel: &Select) -> DbResult<Scope> {
+    let mut scope = Scope::new();
+    for tref in sel.from.iter().chain(sel.joins.iter().map(|j| &j.table)) {
+        match tref {
+            TableRef::Named { name, alias } => {
+                let info = catalog.get_table(name).map_err(|_| DbError::TableNotFound(name.clone()))?;
+                let qualifier = alias.clone().unwrap_or_else(|| name.clone());
+                for (col, _) in &info.columns {
+                    scope.push(Some(qualifier.clone()), col.clone(), SqlType::Null);
+                }
+            }
+            TableRef::Subquery { query, alias } => {
+                for (n, _) in static_output_names(catalog, &query.body)? {
+                    scope.push(Some(alias.clone()), n, SqlType::Null);
+                }
+            }
+        }
+    }
+    Ok(scope)
+}
+
+fn static_output_names(catalog: &Catalog, body: &SetExpr) -> DbResult<Vec<(String, bool)>> {
+    match body {
+        SetExpr::SetOp { left, .. } => static_output_names(catalog, left),
+        SetExpr::Select(sel) => {
+            let scope = static_source_scope(catalog, sel)?;
+            Ok(expand_items(sel, &scope)?.into_iter().map(|i| (i.name, i.order_name)).collect())
+        }
+    }
+}
+
+/// An aggregate whose argument references only outer-query columns belongs to
+/// the outer query in standard SQL; evaluating it over this query's rows would
+/// be wrong, so it is rejected.
+fn check_aggregate_level(agg: &Expr, scope: &Scope, outer: Option<&Env>) -> DbResult<()> {
+    let Expr::Aggregate { arg: Some(arg), .. } = agg else {
+        return Ok(());
+    };
+    let mut refs = Vec::new();
+    arg.walk(&mut |e| {
+        if let Expr::Column { table, name } = e {
+            refs.push((table.clone(), name.clone()));
+        }
+    });
+    if refs.is_empty() {
+        return Ok(());
+    }
+    for (table, name) in &refs {
+        if scope.resolve(table.as_ref(), name)?.is_some() {
+            return Ok(());
+        }
+    }
+    let outer_only = refs
+        .iter()
+        .all(|(table, name)| outer.is_some_and(|o| o.resolves(table.as_ref(), name)));
+    if outer_only {
+        return Err(DbError::FeatureNotSupported(format!(
+            "aggregate {} over outer-query columns only",
+            agg.to_sql()
+        )));
+    }
+    Ok(())
 }
 
 fn numeric_sum(vals: &[Value]) -> DbResult<Value> {
@@ -592,7 +767,14 @@ fn compute_aggregate(
 // SELECT
 // ---------------------------------------------------------------------------
 
-fn run_select(catalog: &Catalog, sel: &Select, order_by: &[OrderByItem], outer: Option<&Env>) -> DbResult<QueryResult> {
+/// Run one SELECT; also returns, per output column, whether ORDER BY of an
+/// enclosing set operation may refer to it by name.
+fn run_select(
+    catalog: &Catalog,
+    sel: &Select,
+    order_by: &[OrderByItem],
+    outer: Option<&Env>,
+) -> DbResult<(QueryResult, Vec<bool>)> {
     let cx = Ctx::with_catalog(catalog);
     let (scope, mut rows) = build_source(catalog, sel, outer)?;
 
@@ -610,7 +792,7 @@ fn run_select(catalog: &Catalog, sel: &Select, order_by: &[OrderByItem], outer: 
     }
 
     let items = expand_items(sel, &scope)?;
-    let names: Vec<String> = items.iter().map(|i| i.name.clone()).collect();
+    let names: Vec<(String, bool)> = items.iter().map(|i| (i.name.clone(), i.order_name)).collect();
     let item_exprs: Vec<Expr> = items.iter().map(|i| i.expr.clone()).collect();
 
     let mut sort_keys = Vec::with_capacity(order_by.len());
@@ -637,6 +819,9 @@ fn run_select(catalog: &Catalog, sel: &Select, order_by: &[OrderByItem], outer: 
         if let SortKey::Expr(e) = k {
             collect_aggregates(e, &mut aggregates);
         }
+    }
+    for a in &aggregates {
+        check_aggregate_level(a, &scope, outer)?;
     }
     let grouped = !sel.group_by.is_empty() || !aggregates.is_empty() || sel.having.is_some();
 
@@ -667,48 +852,48 @@ fn run_select(catalog: &Catalog, sel: &Select, order_by: &[OrderByItem], outer: 
             produced.push(project(&env, row)?);
         }
     } else {
+        // An integer literal in GROUP BY is a select-list ordinal.
+        let mut group_by = Vec::with_capacity(sel.group_by.len());
         for g in &sel.group_by {
+            let g = match g {
+                Expr::Literal(Value::Int(n)) => {
+                    if *n >= 1 && (*n as usize) <= items.len() {
+                        item_exprs[*n as usize - 1].clone()
+                    } else {
+                        return Err(DbError::Syntax(format!("GROUP BY position {} is not in select list", n)));
+                    }
+                }
+                other => other.clone(),
+            };
             if g.contains_aggregate() {
                 return Err(DbError::Syntax("aggregate functions are not allowed in GROUP BY".into()));
             }
+            group_by.push(g);
         }
-        let group_canon: Vec<Expr> = sel.group_by.iter().map(|g| canonicalize(g, &scope)).collect();
+        let group_canon: Vec<Expr> = group_by.iter().map(|g| canonicalize(g, &scope)).collect();
+        let checker = GroupCheck { catalog, scope: &scope, group_canon: &group_canon };
         for e in &item_exprs {
-            check_grouped(e, &group_canon, &scope)?;
+            checker.check(e)?;
         }
         if let Some(h) = &sel.having {
-            check_grouped(h, &group_canon, &scope)?;
+            checker.check(h)?;
         }
         for k in &sort_keys {
             if let SortKey::Expr(e) = k {
-                check_grouped(e, &group_canon, &scope)?;
-            }
-        }
-        if aggregates.is_empty() {
-            // AeroDB 0.5.1 rule kept: a GROUP BY without any aggregate must not
-            // group by expressions that are absent from the select list.
-            let item_canon: Vec<Expr> = item_exprs.iter().map(|e| canonicalize(e, &scope)).collect();
-            for (g, gc) in sel.group_by.iter().zip(&group_canon) {
-                if !item_canon.contains(gc) {
-                    let name = match g {
-                        Expr::Column { table, name } => display_column(table.as_deref(), name),
-                        other => other.to_sql(),
-                    };
-                    return Err(DbError::GroupByMismatch(name));
-                }
+                checker.check(e)?;
             }
         }
 
         // Group rows by normalized key, preserving first-appearance order.
         let mut groups: Vec<Vec<&Vec<Value>>> = Vec::new();
         let mut index: HashMap<Vec<KeyPart>, usize> = HashMap::new();
-        if sel.group_by.is_empty() {
+        if group_by.is_empty() {
             groups.push(rows.iter().collect());
         } else {
             for row in &rows {
                 let env = Env::new(&scope, row, outer);
-                let mut key = Vec::with_capacity(sel.group_by.len());
-                for g in &sel.group_by {
+                let mut key = Vec::with_capacity(group_by.len());
+                for g in &group_by {
                     key.push(key_of(&eval(g, &env, &cx)?));
                 }
                 match index.get(&key) {
@@ -752,7 +937,8 @@ fn run_select(catalog: &Catalog, sel: &Select, order_by: &[OrderByItem], outer: 
         sort_rows(produced, order_by)?
     };
     let columns = column_types(&items, &scope, &rows_out);
-    Ok(QueryResult { columns, rows: rows_out })
+    let matchable = items.iter().map(|i| i.order_name).collect();
+    Ok((QueryResult { columns, rows: rows_out }, matchable))
 }
 
 // ---------------------------------------------------------------------------
@@ -772,12 +958,12 @@ fn category(t: &SqlType) -> u8 {
     }
 }
 
-fn run_set_expr(catalog: &Catalog, body: &SetExpr, outer: Option<&Env>) -> DbResult<QueryResult> {
+fn run_set_expr(catalog: &Catalog, body: &SetExpr, outer: Option<&Env>) -> DbResult<(QueryResult, Vec<bool>)> {
     match body {
         SetExpr::Select(sel) => run_select(catalog, sel, &[], outer),
         SetExpr::SetOp { op, all, left, right } => {
-            let l = run_set_expr(catalog, left, outer)?;
-            let r = run_set_expr(catalog, right, outer)?;
+            let (l, matchable) = run_set_expr(catalog, left, outer)?;
+            let (r, _) = run_set_expr(catalog, right, outer)?;
             if l.columns.len() != r.columns.len() {
                 return Err(DbError::Syntax(format!(
                     "each {} query must have the same number of columns",
@@ -805,7 +991,7 @@ fn run_set_expr(catalog: &Catalog, body: &SetExpr, outer: Option<&Env>) -> DbRes
                 columns.push(ResultColumn { name: lc.name.clone(), ty });
             }
             let rows = combine(*op, *all, l.rows, r.rows);
-            Ok(QueryResult { columns, rows })
+            Ok((QueryResult { columns, rows }, matchable))
         }
     }
 }

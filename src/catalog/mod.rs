@@ -67,6 +67,8 @@ pub fn decode_default_expr(stored: &str) -> io::Result<Expr> {
         "CURRENT_TIMESTAMP" | "CURRENT_TIMESTAMP()" => Some("CURRENT_TIMESTAMP"),
         "GETDATE()" => Some("GETDATE"),
         "GETUTCDATE()" => Some("GETUTCDATE"),
+        // 0.5.1 stored `DEFAULT NULL` as the bare word NULL: SQL NULL.
+        "NULL" => return Ok(Expr::Literal(crate::sql::value::Value::Null)),
         _ => None,
     };
     Ok(match func {
@@ -1330,5 +1332,16 @@ mod tests {
         // 0.5.1 stored literal text unquoted; it stays a text literal coerced on insert.
         assert_eq!(decode_default_expr("18").unwrap(), Expr::Literal(Value::Text("18".into())));
         assert!(decode_default_expr(&format!("{}{}", DEFAULT_SQL_MARKER, "1 +")).is_err());
+    }
+
+    #[test]
+    fn legacy_null_default_decodes_to_sql_null() {
+        // 0.5.1 persisted `DEFAULT NULL` as the bare text NULL (any case).
+        for legacy in ["NULL", "null", "Null"] {
+            assert_eq!(decode_default_expr(legacy).unwrap(), Expr::Literal(Value::Null), "{legacy}");
+        }
+        // Quoted text 'NULL' in a marked default stays a string.
+        let marked = format!("{}{}", DEFAULT_SQL_MARKER, "'NULL'");
+        assert_eq!(decode_default_expr(&marked).unwrap(), Expr::Literal(Value::Text("NULL".into())));
     }
 }

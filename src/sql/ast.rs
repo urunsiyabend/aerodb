@@ -83,12 +83,80 @@ impl AggFunc {
     }
 }
 
+/// An identifier as written in a column reference. Unquoted identifiers match
+/// declared names case-insensitively; quoted (`"Name"`) ones match exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Ident {
+    pub value: String,
+    pub quoted: bool,
+}
+
+impl Ident {
+    pub fn new(value: impl Into<String>) -> Self {
+        Ident { value: value.into(), quoted: false }
+    }
+
+    pub fn quoted(value: impl Into<String>) -> Self {
+        Ident { value: value.into(), quoted: true }
+    }
+
+    /// Whether this reference denotes the declared name `declared`.
+    pub fn matches(&self, declared: &str) -> bool {
+        if self.quoted { self.value == declared } else { self.value.eq_ignore_ascii_case(declared) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+}
+
+impl From<&str> for Ident {
+    fn from(s: &str) -> Self {
+        Ident::new(s)
+    }
+}
+
+impl From<String> for Ident {
+    fn from(s: String) -> Self {
+        Ident::new(s)
+    }
+}
+
+impl std::ops::Deref for Ident {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.value
+    }
+}
+
+impl std::fmt::Display for Ident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.value)
+    }
+}
+
+impl PartialEq<str> for Ident {
+    fn eq(&self, other: &str) -> bool {
+        self.value == other
+    }
+}
+
+impl PartialEq<&str> for Ident {
+    fn eq(&self, other: &&str) -> bool {
+        self.value == *other
+    }
+}
+
+fn ident_sql(id: &Ident) -> String {
+    if id.quoted { format!("\"{}\"", id.value.replace('"', "\"\"")) } else { quote_ident(&id.value) }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Literal(Value),
     Column {
-        table: Option<String>,
-        name: String,
+        table: Option<Ident>,
+        name: Ident,
     },
     Unary {
         op: UnaryOp,
@@ -210,7 +278,7 @@ pub struct Select {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectItem {
     Wildcard,
-    QualifiedWildcard(String),
+    QualifiedWildcard(Ident),
     Expr { expr: Expr, alias: Option<String> },
 }
 
@@ -329,10 +397,11 @@ pub enum Statement {
 /// are rendered quoted so the text parses back to the same AST.
 pub const RESERVED_WORDS: &[&str] = &[
     "ALL", "AND", "AS", "ASC", "BETWEEN", "BY", "CASE", "CAST", "CROSS", "DEFAULT", "DESC",
-    "DISTINCT", "ELSE", "END", "ESCAPE", "EXCEPT", "EXISTS", "FALSE", "FROM", "FULL", "GROUP",
-    "HAVING", "IN", "INNER", "INTERSECT", "INTO", "IS", "JOIN", "LEFT", "LIKE", "LIMIT", "NOT",
-    "NULL", "NULLS", "OFFSET", "ON", "OR", "ORDER", "OUTER", "OVER", "RIGHT", "SELECT", "SET",
-    "THEN", "TRUE", "UNION", "USING", "VALUES", "WHEN", "WHERE", "WINDOW", "WITH",
+    "DISTINCT", "ELSE", "END", "ESCAPE", "EXCEPT", "EXISTS", "FALSE", "FETCH", "FROM", "FULL",
+    "GROUP", "HAVING", "IN", "INNER", "INTERSECT", "INTO", "IS", "JOIN", "LEFT", "LIKE", "LIMIT",
+    "NATURAL", "NOT", "NULL", "NULLS", "OFFSET", "ON", "ONLY", "OR", "ORDER", "OUTER", "OVER",
+    "RIGHT", "SELECT", "SET", "SIMILAR", "THEN", "TRUE", "UNION", "USING", "VALUES", "WHEN",
+    "WHERE", "WINDOW", "WITH",
 ];
 
 pub fn is_reserved_word(word: &str) -> bool {
@@ -388,8 +457,8 @@ impl Expr {
     pub fn to_sql(&self) -> String {
         match self {
             Expr::Literal(v) => literal_sql(v),
-            Expr::Column { table: Some(t), name } => format!("{}.{}", quote_ident(t), quote_ident(name)),
-            Expr::Column { table: None, name } => quote_ident(name),
+            Expr::Column { table: Some(t), name } => format!("{}.{}", ident_sql(t), ident_sql(name)),
+            Expr::Column { table: None, name } => ident_sql(name),
             Expr::Unary { op, expr } => match op {
                 UnaryOp::Neg => format!("(-{})", expr.to_sql()),
                 UnaryOp::Plus => format!("(+{})", expr.to_sql()),
@@ -622,7 +691,7 @@ impl Select {
             .iter()
             .map(|i| match i {
                 SelectItem::Wildcard => "*".to_string(),
-                SelectItem::QualifiedWildcard(q) => format!("{}.*", quote_ident(q)),
+                SelectItem::QualifiedWildcard(q) => format!("{}.*", ident_sql(q)),
                 SelectItem::Expr { expr, alias: Some(a) } => format!("{} AS {}", expr.to_sql(), quote_ident(a)),
                 SelectItem::Expr { expr, alias: None } => expr.to_sql(),
             })

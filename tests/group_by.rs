@@ -89,12 +89,17 @@ fn reject_missing_group_column() {
 }
 
 #[test]
-fn reject_extra_group_column() {
+fn extra_group_column_is_valid() {
+    // Standard SQL: grouping by a column that is not selected is legal; one
+    // output row per (team, league) group.
     let filename = "test_group_fail3.db";
     let mut catalog = setup_catalog(filename);
     create_matches_table(&mut catalog);
     let stmt = parse_statement("SELECT team FROM matches GROUP BY team, league").unwrap();
-    let res = aerodb::execution::handle_statement(&mut catalog, stmt);
-    assert!(matches!(res, Err(aerodb::error::DbError::GroupByMismatch(_))));
+    let mut out = Vec::new();
+    let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
+    assert_eq!(format_header(&header), "team TEXT");
+    out.sort();
+    assert_eq!(out, vec![vec!["a".to_string()], vec!["a".to_string()], vec!["b".to_string()]]);
 }
 

@@ -219,3 +219,44 @@ fn column_constraints_are_unsupported_not_ignored() {
 fn nested_aggregate_is_rejected() {
     assert!(parse_sql("SELECT SUM(COUNT(*)) FROM t").is_err());
 }
+
+#[test]
+fn natural_fetch_only_similar_are_reserved() {
+    // Recognised but unsupported constructs fail with 0A000 instead of the
+    // keyword being swallowed as a table/column alias.
+    assert_eq!(sqlstate("SELECT * FROM t NATURAL JOIN u"), "0A000");
+    assert_eq!(sqlstate("SELECT id FROM t FETCH FIRST 1 ROWS ONLY"), "0A000");
+    assert_eq!(sqlstate("SELECT id FROM t WHERE s SIMILAR TO 'a%'"), "0A000");
+    assert_eq!(sqlstate("SELECT id FROM t WHERE s NOT SIMILAR TO 'a%'"), "0A000");
+    // Reserved words are not usable as bare aliases or identifiers.
+    assert_eq!(sqlstate("SELECT id only FROM t"), "42601");
+    assert_eq!(sqlstate("SELECT id AS fetch FROM t"), "42601");
+    assert_eq!(sqlstate("SELECT natural FROM t"), "42601");
+    assert_eq!(sqlstate("SELECT id similar FROM t"), "42601");
+}
+
+#[test]
+fn duplicate_insert_and_update_targets_are_rejected() {
+    assert_eq!(sqlstate("INSERT INTO u (id, id) VALUES (7, 8)"), "42601");
+    assert_eq!(sqlstate("UPDATE t SET v = 1, v = 2"), "42601");
+}
+
+#[test]
+fn column_references_record_quoting() {
+    match query_body("SELECT \"ID\", id, \"T\".x FROM t") {
+        SetExpr::Select(sel) => {
+            let quoted: Vec<(bool, Option<bool>)> = sel
+                .projection
+                .iter()
+                .map(|item| match item {
+                    SelectItem::Expr { expr: Expr::Column { table, name }, .. } => {
+                        (name.quoted, table.as_ref().map(|t| t.quoted))
+                    }
+                    other => panic!("unexpected item {other:?}"),
+                })
+                .collect();
+            assert_eq!(quoted, vec![(true, None), (false, None), (false, Some(true))]);
+        }
+        other => panic!("expected select, got {other:?}"),
+    }
+}
