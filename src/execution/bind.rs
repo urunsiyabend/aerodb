@@ -47,6 +47,7 @@ use crate::sql::ast::{
     UnaryOp,
 };
 use crate::sql::value::{SqlType, Value};
+use crate::storage::row::ColumnType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Category {
@@ -708,13 +709,19 @@ impl Binder<'_> {
     /// Bind a value assigned to a column of type `col` (INSERT VALUES,
     /// UPDATE SET): same category, or a character literal (converted at bind
     /// time for a date/time column; per value for a numeric one, as before).
-    fn assignment(&self, e: &mut Expr, col: SqlType, column: &str, scope: &Scope) -> DbResult<()> {
+    fn assignment(&self, e: &mut Expr, colty: &ColumnType, column: &str, scope: &Scope) -> DbResult<()> {
+        let col = SqlType::from_column_type(colty);
         let b = self.expr(e, scope, &[])?;
         let target = Bound::of(col);
         let (cb, ct) = (b.category(), target.category());
         let ok = cb == Category::Unknown
             || cb == ct
-            || (b.text_literal && (ct == Category::Numeric || ct.is_temporal()));
+            // a character literal converts to any column type
+            || b.text_literal
+            // any value converts to a character column
+            || ct == Category::Character
+            // integers assign to YEAR
+            || (ct == Category::Year && is_integer(&b.ty));
         if !ok {
             return Err(mismatch(format!(
                 "column \"{}\" is of type {} but expression is of type {}",
@@ -723,7 +730,13 @@ impl Binder<'_> {
                 b.type_name()
             )));
         }
-        coerce_to(e, &b, &target)
+        coerce_to(e, &b, &target)?;
+        // A character literal is converted exactly as at runtime, so an
+        // invalid one fails here even on an empty table.
+        if let Expr::Literal(v @ Value::Text(_)) = e {
+            v.to_column_value(colty, column).map_err(|err| crate::execution::runtime::assignment_error(column, err))?;
+        }
+        Ok(())
     }
 }
 
@@ -791,7 +804,7 @@ pub fn bind_statement(catalog: &Catalog, stmt: &mut Statement) -> DbResult<()> {
                     match targets.get(i) {
                         Some(&t) => {
                             let (name, ty) = &info.columns[t];
-                            binder.assignment(e, SqlType::from_column_type(ty), name, &empty)?;
+                            binder.assignment(e, ty, name, &empty)?;
                         }
                         None => {
                             binder.expr(e, &empty, &[])?;
@@ -807,7 +820,7 @@ pub fn bind_statement(catalog: &Catalog, stmt: &mut Statement) -> DbResult<()> {
             let targets = crate::execution::runtime::resolve_targets(info, assignments.iter().map(|(c, _)| c))?;
             for ((_, e), t) in assignments.iter_mut().zip(targets) {
                 let (name, ty) = &info.columns[t];
-                binder.assignment(e, SqlType::from_column_type(ty), name, &scope)?;
+                binder.assignment(e, ty, name, &scope)?;
             }
             if let Some(w) = selection {
                 require_boolean(&binder.expr(w, &scope, &[])?, "WHERE")?;

@@ -386,3 +386,75 @@ fn assignments_must_match_the_column_category() {
     assert_eq!(err(&mut e, "INSERT INTO t (id, v) VALUES (5, 'x')").sqlstate(), "22018");
     bad_literal(&mut e, "INSERT INTO t (id, d) VALUES (5, 'never')");
 }
+
+// ---- fix round 2: the assignment rule ------------------------------------------------
+
+#[test]
+fn assignment_accepts_literals_year_and_anything_into_character() {
+    let (_dir, mut e) = engine();
+    exec(
+        &mut e,
+        "CREATE TABLE a (id INTEGER PRIMARY KEY, y YEAR, b BOOLEAN, s TEXT, c CHAR(4), vc VARCHAR(10), \
+         n INTEGER, x DECIMAL(5,2), d DATE)",
+    );
+    exec(&mut e, "INSERT INTO a (id, y) VALUES (1, 2024)");
+    exec(&mut e, "INSERT INTO a (id, b) VALUES (2, 'true')");
+    exec(&mut e, "INSERT INTO a (id, s) VALUES (3, 5)");
+    exec(&mut e, "INSERT INTO a (id, c) VALUES (4, 12)");
+    exec(&mut e, "INSERT INTO a (id, vc) VALUES (5, 1.5)");
+    exec(&mut e, "INSERT INTO a (id, n, x, d) VALUES (6, '7', '1.25', '2024-02-03')");
+    assert_eq!(q(&mut e, "SELECT y FROM a WHERE id = 1"), table(&[&["2024"]]));
+    assert_eq!(q(&mut e, "SELECT b FROM a WHERE id = 2"), table(&[&["true"]]));
+    assert_eq!(q(&mut e, "SELECT s FROM a WHERE id = 3"), table(&[&["5"]]));
+    assert_eq!(q(&mut e, "SELECT c FROM a WHERE id = 4"), table(&[&["12  "]]));
+    assert_eq!(q(&mut e, "SELECT vc FROM a WHERE id = 5"), table(&[&["1.5"]]));
+    assert_eq!(q(&mut e, "SELECT n, x, d FROM a WHERE id = 6"), table(&[&["7", "1.25", "2024-02-03"]]));
+    exec(&mut e, "UPDATE a SET b = 'false' WHERE id = 2");
+    assert_eq!(q(&mut e, "SELECT b FROM a WHERE id = 2"), table(&[&["false"]]));
+    exec(&mut e, "UPDATE a SET s = d WHERE id = 6");
+    assert_eq!(q(&mut e, "SELECT s FROM a WHERE id = 6"), table(&[&["2024-02-03"]]));
+    exec(&mut e, "UPDATE a SET s = b, vc = n, y = n + 2000 WHERE id = 6");
+    assert_eq!(q(&mut e, "SELECT y, s, vc FROM a WHERE id = 6"), table(&[&["2007", "NULL", "7"]]));
+    exec(&mut e, "UPDATE a SET y = '1999' WHERE id = 1");
+    assert_eq!(q(&mut e, "SELECT y FROM a WHERE id = 1"), table(&[&["1999"]]));
+    // Length rules still apply at runtime.
+    assert_eq!(err(&mut e, "INSERT INTO a (id, c) VALUES (7, 12345)").sqlstate(), "22001");
+}
+
+#[test]
+fn assignment_rejects_cross_category_values_and_invalid_literals_on_empty_table() {
+    let (_dir, mut e) = engine();
+    exec(
+        &mut e,
+        "CREATE TABLE a (id INTEGER PRIMARY KEY, y YEAR, b BOOLEAN, s TEXT, n INTEGER, d DATE, tm TIME)",
+    );
+    for sql in [
+        "UPDATE a SET d = s",
+        "UPDATE a SET n = s",
+        "UPDATE a SET b = s",
+        "UPDATE a SET n = UPPER('1')",
+        "INSERT INTO a (id, d) VALUES (1, 'a' || 'b')",
+        "INSERT INTO a (id, b) VALUES (1, 'a' || 'b')",
+        "INSERT INTO a (id, n) VALUES (1, TRUE)",
+        "INSERT INTO a (id, d) VALUES (1, TRUE)",
+        "INSERT INTO a (id, b) VALUES (1, 1)",
+        "UPDATE a SET n = d",
+        "UPDATE a SET n = tm",
+        "UPDATE a SET y = 1.5",
+        "UPDATE a SET y = b",
+    ] {
+        mismatch(&mut e, sql);
+    }
+    for sql in [
+        "INSERT INTO a (id, n) VALUES (1, 'abc')",
+        "UPDATE a SET b = 'maybe'",
+        "INSERT INTO a (id, y) VALUES (1, 'zzz')",
+    ] {
+        let v = err(&mut e, sql);
+        assert!(v.sqlstate().starts_with("22"), "`{sql}`: {v:?}");
+    }
+    bad_literal(&mut e, "INSERT INTO a (id, d) VALUES (1, 'never')");
+    // NULL and DEFAULT are always allowed.
+    exec(&mut e, "INSERT INTO a (id, n, b, d) VALUES (1, NULL, DEFAULT, NULL)");
+    exec(&mut e, "UPDATE a SET y = NULL, n = DEFAULT");
+}

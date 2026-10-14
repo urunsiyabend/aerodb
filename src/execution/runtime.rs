@@ -57,7 +57,7 @@ fn row_values(row: &RowData) -> Vec<Value> {
 /// Assignment (INSERT/UPDATE) coercion failure, classified like evaluator
 /// errors: too long → `StringTooLong` (22001), out of range →
 /// `NumericOverflow` (22003), unparseable → `InvalidCast` (22018).
-fn assignment_error(column: &str, e: ValueError) -> DbError {
+pub(crate) fn assignment_error(column: &str, e: ValueError) -> DbError {
     match e {
         ValueError::NumericOverflow => {
             DbError::NumericOverflow(format!("value for column '{}' is out of range", column))
