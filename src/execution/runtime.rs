@@ -1,10 +1,10 @@
-use crate::catalog::{Catalog, TableInfo};
+use crate::catalog::{Catalog, Relation, TableInfo, ViewInfo};
 use crate::constraints::keys::{self, Pending, Removal};
 use crate::constraints::default::DefaultConstraint;
 use crate::error::{DbError, DbResult};
 use crate::execution::eval::{Ctx, Env, Scope, eval, eval_predicate};
 use crate::execution::query::{ResultColumn, execute_query};
-use crate::sql::ast::{BinaryOp, Expr, Ident, Statement};
+use crate::sql::ast::{BinaryOp, Expr, Ident, Query, Statement};
 use crate::sql::value::{SqlType, Value, ValueError};
 use crate::storage::btree::BTree;
 use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, ColumnType, ColumnValue, Row, RowData};
@@ -107,7 +107,10 @@ fn resolve_targets<'a>(info: &TableInfo, idents: impl Iterator<Item = &'a Ident>
 fn matching_rows(catalog: &Catalog, info: &TableInfo, selection: Option<&Expr>) -> DbResult<Vec<Row>> {
     let snapshot = read_snapshot(catalog);
     let tree = BTree::open_root(&catalog.pager, info.root_page)?;
-    let rows = tree.scan_visible(&snapshot)?;
+    let mut rows = tree.scan_visible(&snapshot)?;
+    for row in &mut rows {
+        info.pad_row(&mut row.data);
+    }
     let Some(pred) = selection else {
         return Ok(rows);
     };
@@ -444,6 +447,158 @@ pub fn execute_insert(
     Ok(inserted)
 }
 
+/// DROP ... RESTRICT: refuse to drop table or view `name` while another
+/// object depends on it — a FOREIGN KEY of another table referencing the
+/// table (a self-reference does not count), or a view whose stored query
+/// reads the relation.
+fn ensure_no_dependents(catalog: &Catalog, name: &str, is_view: bool) -> DbResult<()> {
+    let fk_dependent = !is_view
+        && catalog
+            .all_tables()
+            .iter()
+            .any(|t| t.name != name && t.fks.iter().any(|fk| fk.parent_table.value == name));
+    let view_dependent = catalog.all_views().iter().any(|v| {
+        !(is_view && v.name == name) && v.query.referenced_relations().iter().any(|r| r.matches(name))
+    });
+    if fk_dependent || view_dependent {
+        return Err(DbError::DependentObjects(name.to_string()));
+    }
+    Ok(())
+}
+
+/// CREATE VIEW: the name must be free, wildcards are expanded (the view keeps
+/// its definition-time columns), the query must run against the current
+/// schema, and the output names (column list, else the query's) must be
+/// distinct. The stored text is the canonical `Query::to_sql`, re-parsed so
+/// the cached query is exactly what a reopen will see.
+fn create_view(catalog: &mut Catalog, name: String, columns: Option<Vec<String>>, query: Query) -> DbResult<()> {
+    if catalog.relation_exists(&name) {
+        return Err(DbError::DuplicateObject(name));
+    }
+    let mut query = query;
+    crate::execution::query::expand_wildcards(catalog, &mut query)?;
+    let sql = query.to_sql();
+    let query = match crate::sql::parser::parse_sql(&sql)? {
+        Statement::Query(q) => *q,
+        _ => return Err(DbError::Syntax(format!("view query does not round-trip: {}", sql))),
+    };
+    let result = execute_query(catalog, &query, None)?;
+    let names = match columns {
+        Some(cols) => {
+            if cols.len() != result.columns.len() {
+                return Err(DbError::Syntax(format!(
+                    "view \"{}\" names {} columns but its query returns {}",
+                    name,
+                    cols.len(),
+                    result.columns.len()
+                )));
+            }
+            cols
+        }
+        None => result.columns.iter().map(|c| c.name.clone()).collect(),
+    };
+    for (i, n) in names.iter().enumerate() {
+        if names[..i].contains(n) {
+            return Err(DbError::Syntax(format!(
+                "column \"{}\" specified more than once in view \"{}\"",
+                n, name
+            )));
+        }
+    }
+    catalog.create_view(ViewInfo { name: name.clone(), columns: names, sql, query })?;
+    println!("View {} created", name);
+    Ok(())
+}
+
+/// ALTER TABLE t ADD COLUMN: validate the new column against every visible
+/// row (default value or NULL appended; NOT NULL / CHECK / UNIQUE and all
+/// existing constraints re-checked on the new images), then persist the new
+/// shape and rewrite each visible row as a new MVCC version in the current
+/// transaction (write intents recorded like UPDATE). Nothing changes if any
+/// check fails.
+fn alter_add_column(
+    catalog: &mut Catalog,
+    table_name: &Ident,
+    column: crate::sql::ast::ColumnDef,
+    constraints: Vec<crate::sql::ast::TableConstraint>,
+) -> DbResult<()> {
+    use crate::sql::ast::TableConstraint;
+    let info = catalog.resolve_table(table_name)?.clone();
+    if info.columns.iter().any(|(n, _)| *n == column.name) {
+        return Err(DbError::DuplicateColumn(column.name));
+    }
+    let mut columns = info.columns.clone();
+    columns.push((column.name.clone(), column.col_type));
+
+    // Constraint names must not collide with the table's existing ones.
+    let mut used: HashSet<String> =
+        info.uniques.iter().map(|u| u.name.clone()).chain(info.checks.iter().map(|c| c.name.clone())).collect();
+    for c in &constraints {
+        if let TableConstraint::Unique { name: Some(n), .. } | TableConstraint::Check { name: Some(n), .. } = c {
+            if used.contains(n) {
+                return Err(DbError::Syntax(format!(
+                    "constraint \"{}\" for relation \"{}\" already exists",
+                    n, info.name
+                )));
+            }
+        }
+    }
+    let resolved = keys::resolve_table_constraints(catalog, &info.name, &columns, None, Vec::new(), constraints)?;
+    let mut new_info = info.clone();
+    new_info.columns = columns;
+    new_info.not_null.push(column.not_null);
+    new_info.default_values.push(column.default_value.clone());
+    new_info.auto_increment.push(false);
+    for mut u in resolved.uniques {
+        if used.contains(&u.name) {
+            u.name = keys::fresh_name(u.name, &used);
+        }
+        used.insert(u.name.clone());
+        new_info.uniques.push(u);
+    }
+    for mut c in resolved.checks {
+        if used.contains(&c.name) {
+            c.name = keys::fresh_name(c.name, &used);
+        }
+        used.insert(c.name.clone());
+        new_info.checks.push(c);
+    }
+
+    // The value existing rows get: the default, evaluated once, or NULL.
+    let fill = match &column.default_value {
+        Some(expr) => coerce(&DefaultConstraint::evaluate(expr)?, &column.col_type, &column.name)?,
+        None => ColumnValue::Null,
+    };
+    let rows = matching_rows(catalog, &info, None)?;
+    let images: Vec<RowData> = rows
+        .iter()
+        .map(|r| {
+            let mut data = r.data.clone();
+            data.0.push(fill.clone());
+            data
+        })
+        .collect();
+    let snapshot = read_snapshot(catalog);
+    let mut pending = Pending::new();
+    for (old, new) in rows.iter().zip(&images) {
+        pending.remove(&info.name, old);
+        pending.add(&info.name, new.clone());
+    }
+    keys::check_new_rows(catalog, &new_info, &snapshot, &images, &pending)?;
+
+    // Apply: retire the old versions (write-conflict checks first), persist
+    // the new shape, then write the widened versions under the same keys.
+    delete_versions(catalog, &info.name, &rows)?;
+    new_info.root_page = catalog.get_table(&info.name)?.root_page;
+    catalog.replace_table_info(new_info)?;
+    for (old, new) in rows.iter().zip(images) {
+        write_version(catalog, &info.name, old.key, new, false)?;
+    }
+    record_write_intents(catalog, &info.name, &rows)?;
+    println!("Table {} altered", info.name);
+    Ok(())
+}
+
 fn same_category(v: &Value, ty: &ColumnType) -> bool {
     let st = SqlType::from_column_type(ty);
     match v {
@@ -522,7 +677,8 @@ pub fn execute_select_with_indexes(
                         // Index entries store logical base-row keys and may be stale
                         // until vacuum. Always resolve each candidate through the
                         // base table's MVCC visibility rules before returning it.
-                        if let Some(r) = table_tree.find_visible(key, &snapshot)? {
+                        if let Some(mut r) = table_tree.find_visible(key, &snapshot)? {
+                            info.pad_row(&mut r.data);
                             let vals = row_values(&r.data);
                             if eval_predicate(pred, &Env::new(&scope, &vals, None), &cx)? {
                                 out.push(r);
@@ -555,9 +711,12 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     "Only one AUTO_INCREMENT column allowed per table".into(),
                 ));
             }
-            if if_not_exists && catalog.get_table(&table_name).is_ok() {
-                println!("Table {} already exists", table_name);
-                return Ok(());
+            if catalog.relation_exists(&table_name) {
+                if if_not_exists {
+                    println!("Table {} already exists", table_name);
+                    return Ok(());
+                }
+                return Err(DbError::DuplicateObject(table_name));
             }
             let declared: Vec<(String, ColumnType)> =
                 columns.iter().map(|c| (c.name.clone(), c.col_type)).collect();
@@ -610,6 +769,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             table_name,
             column_name,
         } => {
+            if let Ok(Relation::View(v)) = catalog.resolve_relation(&table_name) {
+                return Err(DbError::FeatureNotSupported(format!("cannot create index on view \"{}\"", v.name)));
+            }
             let info = catalog.resolve_table(&table_name)?.clone();
             let column = &info.columns[resolve_column(&info, &column_name)?].0;
             catalog.create_index(&index_name, &info.name, column)?;
@@ -638,10 +800,34 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 println!("{}", format_values(&vals));
             }
         }
-        Statement::DropTable { table_name, .. } => {
+        Statement::DropTable { table_name, if_exists } => {
+            if catalog.get_table(&table_name).is_err() {
+                if if_exists {
+                    return Ok(());
+                }
+                return Err(DbError::TableNotFound(table_name));
+            }
+            ensure_no_dependents(catalog, &table_name, false)?;
             if catalog.drop_table(&table_name)? {
                 println!("Table {} dropped", table_name);
             }
+        }
+        Statement::CreateView { name, columns, query } => {
+            create_view(catalog, name, columns, *query)?;
+        }
+        Statement::DropView { name, if_exists } => {
+            if catalog.get_view(&name).is_none() {
+                if if_exists {
+                    return Ok(());
+                }
+                return Err(DbError::TableNotFound(name));
+            }
+            ensure_no_dependents(catalog, &name, true)?;
+            catalog.drop_view(&name)?;
+            println!("View {} dropped", name);
+        }
+        Statement::AlterTableAddColumn { table_name, column, constraints } => {
+            alter_add_column(catalog, &table_name, column, constraints)?;
         }
         Statement::Delete {
             table_name,

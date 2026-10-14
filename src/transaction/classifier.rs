@@ -10,6 +10,9 @@ pub fn statement_requires_transaction(stmt: &Statement) -> bool {
             | Statement::Delete { .. }
             | Statement::CreateTable { .. }
             | Statement::DropTable { .. }
+            | Statement::CreateView { .. }
+            | Statement::DropView { .. }
+            | Statement::AlterTableAddColumn { .. }
             | Statement::CreateIndex { .. }
             | Statement::DropIndex { .. }
             | Statement::CreateSequence(_)

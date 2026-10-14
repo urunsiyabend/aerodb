@@ -13,6 +13,47 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 /// page 0 zeroed (allocated but unused), so a mismatch means "no meta yet".
 const META_MAGIC: &[u8; 8] = b"AERODBM1";
 
+/// On-disk storage/catalog format version, stored as a little-endian `u32` at
+/// bytes 32..36 of the meta page and written with every meta update.
+///
+/// - `0`: a 0.5.x file (those bytes were zeroed). 0.6.0 reads it as is: its
+///   layout is a strict subset of version 2.
+/// - `2`: 0.6.0 (catalog rows may carry UNIQUE/CHECK sections, view rows,
+///   DECIMAL/VARCHAR type codes).
+///
+/// Any other value is rejected at open, before anything is written.
+pub const STORAGE_FORMAT_VERSION: u32 = 2;
+
+/// Byte range of the format version inside the meta page.
+const META_VERSION_RANGE: std::ops::Range<usize> = 32..36;
+
+/// Refuse a database whose meta page names a storage format version this
+/// build does not understand. Runs before WAL recovery or any other write,
+/// so a rejected file (and its sidecars) is left exactly as it was.
+fn check_format_version(file: &mut File) -> io::Result<()> {
+    if (file.metadata()?.len() as usize) < PAGE_SIZE {
+        return Ok(());
+    }
+    let mut buf = [0u8; PAGE_SIZE];
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut buf)?;
+    if &buf[0..8] != META_MAGIC {
+        // No meta page: a 0.5.x file (or a fresh one).
+        return Ok(());
+    }
+    let version = u32::from_le_bytes(buf[META_VERSION_RANGE].try_into().unwrap());
+    if version == 0 || version == STORAGE_FORMAT_VERSION {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "unsupported AeroDB storage format version {} (this build supports up to {})",
+            version, STORAGE_FORMAT_VERSION
+        ),
+    ))
+}
+
 /// Fixed pages holding the non-versioned schema catalog: page 1 is the table
 /// catalog, page 2 the sequence catalog. Their scans are not MVCC-filtered, so
 /// [`Pager::rollback_transaction`] physically reverts just these pages on abort;
@@ -178,6 +219,7 @@ impl Pager {
             .write(true)
             .create(true)
             .open(filename)?;
+        check_format_version(&mut file)?;
         let wal_path = format!("{}.wal", filename);
         let (wal, wal_tx_table) = Wal::open(&wal_path, &mut file)?;
         let mut next_commit_ts = wal_tx_table
@@ -611,6 +653,7 @@ impl Pager {
         buf[8..16].copy_from_slice(&next_transaction_id.to_le_bytes());
         buf[16..24].copy_from_slice(&next_commit_ts.to_le_bytes());
         buf[24..32].copy_from_slice(&frozen_xid.to_le_bytes());
+        buf[META_VERSION_RANGE].copy_from_slice(&STORAGE_FORMAT_VERSION.to_le_bytes());
         self.write_page(0, &buf)?;
         let mut io = self.io();
         io.write_page_raw(0, &buf)?;
@@ -701,6 +744,13 @@ impl Pager {
     }
 
     pub fn rollback_transaction(&self) -> io::Result<()> {
+        self.rollback_transaction_reverting(&[])
+    }
+
+    /// [`Pager::rollback_transaction`], additionally reverting the touched
+    /// pages among `catalog_pages` (the non-root pages of the catalog trees,
+    /// once they outgrow pages 1 and 2) to their committed on-disk images.
+    pub fn rollback_transaction_reverting(&self, catalog_pages: &[u32]) -> io::Result<()> {
         let Some(transaction) = self.transaction().take() else {
             return Ok(());
         };
@@ -738,7 +788,10 @@ impl Pager {
         // rows there would otherwise be read back as live. DDL is serialized
         // by a coarse catalog lock, so reverting just those two pages is safe.
         for page_num in transaction.touched_pages() {
-            if page_num != CATALOG_TABLE_PAGE && page_num != CATALOG_SEQUENCE_PAGE {
+            if page_num != CATALOG_TABLE_PAGE
+                && page_num != CATALOG_SEQUENCE_PAGE
+                && !catalog_pages.contains(&page_num)
+            {
                 continue;
             }
             let mut buf = [0u8; PAGE_SIZE];

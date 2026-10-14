@@ -115,6 +115,10 @@ pub fn visible_rows(
         .scan_visible(snapshot)?
         .into_iter()
         .filter(|r| !pending.is_removed(&table.name, r))
+        .map(|mut r| {
+            table.pad_row(&mut r.data);
+            r
+        })
         .collect())
 }
 
@@ -669,7 +673,7 @@ fn resolve_check_expr(expr: &Expr, table_name: &str, columns: &[(String, ColumnT
 }
 
 /// `base`, or `base1`, `base2`, ... — the first name not in `used`.
-fn fresh_name(base: String, used: &HashSet<String>) -> String {
+pub fn fresh_name(base: String, used: &HashSet<String>) -> String {
     if !used.contains(&base) {
         return base;
     }

@@ -24,6 +24,15 @@ impl Engine {
         }
     }
 
+    /// Open (or create) the database at `filename`, reporting open errors.
+    pub fn open(filename: &str) -> DbResult<Self> {
+        let catalog = Catalog::open(Pager::new(filename)?)?;
+        Ok(Engine {
+            catalog,
+            transaction_manager: TransactionManager::new(),
+        })
+    }
+
     pub fn execute(&mut self, stmt: Statement) -> DbResult<()> {
         self.transaction_manager
             .execute(&mut self.catalog, stmt, handle_statement)

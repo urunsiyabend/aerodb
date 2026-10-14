@@ -1,0 +1,735 @@
+//! DROP TABLE RESTRICT dependency checks, CREATE/DROP VIEW (executed through
+//! the unified query executor), ALTER TABLE ADD COLUMN with defaults and
+//! constraints, and catalog round trips of DECIMAL/VARCHAR column types
+//! (0.6.0 task 6).
+mod common;
+
+use aerodb::engine::Engine;
+use aerodb::error::DbError;
+use common::{engine, err, exec, rows, sorted, table};
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+fn q(e: &mut Engine, sql: &str) -> Vec<Vec<String>> {
+    rows(e, sql).unwrap_or_else(|m| panic!("`{sql}` failed: {m}"))
+}
+
+fn q_set(e: &mut Engine, sql: &str) -> Vec<Vec<String>> {
+    sorted(q(e, sql))
+}
+
+fn state(e: &mut Engine, sql: &str) -> &'static str {
+    err(e, sql).sqlstate()
+}
+
+fn db_path(dir: &TempDir) -> PathBuf {
+    dir.path().join("test.db")
+}
+
+/// Drop `e` and open a fresh engine on the same database file.
+fn reopen(dir: &TempDir, e: Engine) -> Engine {
+    drop(e);
+    Engine::new(db_path(dir).to_str().unwrap())
+}
+
+/// Result column names of a query.
+fn header(e: &mut Engine, sql: &str) -> Vec<String> {
+    e.query(sql)
+        .unwrap_or_else(|m| panic!("`{sql}` failed: {m}"))
+        .columns
+        .into_iter()
+        .map(|c| c.name)
+        .collect()
+}
+
+fn assert_dependent(e: &DbError) {
+    assert!(matches!(e, DbError::DependentObjects(_)), "expected DependentObjects, got {e:?}");
+    assert_eq!(e.sqlstate(), "2BP01");
+    assert!(e.to_string().contains("depend"), "{e}");
+}
+
+/// The audit table `t` with four rows.
+fn audit_t(e: &mut Engine) {
+    exec(e, "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)");
+    exec(e, "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')");
+}
+
+// ---- DROP TABLE RESTRICT --------------------------------------------------------
+
+#[test]
+fn drop_restrict_dependency() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY)");
+    exec(&mut e, "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))");
+    exec(&mut e, "INSERT INTO p VALUES (1)");
+    exec(&mut e, "INSERT INTO ch VALUES (1, 1)");
+    let v = err(&mut e, "DROP TABLE p RESTRICT");
+    assert_dependent(&v);
+    assert_eq!(
+        v.to_string(),
+        "cannot drop p because other objects depend on it"
+    );
+    // Without RESTRICT the default behaviour is the same.
+    assert_dependent(&err(&mut e, "DROP TABLE p"));
+    assert_dependent(&err(&mut e, "DROP TABLE IF EXISTS p"));
+    assert_eq!(q(&mut e, "SELECT id FROM p"), table(&[&["1"]]));
+    assert_eq!(q(&mut e, "SELECT id, pid FROM ch"), table(&[&["1", "1"]]));
+    // The FK is still enforced.
+    assert_eq!(state(&mut e, "INSERT INTO ch VALUES (2, 9)"), "23503");
+}
+
+#[test]
+fn drop_child_then_parent_works() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY)");
+    exec(&mut e, "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id))");
+    exec(&mut e, "INSERT INTO p VALUES (1)");
+    exec(&mut e, "INSERT INTO ch VALUES (1, 1)");
+    exec(&mut e, "DROP TABLE ch RESTRICT");
+    exec(&mut e, "DROP TABLE p RESTRICT");
+    assert_eq!(state(&mut e, "SELECT id FROM p"), "42P01");
+    assert_eq!(state(&mut e, "SELECT id FROM ch"), "42P01");
+    // The names can be reused.
+    exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY)");
+    exec(&mut e, "CREATE TABLE ch (x TEXT)");
+    exec(&mut e, "INSERT INTO ch VALUES ('a')");
+    assert_eq!(q(&mut e, "SELECT x FROM ch"), table(&[&["a"]]));
+}
+
+#[test]
+fn drop_cascade_is_unsupported() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY)");
+    assert_eq!(state(&mut e, "DROP TABLE p CASCADE"), "0A000");
+    exec(&mut e, "CREATE VIEW pv AS SELECT id FROM p");
+    assert_eq!(state(&mut e, "DROP VIEW pv CASCADE"), "0A000");
+}
+
+#[test]
+fn drop_table_referenced_by_view_is_rejected() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW tv AS SELECT id FROM t WHERE v = 20");
+    assert_dependent(&err(&mut e, "DROP TABLE t"));
+    assert_dependent(&err(&mut e, "DROP TABLE t RESTRICT"));
+    assert_eq!(q_set(&mut e, "SELECT id FROM tv"), table(&[&["1"], &["4"]]));
+    // A view referencing the table only inside a subquery also depends on it.
+    exec(&mut e, "CREATE TABLE u (k INTEGER)");
+    exec(&mut e, "CREATE VIEW uv AS SELECT 1 AS one WHERE EXISTS (SELECT k FROM u)");
+    assert_dependent(&err(&mut e, "DROP TABLE u"));
+    exec(&mut e, "DROP VIEW uv");
+    exec(&mut e, "DROP TABLE u");
+    exec(&mut e, "DROP VIEW tv");
+    exec(&mut e, "DROP TABLE t");
+}
+
+#[test]
+fn self_referencing_fk_table_drops() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER REFERENCES emp(id))");
+    exec(&mut e, "INSERT INTO emp VALUES (1, NULL), (2, 1)");
+    exec(&mut e, "DROP TABLE emp RESTRICT");
+    assert_eq!(state(&mut e, "SELECT id FROM emp"), "42P01");
+}
+
+#[test]
+fn drop_table_in_transaction_rolls_back() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE d (id INTEGER PRIMARY KEY)");
+    exec(&mut e, "INSERT INTO d VALUES (1)");
+    exec(&mut e, "BEGIN");
+    exec(&mut e, "DROP TABLE d");
+    assert_eq!(state(&mut e, "SELECT id FROM d"), "42P01");
+    exec(&mut e, "ROLLBACK");
+    assert_eq!(q(&mut e, "SELECT id FROM d"), table(&[&["1"]]));
+}
+
+// ---- views ------------------------------------------------------------------------
+
+#[test]
+fn view_audit_probe() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW vv AS SELECT id FROM t WHERE id = 1");
+    assert_eq!(q(&mut e, "SELECT id FROM vv"), table(&[&["1"]]));
+}
+
+#[test]
+fn view_with_column_list() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW named (k, val) AS SELECT id, v FROM t WHERE v IS NOT NULL");
+    assert_eq!(header(&mut e, "SELECT * FROM named"), vec!["k", "val"]);
+    assert_eq!(
+        q_set(&mut e, "SELECT k, val FROM named"),
+        table(&[&["1", "20"], &["2", "10"], &["4", "20"]])
+    );
+    // The underlying names are not exposed.
+    assert_eq!(state(&mut e, "SELECT id FROM named"), "42703");
+    // Qualified by the view name or an alias.
+    assert_eq!(q(&mut e, "SELECT named.k FROM named WHERE named.val = 10"), table(&[&["2"]]));
+    assert_eq!(q(&mut e, "SELECT n.k FROM named AS n WHERE n.val = 10"), table(&[&["2"]]));
+    // Column list length must match the query arity.
+    assert_eq!(state(&mut e, "CREATE VIEW bad (a, b, c) AS SELECT id, v FROM t"), "42601");
+    assert_eq!(state(&mut e, "CREATE VIEW bad (a) AS SELECT id, v FROM t"), "42601");
+    assert_eq!(state(&mut e, "SELECT * FROM bad"), "42P01");
+}
+
+#[test]
+fn view_with_duplicate_output_names_needs_column_list() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    assert_eq!(state(&mut e, "CREATE VIEW dup AS SELECT id, id FROM t"), "42601");
+    exec(&mut e, "CREATE VIEW dup (a, b) AS SELECT id, id FROM t WHERE id = 2");
+    assert_eq!(q(&mut e, "SELECT a, b FROM dup"), table(&[&["2", "2"]]));
+}
+
+#[test]
+fn view_must_bind_at_create() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    assert_eq!(state(&mut e, "CREATE VIEW bad AS SELECT id FROM missing"), "42P01");
+    assert_eq!(state(&mut e, "CREATE VIEW bad AS SELECT nope FROM t"), "42703");
+    assert_eq!(state(&mut e, "SELECT * FROM bad"), "42P01");
+}
+
+#[test]
+fn view_with_joins_aggregates_and_order_by() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE TABLE u (id INTEGER PRIMARY KEY, tid INTEGER, w TEXT)");
+    exec(&mut e, "INSERT INTO u VALUES (10, 1, 'x'), (11, 1, 'y'), (12, 2, 'z')");
+    exec(
+        &mut e,
+        "CREATE VIEW agg AS SELECT t.s AS s, COUNT(*) AS n, SUM(t.v) AS total FROM t GROUP BY t.s ORDER BY s",
+    );
+    assert_eq!(
+        q(&mut e, "SELECT s, n, total FROM agg"),
+        table(&[&["a", "1", "10"], &["b", "2", "40"], &["c", "1", "NULL"]])
+    );
+    exec(
+        &mut e,
+        "CREATE VIEW joined AS SELECT t.id AS tid, u.w AS w FROM t JOIN u ON u.tid = t.id ORDER BY u.id DESC",
+    );
+    assert_eq!(
+        q(&mut e, "SELECT tid, w FROM joined"),
+        table(&[&["2", "z"], &["1", "y"], &["1", "x"]])
+    );
+    // Aggregates over a view.
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM joined WHERE tid = 1"), table(&[&["2"]]));
+}
+
+#[test]
+fn view_joined_with_table() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW big AS SELECT id, v FROM t WHERE v >= 20");
+    assert_eq!(
+        q_set(&mut e, "SELECT t.id, t.s, big.v FROM t JOIN big ON big.id = t.id"),
+        table(&[&["1", "b", "20"], &["4", "b", "20"]])
+    );
+    assert_eq!(
+        q_set(&mut e, "SELECT b.id FROM t LEFT JOIN big AS b ON b.id = t.id WHERE t.id < 3"),
+        table(&[&["1"], &["NULL"]])
+    );
+    // In subqueries too.
+    assert_eq!(
+        q_set(&mut e, "SELECT id FROM t WHERE id IN (SELECT id FROM big)"),
+        table(&[&["1"], &["4"]])
+    );
+    assert_eq!(
+        q_set(&mut e, "SELECT x.id FROM (SELECT id FROM big) AS x"),
+        table(&[&["1"], &["4"]])
+    );
+}
+
+#[test]
+fn view_over_view() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW v1 AS SELECT id, v, s FROM t WHERE v IS NOT NULL");
+    exec(&mut e, "CREATE VIEW v2 (ident, doubled) AS SELECT id, v * 2 FROM v1 WHERE s = 'b'");
+    assert_eq!(
+        q_set(&mut e, "SELECT ident, doubled FROM v2"),
+        table(&[&["1", "40"], &["4", "40"]])
+    );
+    // v1 is referenced by v2.
+    assert_dependent(&err(&mut e, "DROP VIEW v1"));
+    assert_dependent(&err(&mut e, "DROP VIEW v1 RESTRICT"));
+    assert_dependent(&err(&mut e, "DROP TABLE t"));
+    exec(&mut e, "DROP VIEW v2");
+    exec(&mut e, "DROP VIEW v1");
+    exec(&mut e, "DROP TABLE t");
+}
+
+#[test]
+fn filter_on_view_column() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW calc (id, plus) AS SELECT id, v + 1 FROM t");
+    assert_eq!(q_set(&mut e, "SELECT id FROM calc WHERE plus = 21"), table(&[&["1"], &["4"]]));
+    assert_eq!(q(&mut e, "SELECT id FROM calc WHERE plus IS NULL"), table(&[&["3"]]));
+    assert_eq!(q(&mut e, "SELECT id, plus FROM calc ORDER BY plus DESC NULLS LAST, id LIMIT 2"),
+        table(&[&["1", "21"], &["4", "21"]]));
+}
+
+#[test]
+fn view_reflects_later_inserts() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW twenty AS SELECT id FROM t WHERE v = 20");
+    assert_eq!(q_set(&mut e, "SELECT id FROM twenty"), table(&[&["1"], &["4"]]));
+    exec(&mut e, "INSERT INTO t VALUES (5, 20, 'e')");
+    exec(&mut e, "UPDATE t SET v = 20 WHERE id = 2");
+    exec(&mut e, "DELETE FROM t WHERE id = 1");
+    assert_eq!(q_set(&mut e, "SELECT id FROM twenty"), table(&[&["2"], &["4"], &["5"]]));
+}
+
+#[test]
+fn reopen_keeps_view() {
+    let (dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW \"Quoted View\" (\"Id\", label) AS SELECT id, s || '!' FROM t WHERE id < 3 ORDER BY id");
+    exec(&mut e, "CREATE VIEW atop AS SELECT \"Id\" FROM \"Quoted View\"");
+    let mut e = reopen(&dir, e);
+    assert_eq!(
+        q(&mut e, "SELECT \"Id\", label FROM \"Quoted View\""),
+        table(&[&["1", "b!"], &["2", "a!"]])
+    );
+    assert_eq!(q_set(&mut e, "SELECT \"Id\" FROM atop"), table(&[&["1"], &["2"]]));
+    // Tables still load next to the view rows.
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["4"]]));
+    exec(&mut e, "INSERT INTO t VALUES (9, 1, 'z')");
+    assert_dependent(&err(&mut e, "DROP TABLE t"));
+    let mut e = reopen(&dir, e);
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["5"]]));
+    assert_dependent(&err(&mut e, "DROP VIEW \"Quoted View\""));
+}
+
+#[test]
+fn drop_view() {
+    let (dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW gone AS SELECT id FROM t");
+    exec(&mut e, "DROP VIEW gone");
+    assert_eq!(state(&mut e, "SELECT id FROM gone"), "42P01");
+    assert_eq!(state(&mut e, "DROP VIEW gone"), "42P01");
+    exec(&mut e, "DROP VIEW IF EXISTS gone");
+    // DROP VIEW does not drop tables and DROP TABLE does not drop views.
+    assert_eq!(state(&mut e, "DROP VIEW t"), "42P01");
+    exec(&mut e, "CREATE VIEW w AS SELECT id FROM t");
+    assert_eq!(state(&mut e, "DROP TABLE w"), "42P01");
+    let mut e = reopen(&dir, e);
+    assert_eq!(state(&mut e, "SELECT id FROM gone"), "42P01");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM w"), table(&[&["4"]]));
+    // The name can be reused for a table once the view is gone.
+    exec(&mut e, "DROP VIEW w");
+    exec(&mut e, "CREATE TABLE w (a INTEGER)");
+    exec(&mut e, "INSERT INTO w VALUES (1)");
+    assert_eq!(q(&mut e, "SELECT a FROM w"), table(&[&["1"]]));
+}
+
+#[test]
+fn dml_on_view_is_unsupported() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW ro AS SELECT id, v FROM t");
+    for sql in [
+        "INSERT INTO ro VALUES (9, 9)",
+        "UPDATE ro SET v = 1",
+        "DELETE FROM ro",
+        "CREATE INDEX ro_idx ON ro (id)",
+        "ALTER TABLE ro ADD COLUMN z INTEGER",
+    ] {
+        let v = err(&mut e, sql);
+        assert_eq!(v.sqlstate(), "0A000", "{sql}: {v}");
+    }
+    assert!(err(&mut e, "INSERT INTO ro VALUES (9, 9)").to_string().contains("cannot modify view"));
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["4"]]));
+}
+
+#[test]
+fn create_view_in_transaction_rolls_back() {
+    let (dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "BEGIN");
+    exec(&mut e, "CREATE VIEW tx_view AS SELECT id FROM t");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM tx_view"), table(&[&["4"]]));
+    exec(&mut e, "ROLLBACK");
+    assert_eq!(state(&mut e, "SELECT id FROM tx_view"), "42P01");
+    // DROP VIEW rolls back too.
+    exec(&mut e, "CREATE VIEW keep AS SELECT id FROM t");
+    exec(&mut e, "BEGIN");
+    exec(&mut e, "DROP VIEW keep");
+    assert_eq!(state(&mut e, "SELECT id FROM keep"), "42P01");
+    exec(&mut e, "ROLLBACK");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM keep"), table(&[&["4"]]));
+    // Committed CREATE VIEW survives reopen; rolled-back one does not.
+    exec(&mut e, "BEGIN");
+    exec(&mut e, "CREATE VIEW committed AS SELECT id FROM t WHERE id = 2");
+    exec(&mut e, "COMMIT");
+    let mut e = reopen(&dir, e);
+    assert_eq!(q(&mut e, "SELECT id FROM committed"), table(&[&["2"]]));
+    assert_eq!(state(&mut e, "SELECT id FROM tx_view"), "42P01");
+}
+
+#[test]
+fn ddl_in_failed_transaction_is_refused() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "BEGIN");
+    assert_eq!(state(&mut e, "INSERT INTO t VALUES (1, 1, 'dup')"), "23505");
+    assert_eq!(state(&mut e, "CREATE VIEW fv AS SELECT id FROM t"), "25P02");
+    assert_eq!(state(&mut e, "ALTER TABLE t ADD COLUMN z INTEGER"), "25P02");
+    assert_eq!(state(&mut e, "DROP TABLE t"), "25P02");
+    exec(&mut e, "ROLLBACK");
+    assert_eq!(state(&mut e, "SELECT id FROM fv"), "42P01");
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+}
+
+#[test]
+fn table_and_view_name_clash() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    let v = err(&mut e, "CREATE VIEW t AS SELECT 1 AS one");
+    assert!(matches!(v, DbError::DuplicateObject(_)), "{v:?}");
+    assert_eq!(v.sqlstate(), "42P07");
+    assert!(v.to_string().contains("already exists"), "{v}");
+    exec(&mut e, "CREATE VIEW tv AS SELECT id FROM t");
+    assert_eq!(state(&mut e, "CREATE TABLE tv (a INTEGER)"), "42P07");
+    assert_eq!(state(&mut e, "CREATE VIEW tv AS SELECT v FROM t"), "42P07");
+    // The view keeps its definition.
+    assert_eq!(header(&mut e, "SELECT * FROM tv"), vec!["id"]);
+}
+
+#[test]
+fn view_star_keeps_definition_time_columns() {
+    let (dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "CREATE VIEW star AS SELECT * FROM t WHERE id <= 2");
+    exec(&mut e, "CREATE VIEW qstar AS SELECT x.* FROM t AS x WHERE x.id = 1");
+    exec(&mut e, "ALTER TABLE t ADD COLUMN extra INTEGER DEFAULT 5");
+    assert_eq!(header(&mut e, "SELECT * FROM star"), vec!["id", "v", "s"]);
+    assert_eq!(
+        q_set(&mut e, "SELECT * FROM star"),
+        table(&[&["1", "20", "b"], &["2", "10", "a"]])
+    );
+    assert_eq!(header(&mut e, "SELECT * FROM qstar"), vec!["id", "v", "s"]);
+    let mut e = reopen(&dir, e);
+    assert_eq!(header(&mut e, "SELECT * FROM star"), vec!["id", "v", "s"]);
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s", "extra"]);
+}
+
+// ---- ALTER TABLE ADD COLUMN -----------------------------------------------------------
+
+#[test]
+fn alter_add() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "ALTER TABLE t ADD COLUMN n INTEGER");
+    assert_eq!(q(&mut e, "SELECT n FROM t"), table(&[&["NULL"], &["NULL"], &["NULL"], &["NULL"]]));
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s", "n"]);
+    // The COLUMN keyword is optional.
+    exec(&mut e, "ALTER TABLE t ADD m TEXT");
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s", "n", "m"]);
+    exec(&mut e, "INSERT INTO t VALUES (5, 1, 'e', 7, 'mm')");
+    assert_eq!(q(&mut e, "SELECT n, m FROM t WHERE id = 5"), table(&[&["7", "mm"]]));
+}
+
+#[test]
+fn add_column_with_default() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "ALTER TABLE t ADD COLUMN n INTEGER DEFAULT 7");
+    assert_eq!(q(&mut e, "SELECT DISTINCT n FROM t"), table(&[&["7"]]));
+    exec(&mut e, "INSERT INTO t (id, v, s) VALUES (5, 1, 'e')");
+    assert_eq!(q(&mut e, "SELECT n FROM t WHERE id = 5"), table(&[&["7"]]));
+    exec(&mut e, "INSERT INTO t VALUES (6, 1, 'f', DEFAULT)");
+    assert_eq!(q(&mut e, "SELECT n FROM t WHERE id = 6"), table(&[&["7"]]));
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t WHERE n = 7"), table(&[&["6"]]));
+}
+
+#[test]
+fn add_decimal_column_rounds_default() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "ALTER TABLE t ADD COLUMN price DECIMAL(5,2) DEFAULT 1.005");
+    assert_eq!(q(&mut e, "SELECT DISTINCT price FROM t"), table(&[&["1.01"]]));
+    exec(&mut e, "INSERT INTO t (id) VALUES (5)");
+    assert_eq!(q(&mut e, "SELECT price FROM t WHERE id = 5"), table(&[&["1.01"]]));
+    assert_eq!(state(&mut e, "ALTER TABLE t ADD COLUMN big DECIMAL(3,2) DEFAULT 123.4"), "22003");
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s", "price"]);
+}
+
+#[test]
+fn add_not_null_without_default_on_nonempty_table_fails() {
+    let (dir, mut e) = engine();
+    audit_t(&mut e);
+    let v = err(&mut e, "ALTER TABLE t ADD COLUMN nn INTEGER NOT NULL");
+    assert!(matches!(v, DbError::NullViolation(_)), "{v:?}");
+    assert_eq!(v.sqlstate(), "23502");
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["4"]]));
+    let mut e = reopen(&dir, e);
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+    // On an empty table it is fine.
+    exec(&mut e, "CREATE TABLE empty (a INTEGER)");
+    exec(&mut e, "ALTER TABLE empty ADD COLUMN b INTEGER NOT NULL");
+    assert_eq!(state(&mut e, "INSERT INTO empty (a) VALUES (1)"), "22023");
+    assert_eq!(state(&mut e, "INSERT INTO empty VALUES (1, NULL)"), "23502");
+    exec(&mut e, "INSERT INTO empty VALUES (1, 2)");
+}
+
+#[test]
+fn add_not_null_with_default() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "ALTER TABLE t ADD COLUMN z INTEGER NOT NULL DEFAULT 0");
+    assert_eq!(q(&mut e, "SELECT DISTINCT z FROM t"), table(&[&["0"]]));
+    assert_eq!(state(&mut e, "UPDATE t SET z = NULL WHERE id = 1"), "23502");
+    exec(&mut e, "INSERT INTO t (id) VALUES (5)");
+    assert_eq!(q(&mut e, "SELECT z FROM t WHERE id = 5"), table(&[&["0"]]));
+}
+
+#[test]
+fn add_duplicate_column_fails() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    let v = err(&mut e, "ALTER TABLE t ADD COLUMN v TEXT");
+    assert_eq!(v.sqlstate(), "42701", "{v}");
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+    assert_eq!(state(&mut e, "ALTER TABLE missing ADD COLUMN x INTEGER"), "42P01");
+}
+
+#[test]
+fn add_column_unsupported_constraints() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    for sql in [
+        "ALTER TABLE t ADD COLUMN k INTEGER PRIMARY KEY",
+        "ALTER TABLE t ADD COLUMN k INTEGER REFERENCES t(id)",
+        "ALTER TABLE t ADD COLUMN k INTEGER NOT NULL AUTO_INCREMENT",
+        "ALTER TABLE t DROP COLUMN v",
+    ] {
+        assert_eq!(state(&mut e, sql), "0A000", "{sql}");
+    }
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+}
+
+#[test]
+fn add_column_unique_is_validated() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    // Every row would get the same non-NULL default: duplicate.
+    let v = err(&mut e, "ALTER TABLE t ADD COLUMN u INTEGER UNIQUE DEFAULT 1");
+    assert_eq!(v.sqlstate(), "23505", "{v}");
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+    // NULLs are distinct.
+    exec(&mut e, "ALTER TABLE t ADD COLUMN u INTEGER UNIQUE");
+    exec(&mut e, "UPDATE t SET u = id");
+    let v = err(&mut e, "INSERT INTO t (id, u) VALUES (9, 1)");
+    assert!(matches!(&v, DbError::UniqueViolation { constraint, .. } if constraint == "t_u_key"), "{v:?}");
+}
+
+#[test]
+fn add_column_check_validated_against_existing_rows() {
+    let (dir, mut e) = engine();
+    audit_t(&mut e);
+    let v = err(&mut e, "ALTER TABLE t ADD COLUMN x INTEGER CHECK (x > 0) DEFAULT 0");
+    assert!(matches!(&v, DbError::CheckViolation { constraint } if constraint == "t_x_check"), "{v:?}");
+    assert_eq!(v.sqlstate(), "23514");
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["4"]]));
+    // A passing CHECK is enforced afterwards and survives reopen.
+    exec(&mut e, "ALTER TABLE t ADD COLUMN x INTEGER CHECK (x > 0) DEFAULT 3");
+    assert_eq!(state(&mut e, "UPDATE t SET x = 0 WHERE id = 1"), "23514");
+    let mut e = reopen(&dir, e);
+    assert_eq!(state(&mut e, "INSERT INTO t VALUES (9, 1, 'q', -1)"), "23514");
+    exec(&mut e, "INSERT INTO t VALUES (9, 1, 'q', 1)");
+}
+
+#[test]
+fn reopen_after_alter_keeps_column_and_values() {
+    let (dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "ALTER TABLE t ADD COLUMN code VARCHAR(5) DEFAULT 'ab'");
+    exec(&mut e, "ALTER TABLE t ADD COLUMN amt DECIMAL(6,2) NOT NULL DEFAULT 2.5");
+    exec(&mut e, "UPDATE t SET code = 'xyz' WHERE id = 3");
+    let mut e = reopen(&dir, e);
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s", "code", "amt"]);
+    assert_eq!(
+        q(&mut e, "SELECT id, code, amt FROM t ORDER BY id"),
+        table(&[&["1", "ab", "2.50"], &["2", "ab", "2.50"], &["3", "xyz", "2.50"], &["4", "ab", "2.50"]])
+    );
+    assert_eq!(state(&mut e, "UPDATE t SET code = 'toolong' WHERE id = 1"), "22001");
+    exec(&mut e, "INSERT INTO t (id) VALUES (5)");
+    assert_eq!(q(&mut e, "SELECT code, amt FROM t WHERE id = 5"), table(&[&["ab", "2.50"]]));
+}
+
+#[test]
+fn alter_in_transaction_rollback_restores_shape_and_data() {
+    let (dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "BEGIN");
+    exec(&mut e, "ALTER TABLE t ADD COLUMN n INTEGER DEFAULT 1");
+    exec(&mut e, "UPDATE t SET n = 2 WHERE id = 1");
+    assert_eq!(q(&mut e, "SELECT n FROM t WHERE id = 1"), table(&[&["2"]]));
+    exec(&mut e, "ROLLBACK");
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+    assert_eq!(
+        q_set(&mut e, "SELECT * FROM t"),
+        table(&[&["1", "20", "b"], &["2", "10", "a"], &["3", "NULL", "c"], &["4", "20", "b"]])
+    );
+    assert_eq!(state(&mut e, "SELECT n FROM t"), "42703");
+    exec(&mut e, "INSERT INTO t VALUES (5, 5, 'e')");
+    let mut e = reopen(&dir, e);
+    assert_eq!(header(&mut e, "SELECT * FROM t"), vec!["id", "v", "s"]);
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["5"]]));
+    // Committed ALTER inside a transaction persists.
+    exec(&mut e, "BEGIN");
+    exec(&mut e, "INSERT INTO t VALUES (6, 6, 'f')");
+    exec(&mut e, "ALTER TABLE t ADD COLUMN n INTEGER DEFAULT 1");
+    exec(&mut e, "COMMIT");
+    let mut e = reopen(&dir, e);
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t WHERE n = 1"), table(&[&["6"]]));
+}
+
+#[test]
+fn update_and_order_by_new_column() {
+    let (_dir, mut e) = engine();
+    audit_t(&mut e);
+    exec(&mut e, "ALTER TABLE t ADD COLUMN rank INTEGER");
+    exec(&mut e, "UPDATE t SET rank = 10 - id");
+    exec(&mut e, "UPDATE t SET rank = rank * 2 WHERE s = 'b'");
+    assert_eq!(
+        q(&mut e, "SELECT id, rank FROM t ORDER BY rank"),
+        table(&[&["3", "7"], &["2", "8"], &["4", "12"], &["1", "18"]])
+    );
+    assert_eq!(q(&mut e, "SELECT SUM(rank) FROM t"), table(&[&["45"]]));
+    exec(&mut e, "DELETE FROM t WHERE rank > 10");
+    assert_eq!(q_set(&mut e, "SELECT id FROM t"), table(&[&["2"], &["3"]]));
+}
+
+#[test]
+fn add_column_to_table_with_index_and_fk() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY, name TEXT)");
+    exec(&mut e, "CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id))");
+    exec(&mut e, "CREATE INDEX p_name ON p (name)");
+    exec(&mut e, "INSERT INTO p VALUES (1, 'a'), (2, 'b')");
+    exec(&mut e, "INSERT INTO c VALUES (1, 1)");
+    exec(&mut e, "ALTER TABLE p ADD COLUMN extra TEXT DEFAULT 'e'");
+    assert_eq!(q(&mut e, "SELECT id, extra FROM p WHERE name = 'a'"), table(&[&["1", "e"]]));
+    assert_eq!(state(&mut e, "DELETE FROM p WHERE id = 1"), "23503");
+    exec(&mut e, "DELETE FROM p WHERE id = 2");
+    assert_eq!(q(&mut e, "SELECT id FROM p"), table(&[&["1"]]));
+    assert_eq!(state(&mut e, "INSERT INTO c VALUES (2, 7)"), "23503");
+}
+
+/// A transaction whose snapshot predates a committed ADD COLUMN still sees
+/// the old (short) row versions; reads pad them with NULL instead of failing.
+#[test]
+fn older_snapshot_reads_short_rows_padded_with_null() {
+    use aerodb::db::Database;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(db_path(&dir).to_str().unwrap()).unwrap();
+    let setup = db.begin().unwrap();
+    db.query(&setup, "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)").unwrap();
+    db.query(&setup, "INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
+    db.commit(setup).unwrap();
+
+    let old = db.begin().unwrap();
+    let alter = db.begin().unwrap();
+    db.query(&alter, "ALTER TABLE t ADD COLUMN n INTEGER DEFAULT 5").unwrap();
+    db.commit(alter).unwrap();
+
+    let render = |r: aerodb::execution::query::QueryResult| -> Vec<Vec<String>> {
+        sorted(r.rows.iter().map(|row| row.iter().map(|v| v.to_string()).collect()).collect())
+    };
+    // The schema is not snapshot-versioned: the old transaction sees the new
+    // column, its row versions predate it and read as NULL.
+    let seen = render(db.query(&old, "SELECT id, v, n FROM t").unwrap());
+    assert_eq!(seen, table(&[&["1", "10", "NULL"], &["2", "20", "NULL"]]));
+    let filtered = render(db.query(&old, "SELECT id FROM t WHERE n IS NULL").unwrap());
+    assert_eq!(filtered, table(&[&["1"], &["2"]]));
+    db.abort(old).unwrap();
+
+    let fresh = db.begin().unwrap();
+    let seen = render(db.query(&fresh, "SELECT id, v, n FROM t").unwrap());
+    assert_eq!(seen, table(&[&["1", "10", "5"], &["2", "20", "5"]]));
+    db.commit(fresh).unwrap();
+}
+
+/// Page-1 catalog keys are not derived from the number of relations, so a
+/// drop followed by creates never reuses a live key (tables and views).
+#[test]
+fn catalog_keys_are_not_reused_after_drop() {
+    let (dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE a (x INTEGER)");
+    exec(&mut e, "CREATE TABLE b (x INTEGER)");
+    exec(&mut e, "CREATE VIEW bv AS SELECT x FROM b");
+    exec(&mut e, "DROP TABLE a");
+    exec(&mut e, "CREATE TABLE c (x INTEGER)");
+    exec(&mut e, "CREATE VIEW cv AS SELECT x FROM c");
+    exec(&mut e, "INSERT INTO b VALUES (2)");
+    exec(&mut e, "INSERT INTO c VALUES (3)");
+    let mut e = reopen(&dir, e);
+    assert_eq!(q(&mut e, "SELECT x FROM bv"), table(&[&["2"]]));
+    assert_eq!(q(&mut e, "SELECT x FROM cv"), table(&[&["3"]]));
+    assert_eq!(state(&mut e, "SELECT x FROM a"), "42P01");
+}
+
+/// Enough tables that their page-1 rows split the catalog root; view rows
+/// interleaved with table rows survive root updates and reopen.
+#[test]
+fn many_tables_and_views_share_the_catalog_page() {
+    let (dir, mut e) = engine();
+    for i in 0..40 {
+        exec(&mut e, &format!("CREATE TABLE t{i} (id INTEGER PRIMARY KEY, label TEXT, amount DECIMAL(8,2))"));
+        exec(&mut e, &format!("CREATE VIEW v{i} AS SELECT id, label FROM t{i} WHERE amount > 0"));
+        exec(&mut e, &format!("INSERT INTO t{i} VALUES ({i}, 'row{i}', 1.5)"));
+    }
+    let mut e = reopen(&dir, e);
+    for i in [0, 17, 39] {
+        assert_eq!(
+            q(&mut e, &format!("SELECT id, label FROM v{i}")),
+            table(&[&[&i.to_string(), &format!("row{i}")]])
+        );
+    }
+    exec(&mut e, "ALTER TABLE t5 ADD COLUMN extra INTEGER DEFAULT 1");
+    let mut e = reopen(&dir, e);
+    assert_eq!(q(&mut e, "SELECT extra FROM t5"), table(&[&["1"]]));
+    assert_eq!(q(&mut e, "SELECT label FROM v5"), table(&[&["row5"]]));
+    // Catalog growth inside a rolled-back transaction leaves no trace.
+    exec(&mut e, "BEGIN");
+    for i in 0..30 {
+        exec(&mut e, &format!("CREATE VIEW extra_view_number_{i} AS SELECT id FROM t{i}"));
+    }
+    exec(&mut e, "ROLLBACK");
+    assert_eq!(state(&mut e, "SELECT id FROM extra_view_number_3"), "42P01");
+    assert_eq!(q(&mut e, "SELECT label FROM v39"), table(&[&["row39"]]));
+    let mut e = reopen(&dir, e);
+    assert_eq!(state(&mut e, "SELECT id FROM extra_view_number_3"), "42P01");
+    assert_eq!(q(&mut e, "SELECT id FROM v0"), table(&[&["0"]]));
+}
+
+// ---- catalog type round trips -------------------------------------------------------------
+
+#[test]
+fn decimal_and_varchar_types_survive_reopen() {
+    let (dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE ty (id INTEGER PRIMARY KEY, d DECIMAL(7,3), vc VARCHAR(4), cv CHARACTER VARYING(3))");
+    exec(&mut e, "INSERT INTO ty VALUES (1, 1.23456, 'abcd', 'xy')");
+    let types = |e: &mut Engine| -> Vec<String> {
+        e.query("SELECT d, vc, cv FROM ty").unwrap().columns.iter().map(|c| c.ty.name()).collect()
+    };
+    let before = types(&mut e);
+    assert_eq!(before, vec!["DECIMAL(7,3)", "VARCHAR(4)", "VARCHAR(3)"]);
+    let mut e = reopen(&dir, e);
+    assert_eq!(types(&mut e), before);
+    assert_eq!(q(&mut e, "SELECT d, vc, cv FROM ty"), table(&[&["1.235", "abcd", "xy"]]));
+    assert_eq!(state(&mut e, "INSERT INTO ty VALUES (2, 1, 'abcde', 'x')"), "22001");
+    assert_eq!(state(&mut e, "INSERT INTO ty VALUES (2, 12345.6, 'a', 'x')"), "22003");
+    exec(&mut e, "INSERT INTO ty VALUES (2, 2.0005, 'ä', 'xyz')");
+    assert_eq!(q(&mut e, "SELECT d FROM ty WHERE id = 2"), table(&[&["2.001"]]));
+}

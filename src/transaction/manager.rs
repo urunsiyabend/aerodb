@@ -104,7 +104,10 @@ impl TransactionManager {
     /// set, then rebuild the in-memory catalog/index maps captured at BEGIN.
     pub fn rollback(&mut self, catalog: &mut Catalog) -> io::Result<()> {
         let transaction_id = catalog.transaction_id();
-        catalog.pager.rollback_transaction()?;
+        // Every page of the (non-versioned) catalog trees as the aborted
+        // transaction left them; the pager reverts the touched ones.
+        let catalog_pages = catalog.catalog_tree_pages()?;
+        catalog.pager.rollback_transaction_reverting(&catalog_pages)?;
         if let Some(transaction_id) = transaction_id {
             self.active.remove(&transaction_id);
         }

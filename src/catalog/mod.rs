@@ -1,4 +1,4 @@
-use crate::sql::ast::{Expr, Ident};
+use crate::sql::ast::{Expr, Ident, Query};
 use crate::storage::btree::BTree;
 use crate::storage::page::PAGE_SIZE;
 use crate::storage::pager::Pager;
@@ -24,6 +24,57 @@ pub struct TableInfo {
     /// CHECK constraints, in declaration order (column-level first as they
     /// appear in the column list, interleaved with table-level ones).
     pub checks: Vec<CheckConstraint>,
+}
+
+impl TableInfo {
+    /// Pad a stored row image that predates `ALTER TABLE ... ADD COLUMN`
+    /// (shorter than the table's column list) with NULLs. Every read path
+    /// that hands row images to the executor or the constraint checks calls
+    /// this, so a short version (e.g. one only an older snapshot can see)
+    /// never causes an out-of-bounds access.
+    pub fn pad_row(&self, data: &mut RowData) {
+        if data.0.len() < self.columns.len() {
+            data.0.resize(self.columns.len(), ColumnValue::Null);
+        }
+    }
+}
+
+/// A view: a stored query exposed under `columns` (one name per output
+/// column of the query). `sql` is the persisted text (`Query::to_sql`, with
+/// wildcards expanded at CREATE time); `query` is its parsed form.
+#[derive(Debug, Clone)]
+pub struct ViewInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub sql: String,
+    pub query: Query,
+}
+
+/// First value of a view's catalog row on page 1. Table rows start with the
+/// table name instead; no table name can contain NUL, so the two kinds never
+/// collide. (A 0.5.1 reader fails on such a row with "root page not int".)
+pub const VIEW_ROW_TAG: &str = "\u{0}VIEW";
+
+/// A named relation: a base table or a view.
+#[derive(Debug, Clone, Copy)]
+pub enum Relation<'a> {
+    Table(&'a TableInfo),
+    View(&'a ViewInfo),
+}
+
+/// One decoded page-1 catalog row.
+enum CatalogEntry {
+    Table(TableInfo),
+    View(ViewInfo),
+}
+
+impl CatalogEntry {
+    fn is(&self, view: bool, name: &str) -> bool {
+        match self {
+            CatalogEntry::Table(t) => !view && t.name == name,
+            CatalogEntry::View(v) => view && v.name == name,
+        }
+    }
 }
 
 /// A UNIQUE constraint: rows whose key (`columns`, declared names) has no
@@ -61,6 +112,8 @@ pub struct IndexInfo {
 /// The Catalog holds all user tables. Internally, it also persists itself in B-Tree page 1.
 pub struct Catalog {
     tables: HashMap<String, TableInfo>,
+    /// Views, persisted on page 1 next to the tables (see [`VIEW_ROW_TAG`]).
+    views: HashMap<String, ViewInfo>,
     indexes: HashMap<String, IndexInfo>,
     sequences: HashMap<String, SequenceInfo>,
     pub(crate) pager: Pager,
@@ -131,38 +184,12 @@ impl Catalog {
             init_leaf_root(&pager, 2)?;
         }
 
-        // Now read all catalog entries (if any) from page 1
-        let mut tables = HashMap::new();
-        {
-            let catalog_btree = BTree::open_root(&pager, 1)?;
-            let mut cursor = catalog_btree.scan_all_rows();
-            while let Some(blob_row) = cursor.next() {
-                let info = Self::deserialize_catalog_row(&blob_row)?;
-                tables.insert(info.name.clone(), info);
-            }
-        }
-
-        // Load sequences from page 2
-        let mut sequences = HashMap::new();
-        {
-            let seq_btree = BTree::open_root(&pager, 2)?;
-            let mut cursor = seq_btree.scan_all_rows();
-            while let Some(row) = cursor.next() {
-                let (name, current, start, inc) = Self::deserialize_sequence_row(&row)?;
-                sequences.insert(
-                    name.clone(),
-                    SequenceInfo {
-                        key: row.key,
-                        current_value: current,
-                        start_value: start,
-                        increment: inc,
-                    },
-                );
-            }
-        }
+        let (tables, views) = Self::load_relations(&pager)?;
+        let sequences = Self::load_sequences(&pager)?;
 
         Ok(Catalog {
             tables,
+            views,
             indexes: HashMap::new(),
             sequences,
             pager,
@@ -171,66 +198,212 @@ impl Catalog {
         })
     }
 
-    pub(crate) fn reload_tables(&mut self) -> io::Result<()> {
-        self.tables.clear();
-        let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
+    /// Every page-1 catalog row (key, decoded entry). The single scanner of
+    /// page 1: table and view rows are told apart by [`VIEW_ROW_TAG`].
+    fn catalog_entries(pager: &Pager) -> io::Result<Vec<(i32, CatalogEntry)>> {
+        let catalog_btree = BTree::open_root(pager, 1)?;
         let mut cursor = catalog_btree.scan_all_rows();
-        while let Some(blob_row) = cursor.next() {
-            let info = Self::deserialize_catalog_row(&blob_row)?;
-            self.tables.insert(info.name.clone(), info);
+        let mut out = Vec::new();
+        while let Some(row) = cursor.next() {
+            out.push((row.key, Self::decode_catalog_row(&row)?));
         }
-        // reload sequences
-        self.sequences.clear();
-        {
-            let mut seq_btree = BTree::open_root(&self.pager, 2)?;
-            let mut cursor = seq_btree.scan_all_rows();
-            while let Some(row) = cursor.next() {
-                let (name, cur, start, inc) = Self::deserialize_sequence_row(&row)?;
-                self.sequences.insert(
-                    name.clone(),
-                    SequenceInfo {
-                        key: row.key,
-                        current_value: cur,
-                        start_value: start,
-                        increment: inc,
-                    },
-                );
+        Ok(out)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn load_relations(
+        pager: &Pager,
+    ) -> io::Result<(HashMap<String, TableInfo>, HashMap<String, ViewInfo>)> {
+        let mut tables = HashMap::new();
+        let mut views = HashMap::new();
+        for (_, entry) in Self::catalog_entries(pager)? {
+            match entry {
+                CatalogEntry::Table(info) => {
+                    tables.insert(info.name.clone(), info);
+                }
+                CatalogEntry::View(view) => {
+                    views.insert(view.name.clone(), view);
+                }
             }
+        }
+        Ok((tables, views))
+    }
+
+    fn load_sequences(pager: &Pager) -> io::Result<HashMap<String, SequenceInfo>> {
+        let mut sequences = HashMap::new();
+        let seq_btree = BTree::open_root(pager, 2)?;
+        let mut cursor = seq_btree.scan_all_rows();
+        while let Some(row) = cursor.next() {
+            let (name, current, start, inc) = Self::deserialize_sequence_row(&row)?;
+            sequences.insert(
+                name.clone(),
+                SequenceInfo {
+                    key: row.key,
+                    current_value: current,
+                    start_value: start,
+                    increment: inc,
+                },
+            );
+        }
+        Ok(sequences)
+    }
+
+    /// Rebuild the in-memory tables, views and sequences from pages 1 and 2
+    /// (after a ROLLBACK reverted them).
+    pub(crate) fn reload_tables(&mut self) -> io::Result<()> {
+        let (tables, views) = Self::load_relations(&self.pager)?;
+        self.tables = tables;
+        self.views = views;
+        self.sequences = Self::load_sequences(&self.pager)?;
+        Ok(())
+    }
+
+    /// Every page of the table and sequence catalog trees (rooted at pages 1
+    /// and 2). ROLLBACK reverts the touched ones: the catalog is not
+    /// MVCC-versioned, so aborted DDL must be undone physically.
+    pub(crate) fn catalog_tree_pages(&self) -> io::Result<Vec<u32>> {
+        let mut pages = BTree::open_root(&self.pager, 1)?.page_numbers()?;
+        pages.extend(BTree::open_root(&self.pager, 2)?.page_numbers()?);
+        Ok(pages)
+    }
+
+    /// Page-1 key of the table (`view == false`) or view named `name`.
+    fn catalog_key(&self, view: bool, name: &str) -> io::Result<Option<i32>> {
+        Ok(Self::catalog_entries(&self.pager)?
+            .into_iter()
+            .find(|(_, e)| e.is(view, name))
+            .map(|(k, _)| k))
+    }
+
+    /// A page-1 key not used by any table or view row.
+    fn next_catalog_key(&self) -> io::Result<i32> {
+        let max = Self::catalog_entries(&self.pager)?.iter().map(|(k, _)| *k).max().unwrap_or(0);
+        Ok(max + 1)
+    }
+
+    /// Replace (`Some`) or delete (`None`) the page-1 row `key`, keeping the
+    /// catalog tree rooted at page 1.
+    fn write_catalog_row(&mut self, key: i32, data: Option<RowData>) -> io::Result<()> {
+        let mut tree = BTree::open_root(&self.pager, 1)?;
+        if tree.find(key)?.is_some() {
+            tree.delete(key)?;
+        }
+        if let Some(data) = data {
+            tree.insert(key, data)?;
+        }
+        // A root split moved the root off page 1: move it back (the catalog
+        // tree is always opened at page 1).
+        tree.pin_root(1)
+    }
+
+    pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
+        let target = Self::catalog_entries(&self.pager)?.into_iter().find_map(|(key, e)| match e {
+            CatalogEntry::Table(info) if info.name == name => Some((key, info)),
+            _ => None,
+        });
+        if let Some((key, mut info)) = target {
+            info.root_page = new_root;
+            self.write_catalog_row(key, Some(Self::serialize_catalog_row(&info)))?;
         }
         Ok(())
     }
 
-    pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
-        let target = {
-            let tree = BTree::open_root(&self.pager, 1)?;
-            let mut cursor = tree.scan_all_rows();
-            let mut found = None;
-            while let Some(row) = cursor.next() {
-                let info = Self::deserialize_catalog_row(&row)?;
-                if info.name == name {
-                    found = Some((row.key, info));
-                    break;
-                }
-            }
-            found
-        };
-
-        if let Some((key, mut info)) = target {
-            info.root_page = new_root;
-            let mut tree = BTree::open_root(&self.pager, 1)?;
-            tree.delete(key)?;
-            tree.insert(key, Self::serialize_catalog_row(&info))?;
-            let new_root_page = tree.root_page();
-            if new_root_page != 1 {
-                // Copy the split-out root back into the fixed catalog page. The
-                // source is read (and its latch released) before page 1 is
-                // latched, so only one latch is held at a time.
-                let src_buf = self.pager.read_page(new_root_page)?;
-                self.pager.write_page(1, &src_buf)?;
-                self.pager.flush_page(1)?;
-            }
-        }
+    /// Persist new metadata for an existing table (ALTER TABLE): rewrites its
+    /// page-1 row and the in-memory entry. Transactional like every catalog
+    /// change (page 1 is reverted on ROLLBACK).
+    pub fn replace_table_info(&mut self, info: TableInfo) -> io::Result<()> {
+        let key = self.catalog_key(false, &info.name)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("No such table: {}", info.name))
+        })?;
+        self.write_catalog_row(key, Some(Self::serialize_catalog_row(&info)))?;
+        self.tables.insert(info.name.clone(), info);
         Ok(())
+    }
+
+    /// Persist a new view. The caller validates it (name free, query binds).
+    pub fn create_view(&mut self, view: ViewInfo) -> io::Result<()> {
+        if self.tables.contains_key(&view.name) || self.views.contains_key(&view.name) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("relation {} already exists", view.name),
+            ));
+        }
+        let key = self.next_catalog_key()?;
+        self.write_catalog_row(key, Some(Self::serialize_view_row(&view)))?;
+        self.views.insert(view.name.clone(), view);
+        Ok(())
+    }
+
+    /// Drop a view if it exists. Returns true if it was removed.
+    pub fn drop_view(&mut self, name: &str) -> io::Result<bool> {
+        if !self.views.contains_key(name) {
+            return Ok(false);
+        }
+        if let Some(key) = self.catalog_key(true, name)? {
+            self.write_catalog_row(key, None)?;
+        }
+        self.views.remove(name);
+        Ok(true)
+    }
+
+    pub fn get_view(&self, name: &str) -> Option<&ViewInfo> {
+        self.views.get(name)
+    }
+
+    pub fn all_views(&self) -> Vec<ViewInfo> {
+        self.views.values().cloned().collect()
+    }
+
+    /// Whether a table or a view is named exactly `name`.
+    pub fn relation_exists(&self, name: &str) -> bool {
+        self.tables.contains_key(name) || self.views.contains_key(name)
+    }
+
+    fn serialize_view_row(view: &ViewInfo) -> RowData {
+        let mut vals = vec![
+            ColumnValue::Text(VIEW_ROW_TAG.to_string()),
+            ColumnValue::Text(view.name.clone()),
+            ColumnValue::Integer(view.columns.len() as i32),
+        ];
+        vals.extend(view.columns.iter().map(|c| ColumnValue::Text(c.clone())));
+        vals.push(ColumnValue::Text(view.sql.clone()));
+        RowData(vals)
+    }
+
+    fn deserialize_view_row(row: &Row) -> io::Result<ViewInfo> {
+        let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, format!("view catalog row: bad {}", what));
+        let values = &row.data.0;
+        let text = |i: usize, what: &str| match values.get(i) {
+            Some(ColumnValue::Text(s)) => Ok(s.clone()),
+            _ => Err(bad(what)),
+        };
+        let name = text(1, "name")?;
+        let n = match values.get(2) {
+            Some(ColumnValue::Integer(n)) if *n >= 0 => *n as usize,
+            _ => return Err(bad("column count")),
+        };
+        let columns = (0..n).map(|i| text(3 + i, "column name")).collect::<io::Result<Vec<_>>>()?;
+        let sql = text(3 + n, "query text")?;
+        let query = match crate::sql::parser::parse_sql(&sql) {
+            Ok(crate::sql::ast::Statement::Query(q)) => *q,
+            Ok(_) => return Err(bad("query text")),
+            Err(e) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("bad stored view query '{}': {}", sql, e),
+                ));
+            }
+        };
+        Ok(ViewInfo { name, columns, sql, query })
+    }
+
+    fn decode_catalog_row(row: &Row) -> io::Result<CatalogEntry> {
+        match row.data.0.first() {
+            Some(ColumnValue::Text(tag)) if tag == VIEW_ROW_TAG => {
+                Ok(CatalogEntry::View(Self::deserialize_view_row(row)?))
+            }
+            _ => Ok(CatalogEntry::Table(Self::deserialize_catalog_row(row)?)),
+        }
     }
 
     /// Capture the in-memory index map at BEGIN so ROLLBACK can undo DDL that
@@ -277,6 +450,10 @@ impl Catalog {
                 .scan_visible(&snapshot)?
                 .into_iter()
                 .filter(|row| row.created_tx == transaction_id)
+                .map(|mut row| {
+                    table.pad_row(&mut row.data);
+                    row
+                })
                 .collect();
             drop(tree);
             if !created.is_empty() {
@@ -297,7 +474,10 @@ impl Catalog {
                 .all_versions()?
                 .into_iter()
                 .filter(|row| row.deleted_tx == Some(transaction_id))
-                .map(|row| row.data)
+                .map(|mut row| {
+                    table.pad_row(&mut row.data);
+                    row.data
+                })
                 .collect();
             drop(tree);
             check_removed_keys(self, table, &removed, &snapshot, &Pending::new(), Removal::Commit)?;
@@ -369,14 +549,37 @@ impl Catalog {
     /// Look up a table named by an SQL identifier: unquoted names match
     /// case-insensitively, quoted names exactly (the rule column references
     /// use). More than one case-insensitive match is ambiguous.
+    ///
+    /// Only base tables qualify: a view name is rejected with
+    /// `FeatureNotSupported` (views are read-only).
     pub fn resolve_table(&self, ident: &Ident) -> crate::error::DbResult<&TableInfo> {
+        match self.resolve_relation(ident)? {
+            Relation::Table(t) => Ok(t),
+            Relation::View(v) => Err(crate::error::DbError::FeatureNotSupported(format!(
+                "cannot modify view \"{}\"",
+                v.name
+            ))),
+        }
+    }
+
+    /// Look up a table or view named by an SQL identifier (same rule as
+    /// [`Catalog::resolve_table`]; tables and views share one namespace).
+    pub fn resolve_relation(&self, ident: &Ident) -> crate::error::DbResult<Relation<'_>> {
         let not_found = || crate::error::DbError::TableNotFound(ident.value.clone());
         if ident.quoted {
-            return self.tables.get(&ident.value).ok_or_else(not_found);
+            if let Some(t) = self.tables.get(&ident.value) {
+                return Ok(Relation::Table(t));
+            }
+            return self.views.get(&ident.value).map(Relation::View).ok_or_else(not_found);
         }
-        let mut hits = self.tables.values().filter(|t| ident.matches(&t.name));
+        let mut hits = self
+            .tables
+            .values()
+            .filter(|t| ident.matches(&t.name))
+            .map(Relation::Table)
+            .chain(self.views.values().filter(|v| ident.matches(&v.name)).map(Relation::View));
         match (hits.next(), hits.next()) {
-            (Some(t), None) => Ok(t),
+            (Some(r), None) => Ok(r),
             (None, _) => Err(not_found()),
             (Some(_), Some(_)) => Err(crate::error::DbError::Syntax(format!(
                 "table name \"{}\" is ambiguous",
@@ -452,6 +655,12 @@ impl Catalog {
                 format!("Table {} already exists", name),
             ));
         }
+        if self.views.contains_key(name) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("relation {} already exists", name),
+            ));
+        }
 
         // A new table starts a fresh row-id sequence (a dropped or rolled-back
         // table of the same name may have left a counter behind).
@@ -480,12 +689,10 @@ impl Catalog {
             info.auto_increment.push(ai);
         }
 
-        // Use a synthetic key = (current number of tables + 1)
-        let key = (self.tables.len() as i32) + 1;
-        {
-            let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
-            catalog_btree.insert(key, Self::serialize_catalog_row(&info))?;
-        }
+        // A synthetic key not used by any table or view row (a count-based
+        // key could collide once a relation was dropped).
+        let key = self.next_catalog_key()?;
+        self.write_catalog_row(key, Some(Self::serialize_catalog_row(&info)))?;
         self.tables.insert(name.to_string(), info);
         Ok(())
     }
@@ -911,28 +1118,8 @@ impl Catalog {
         }
 
         // Find catalog row key corresponding to this table
-        let key_opt = {
-            let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
-            let mut cursor = catalog_btree.scan_all_rows();
-            let mut found = None;
-            while let Some(row) = cursor.next() {
-                if Self::deserialize_catalog_row(&row)?.name == name {
-                    found = Some(row.key);
-                    break;
-                }
-            }
-            found
-        };
-
-        if let Some(key) = key_opt {
-            let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
-            catalog_btree.delete(key)?;
-            let new_root = catalog_btree.root_page();
-            if new_root != 1 {
-                let src_buf = self.pager.read_page(new_root)?;
-                self.pager.write_page(1, &src_buf)?;
-                self.pager.flush_page(1)?;
-            }
+        if let Some(key) = self.catalog_key(false, name)? {
+            self.write_catalog_row(key, None)?;
             self.tables.remove(name);
             self.rowid_counters.remove(name);
             Ok(true)
@@ -1473,6 +1660,30 @@ mod tests {
         assert!(back.uniques.is_empty() && back.checks.is_empty());
         assert_eq!(back.fks, info.fks);
         assert_eq!(back.primary_key, info.primary_key);
+    }
+
+    #[test]
+    fn view_rows_round_trip_and_are_not_tables() {
+        let sql = "SELECT \"t\".\"id\" FROM t WHERE (id > 1)";
+        let query = match crate::sql::parser::parse_sql(sql).unwrap() {
+            crate::sql::ast::Statement::Query(q) => *q,
+            _ => unreachable!(),
+        };
+        let view = ViewInfo { name: "v".into(), columns: vec!["Id".into()], sql: query.to_sql(), query };
+        let row = Row::new(3, Catalog::serialize_view_row(&view));
+        assert_eq!(row.data.0[0], ColumnValue::Text(VIEW_ROW_TAG.into()));
+        match Catalog::decode_catalog_row(&row).unwrap() {
+            CatalogEntry::View(back) => {
+                assert_eq!(back.name, "v");
+                assert_eq!(back.columns, vec!["Id".to_string()]);
+                assert_eq!(back.sql, view.sql);
+                assert_eq!(back.query, view.query);
+            }
+            CatalogEntry::Table(_) => panic!("a view row decoded as a table"),
+        }
+        // A table row still decodes as a table.
+        let table = Row::new(1, Catalog::serialize_catalog_row(&constrained_table()));
+        assert!(matches!(Catalog::decode_catalog_row(&table).unwrap(), CatalogEntry::Table(_)));
     }
 
     #[test]

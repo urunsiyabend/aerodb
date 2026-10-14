@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, Relation};
 use crate::error::{DbError, DbResult};
 use crate::execution::eval::{Ctx, Env, Scope, display_column, eval, eval_predicate};
 use crate::execution::runtime::read_snapshot;
@@ -117,22 +117,48 @@ pub fn row_key(row: &[Value]) -> Vec<KeyPart> {
 
 fn load_table_ref(catalog: &Catalog, tref: &TableRef, outer: Option<&Env>) -> DbResult<(Scope, Vec<Vec<Value>>)> {
     match tref {
-        TableRef::Named { name, alias } => {
-            let info = catalog.resolve_table(name)?.clone();
-            let qualifier = alias.clone().unwrap_or_else(|| info.name.clone());
-            let mut scope = Scope::new();
-            for (col, ty) in &info.columns {
-                scope.push(Some(qualifier.clone()), col.clone(), SqlType::from_column_type(ty));
+        TableRef::Named { name, alias } => match catalog.resolve_relation(name)? {
+            Relation::Table(info) => {
+                let qualifier = alias.clone().unwrap_or_else(|| info.name.clone());
+                let mut scope = Scope::new();
+                for (col, ty) in &info.columns {
+                    scope.push(Some(qualifier.clone()), col.clone(), SqlType::from_column_type(ty));
+                }
+                let snapshot = read_snapshot(catalog);
+                let tree = BTree::open_root(&catalog.pager, info.root_page)?;
+                let width = info.columns.len();
+                let rows = tree
+                    .scan_visible(&snapshot)?
+                    .into_iter()
+                    .map(|r| {
+                        // Versions written before an ADD COLUMN are short: pad with NULL.
+                        let mut vals: Vec<Value> = r.data.0.iter().map(Value::from_column_value).collect();
+                        vals.resize(width, Value::Null);
+                        vals
+                    })
+                    .collect();
+                Ok((scope, rows))
             }
-            let snapshot = read_snapshot(catalog);
-            let tree = BTree::open_root(&catalog.pager, info.root_page)?;
-            let rows = tree
-                .scan_visible(&snapshot)?
-                .into_iter()
-                .map(|r| r.data.0.iter().map(Value::from_column_value).collect())
-                .collect();
-            Ok((scope, rows))
-        }
+            Relation::View(view) => {
+                // A view is its stored query, run through this same executor
+                // (uncorrelated: a view never sees the referencing query's scope).
+                let r = run_query(catalog, &view.query, None)?;
+                if r.columns.len() != view.columns.len() {
+                    return Err(DbError::ColumnNotFound(format!(
+                        "view \"{}\" defines {} columns but its query now returns {}",
+                        view.name,
+                        view.columns.len(),
+                        r.columns.len()
+                    )));
+                }
+                let qualifier = alias.clone().unwrap_or_else(|| view.name.clone());
+                let mut scope = Scope::new();
+                for (name, col) in view.columns.iter().zip(&r.columns) {
+                    scope.push(Some(qualifier.clone()), name.clone(), col.ty);
+                }
+                Ok((scope, r.rows))
+            }
+        },
         TableRef::Subquery { query, alias } => {
             let r = run_query(catalog, query, outer)?;
             let mut scope = Scope::new();
@@ -610,6 +636,61 @@ impl GroupCheck<'_> {
     }
 }
 
+/// Replace `*` and `q.*` in the select lists that determine `query`'s output
+/// (every set-operation branch, and the FROM-subqueries feeding them) by
+/// explicit, exactly-quoted column references. CREATE VIEW stores the
+/// expanded text, so a view keeps the column set it had when it was created
+/// even if a table gains columns later (ALTER TABLE ... ADD COLUMN).
+pub fn expand_wildcards(catalog: &Catalog, query: &mut Query) -> DbResult<()> {
+    expand_body_wildcards(catalog, &mut query.body)
+}
+
+fn expand_body_wildcards(catalog: &Catalog, body: &mut SetExpr) -> DbResult<()> {
+    match body {
+        SetExpr::SetOp { left, right, .. } => {
+            expand_body_wildcards(catalog, left)?;
+            expand_body_wildcards(catalog, right)
+        }
+        SetExpr::Select(sel) => {
+            for tref in sel.from.iter_mut().chain(sel.joins.iter_mut().map(|j| &mut j.table)) {
+                if let TableRef::Subquery { query, .. } = tref {
+                    expand_wildcards(catalog, query)?;
+                }
+            }
+            if !sel.projection.iter().any(|i| !matches!(i, SelectItem::Expr { .. })) {
+                return Ok(());
+            }
+            let scope = static_source_scope(catalog, sel)?;
+            let mut projection = Vec::with_capacity(sel.projection.len());
+            for item in &sel.projection {
+                match item {
+                    SelectItem::Wildcard => {
+                        projection.extend(
+                            scope.columns.iter().map(|c| SelectItem::Expr { expr: exact_column(c), alias: None }),
+                        );
+                    }
+                    SelectItem::QualifiedWildcard(q) => {
+                        let before = projection.len();
+                        projection.extend(
+                            scope
+                                .columns
+                                .iter()
+                                .filter(|c| c.qualifier.as_deref().is_some_and(|cq| q.matches(cq)))
+                                .map(|c| SelectItem::Expr { expr: exact_column(c), alias: None }),
+                        );
+                        if projection.len() == before {
+                            return Err(DbError::TableNotFound(q.value.clone()));
+                        }
+                    }
+                    other => projection.push(other.clone()),
+                }
+            }
+            sel.projection = projection;
+            Ok(())
+        }
+    }
+}
+
 /// Columns a SELECT's FROM clause exposes, from catalog metadata only (no
 /// rows are read; types are not needed for name resolution).
 fn static_source_scope(catalog: &Catalog, sel: &Select) -> DbResult<Scope> {
@@ -617,9 +698,12 @@ fn static_source_scope(catalog: &Catalog, sel: &Select) -> DbResult<Scope> {
     for tref in sel.from.iter().chain(sel.joins.iter().map(|j| &j.table)) {
         match tref {
             TableRef::Named { name, alias } => {
-                let info = catalog.resolve_table(name)?;
-                let qualifier = alias.clone().unwrap_or_else(|| info.name.clone());
-                for (col, _) in &info.columns {
+                let (rel_name, columns): (&str, Vec<&String>) = match catalog.resolve_relation(name)? {
+                    Relation::Table(info) => (&info.name, info.columns.iter().map(|(c, _)| c).collect()),
+                    Relation::View(view) => (&view.name, view.columns.iter().collect()),
+                };
+                let qualifier = alias.clone().unwrap_or_else(|| rel_name.to_string());
+                for col in columns {
                     scope.push(Some(qualifier.clone()), col.clone(), SqlType::Null);
                 }
             }

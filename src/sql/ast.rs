@@ -381,6 +381,24 @@ pub enum Statement {
         table_name: String,
         if_exists: bool,
     },
+    /// `CREATE VIEW name [(columns)] AS query`.
+    CreateView {
+        name: String,
+        columns: Option<Vec<String>>,
+        query: Box<Query>,
+    },
+    /// `DROP VIEW [IF EXISTS] name [RESTRICT]`.
+    DropView {
+        name: String,
+        if_exists: bool,
+    },
+    /// `ALTER TABLE t ADD [COLUMN] column_def`; `constraints` are the column's
+    /// UNIQUE / CHECK constraints (as for CREATE TABLE).
+    AlterTableAddColumn {
+        table_name: Ident,
+        column: ColumnDef,
+        constraints: Vec<TableConstraint>,
+    },
     Insert {
         table_name: Ident,
         columns: Option<Vec<Ident>>,
@@ -759,6 +777,61 @@ impl SetExpr {
 }
 
 impl Query {
+    /// Every relation name this query reads from (FROM / JOIN items at any
+    /// depth, including subqueries inside expressions), in encounter order.
+    pub fn referenced_relations(&self) -> Vec<Ident> {
+        fn in_expr(e: &Expr, out: &mut Vec<Ident>) {
+            e.walk(&mut |n| match n {
+                Expr::ScalarSubquery(q) | Expr::Exists { query: q, .. } | Expr::InSubquery { query: q, .. } => {
+                    in_query(q, out)
+                }
+                _ => {}
+            });
+        }
+        fn in_table(t: &TableRef, out: &mut Vec<Ident>) {
+            match t {
+                TableRef::Named { name, .. } => out.push(name.clone()),
+                TableRef::Subquery { query, .. } => in_query(query, out),
+            }
+        }
+        fn in_body(b: &SetExpr, out: &mut Vec<Ident>) {
+            match b {
+                SetExpr::SetOp { left, right, .. } => {
+                    in_body(left, out);
+                    in_body(right, out);
+                }
+                SetExpr::Select(s) => {
+                    for t in &s.from {
+                        in_table(t, out);
+                    }
+                    for j in &s.joins {
+                        in_table(&j.table, out);
+                        if let Some(p) = &j.predicate {
+                            in_expr(p, out);
+                        }
+                    }
+                    for item in &s.projection {
+                        if let SelectItem::Expr { expr, .. } = item {
+                            in_expr(expr, out);
+                        }
+                    }
+                    for e in s.selection.iter().chain(&s.group_by).chain(s.having.iter()) {
+                        in_expr(e, out);
+                    }
+                }
+            }
+        }
+        fn in_query(q: &Query, out: &mut Vec<Ident>) {
+            in_body(&q.body, out);
+            for o in &q.order_by {
+                in_expr(&o.expr, out);
+            }
+        }
+        let mut out = Vec::new();
+        in_query(self, &mut out);
+        out
+    }
+
     pub fn to_sql(&self) -> String {
         let mut s = self.body.to_sql();
         if !self.order_by.is_empty() {

@@ -1001,6 +1001,77 @@ impl<'a> BTree<'a> {
         Ok(())
     }
 
+    /// Make `fixed` the root page again after a root split moved the root
+    /// elsewhere (used by the catalog trees, whose root page number is fixed).
+    ///
+    /// A root split leaves the old root page `fixed` as the leftmost child of
+    /// a freshly allocated root. The child's content moves to a new page and
+    /// the new root's content moves into `fixed`, with all parent / child
+    /// pointers rewired. (Copying the new root over `fixed` without moving the
+    /// child first would make the root its own child.) The vacated root page
+    /// is left unused. No-op when `fixed` already is the root.
+    pub fn pin_root(&mut self, fixed: u32) -> io::Result<()> {
+        let moved_root = self.root_page;
+        if moved_root == fixed {
+            return Ok(());
+        }
+        let (keys, mut children) = self.read_all_from_internal(moved_root)?;
+        let Some(slot) = children.iter().position(|&c| c == fixed) else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("pin_root: page {} is not a child of the new root {}", fixed, moved_root),
+            ));
+        };
+
+        // 1) Move the old root's content (now a child) to a fresh page.
+        let relocated = self.pager.allocate_page()?;
+        let child_image = self.pager.read_page(fixed)?;
+        self.pager.write_page(relocated, &child_image)?;
+        self.pager.with_page_mut(relocated, |data| {
+            set_is_root(data, false);
+            set_parent(data, fixed);
+        })?;
+        self.pager.flush_page(relocated)?;
+        if get_node_type(&child_image) == NODE_INTERNAL {
+            let (_, grandchildren) = self.read_all_from_internal(relocated)?;
+            for g in grandchildren {
+                self.pager.with_page_mut(g, |data| set_parent(data, relocated))?;
+                self.pager.flush_page(g)?;
+            }
+        }
+
+        // 2) Write the new root's content into the fixed page.
+        children[slot] = relocated;
+        self.pager.with_page_mut(fixed, |data| {
+            set_node_type(data, NODE_INTERNAL);
+            set_is_root(data, true);
+            set_parent(data, 0);
+        })?;
+        self.write_all_to_internal(fixed, &keys, &children)?;
+        for &c in &children {
+            self.pager.with_page_mut(c, |data| set_parent(data, fixed))?;
+            self.pager.flush_page(c)?;
+        }
+        self.root_page = fixed;
+        Ok(())
+    }
+
+    /// Every page of this tree (root, internal nodes and leaves).
+    pub fn page_numbers(&self) -> io::Result<Vec<u32>> {
+        let mut out = Vec::new();
+        let mut stack = vec![self.root_page];
+        while let Some(page) = stack.pop() {
+            if out.contains(&page) {
+                continue;
+            }
+            out.push(page);
+            if get_node_type(&self.pager.read_page(page)?) == NODE_INTERNAL {
+                stack.extend(self.read_all_from_internal(page)?.1);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn open_root(pager: &'a Pager, root_page: u32) -> io::Result<Self> {
         Ok(BTree { root_page, pager })
     }

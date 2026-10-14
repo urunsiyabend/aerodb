@@ -57,6 +57,12 @@ pub enum DbError {
     CheckViolation { constraint: String },
     #[error("current transaction is aborted, commands ignored until end of transaction block")]
     InFailedTransaction,
+    #[error("cannot drop {0} because other objects depend on it")]
+    DependentObjects(String),
+    #[error("relation \"{0}\" already exists")]
+    DuplicateObject(String),
+    #[error("column \"{0}\" already exists")]
+    DuplicateColumn(String),
 }
 
 impl DbError {
@@ -89,6 +95,9 @@ impl DbError {
             DbError::UniqueViolation { .. } => "23505",
             DbError::CheckViolation { .. } => "23514",
             DbError::InFailedTransaction => "25P02",
+            DbError::DependentObjects(_) => "2BP01",
+            DbError::DuplicateObject(_) => "42P07",
+            DbError::DuplicateColumn(_) => "42701",
         }
     }
 }

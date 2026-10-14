@@ -101,6 +101,7 @@ fn check_top_level(stmt: &Statement) -> DbResult<()> {
     }
     match stmt {
         Statement::Query(q) => check_set(&q.body),
+        Statement::CreateView { query, .. } => check_set(&query.body),
         _ => Ok(()),
     }
 }
@@ -343,7 +344,7 @@ impl Parser {
             "DELETE" => self.parse_delete(),
             "CREATE" => self.parse_create(),
             "DROP" => self.parse_drop(),
-            "ALTER" => Err(unsupported("ALTER TABLE")),
+            "ALTER" => self.parse_alter(),
             "BEGIN" => {
                 self.advance();
                 self.eat_kw("TRANSACTION");
@@ -464,6 +465,35 @@ impl Parser {
         Ok(Statement::Delete { table_name, selection })
     }
 
+    /// `ALTER TABLE t ADD [COLUMN] column_def`; every other ALTER form is
+    /// unsupported (0A000), as are PRIMARY KEY / REFERENCES / AUTO_INCREMENT
+    /// on the added column.
+    fn parse_alter(&mut self) -> DbResult<Statement> {
+        self.expect_kw("ALTER")?;
+        if !self.eat_kw("TABLE") {
+            return Err(unsupported("ALTER other than ALTER TABLE"));
+        }
+        let table_name = self.parse_ident_ref()?;
+        if !self.eat_kw("ADD") {
+            return Err(unsupported("ALTER TABLE forms other than ADD COLUMN"));
+        }
+        if ["CONSTRAINT", "PRIMARY", "FOREIGN", "UNIQUE", "CHECK"].iter().any(|k| self.is_kw(k)) {
+            return Err(unsupported("ALTER TABLE ... ADD CONSTRAINT"));
+        }
+        self.eat_kw("COLUMN");
+        let (column, constraints, fks) = self.parse_column_def()?;
+        if column.primary_key {
+            return Err(unsupported("PRIMARY KEY in ALTER TABLE ... ADD COLUMN"));
+        }
+        if !fks.is_empty() {
+            return Err(unsupported("REFERENCES in ALTER TABLE ... ADD COLUMN"));
+        }
+        if column.auto_increment {
+            return Err(unsupported("AUTO_INCREMENT in ALTER TABLE ... ADD COLUMN"));
+        }
+        Ok(Statement::AlterTableAddColumn { table_name, column, constraints })
+    }
+
     fn parse_drop(&mut self) -> DbResult<Statement> {
         self.expect_kw("DROP")?;
         if self.eat_kw("TABLE") {
@@ -482,8 +512,19 @@ impl Parser {
         } else if self.eat_kw("INDEX") {
             let name = self.parse_ident()?;
             Ok(Statement::DropIndex { name })
-        } else if self.is_kw("VIEW") {
-            Err(unsupported("DROP VIEW"))
+        } else if self.eat_kw("VIEW") {
+            let mut if_exists = false;
+            if self.is_kw("IF") && self.is_kw_at(1, "EXISTS") {
+                self.advance();
+                self.advance();
+                if_exists = true;
+            }
+            let name = self.parse_ident()?;
+            if self.is_kw("CASCADE") {
+                return Err(unsupported("DROP VIEW ... CASCADE"));
+            }
+            self.eat_kw("RESTRICT");
+            Ok(Statement::DropView { name, if_exists })
         } else {
             Err(self.error_here("TABLE or INDEX"))
         }
@@ -528,8 +569,24 @@ impl Parser {
         if self.is_kw("UNIQUE") {
             return Err(unsupported("CREATE UNIQUE INDEX"));
         }
-        if self.is_kw("VIEW") || (self.is_kw("OR") && self.is_kw_at(1, "REPLACE")) {
-            return Err(unsupported("CREATE VIEW"));
+        if self.is_kw("OR") && self.is_kw_at(1, "REPLACE") {
+            return Err(unsupported("CREATE OR REPLACE VIEW"));
+        }
+        if self.eat_kw("VIEW") {
+            let name = self.parse_ident()?;
+            let columns = if self.eat_symbol("(") {
+                let mut cols = vec![self.parse_ident()?];
+                while self.eat_symbol(",") {
+                    cols.push(self.parse_ident()?);
+                }
+                self.expect_symbol(")")?;
+                Some(cols)
+            } else {
+                None
+            };
+            self.expect_kw("AS")?;
+            let query = self.parse_query()?;
+            return Ok(Statement::CreateView { name, columns, query: Box::new(query) });
         }
         self.expect_kw("TABLE")?;
         let mut if_not_exists = false;
@@ -714,7 +771,9 @@ impl Parser {
                 constraints.push(TableConstraint::Check { name: cname, expr, column: Some(name.clone()) });
             } else if self.is_kw("REFERENCES") {
                 fks.push(self.parse_references(vec![Ident::quoted(name.clone())])?);
-            } else if self.is_symbol(",") || self.is_symbol(")") {
+            } else if self.is_symbol(",") || self.is_symbol(")") || self.is_symbol(";") || self.at_eof() {
+                // `;` / end of input end the column of ALTER TABLE ... ADD
+                // COLUMN; inside CREATE TABLE the caller then expects `)`.
                 break;
             } else {
                 return Err(self.error_here("column constraint, ',' or ')'"));
