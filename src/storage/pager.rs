@@ -261,6 +261,11 @@ impl Pager {
                 table.insert(*tx_id, *status);
                 clog.record(*tx_id, *status)?;
             }
+            // Defence in depth: never reuse an id the clog/WAL has seen, even if
+            // page 0 lags (e.g. an abort whose counter write did not land).
+            if let Some(max_seen) = table.keys().max() {
+                next_transaction_id = next_transaction_id.max(max_seen.saturating_add(1));
+            }
             table
         } else {
             // No durable meta means a fresh database (ids restart at 1). A clog
@@ -833,7 +838,17 @@ impl Pager {
                 self.write_page(page_num, &buf)?;
             }
         }
-        Ok(())
+        // The aborted transaction's pages (and clog entry) are durable, so its
+        // id must be too: persist the counters so a reopen never reissues it.
+        let (next_transaction_id, next_commit_ts, frozen_xid) = {
+            let counters = self.counters();
+            (
+                counters.next_transaction_id,
+                counters.next_commit_ts,
+                counters.frozen_xid,
+            )
+        };
+        self.persist_meta(next_transaction_id, next_commit_ts, frozen_xid)
     }
 }
 
