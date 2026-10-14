@@ -2,10 +2,11 @@
 
 **Tarih:** 14 Ekim 2026. **Sürüm:** `0.6.0`. **Dal:** `release/sql-0.6.0`.
 
-**Git HEAD:**
-- Kaynak kod (`src/`, `tests/`) en son `7c61351df17b58658318ccd5a4fb861dfc9eae3d` commit'inde değişti (final review düzeltme dalgası; ilk audit koşusu `fd79858` kodu üzerindeydi).
-- Sonraki commit'ler yalnız dokümantasyon ve audit artifact'ı ekler.
-- Audit, bu belgeyi ekleyen commit üzerinde çalıştırıldı. Kesin HEAD, `audit/audit-summary-0.6.0.json` içindeki `head` alanındadır.
+**Git HEAD / kanıtın kökeni:**
+- Davranış implementasyonu `7c61351df17b58658318ccd5a4fb861dfc9eae3d` commit'inde tamamlandı (final review düzeltme dalgası; ilk audit koşusu `fd79858` kodu üzerindeydi).
+- Son kaynak değişikliği `9ecb8f176dad6080368602d89a7fb41170e333a8`: yalnız private bind metodu adı, eşdeğer transaction let-chain ve release'te değiştirilmiş altı dosyanın rustfmt temizliği. Yeni özellik veya oracle değişikliği yok.
+- Tarihsel audit artifact'ları korunur: `audit/audit-summary-0.6.0.json` içindeki `head`, o artifact'ın çalıştırıldığı commit'tir; güncel release HEAD'i olduğu iddia edilmez.
+- Kalite temizliğinden sonra `9ecb8f1` üzerinde build, debug/release testleri, 69 bağımsız vaka, iki gerçek 0.5.1 fixture kopyası ve 92-vaka audit yeniden çalıştırıldı. Kapsam ve sayılar `audit/release-verification-0.6.0.json` içindedir. Bu kanıtı ekleyen commit yalnız belge/artifact değiştirir; yayımlamadan önce entegre tam HEAD üzerinde gate'ler ayrıca yeniden çalıştırılır.
 
 **Taban:** 0.5.1 denetimi (`specs/sql-conformance.md`, HEAD `675fdcd`).
 

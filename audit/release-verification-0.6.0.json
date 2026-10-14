@@ -1,0 +1,120 @@
+{
+  "evidence_head": "9ecb8f176dad6080368602d89a7fb41170e333a8",
+  "version": "0.6.0",
+  "build_and_test_runs": [
+    {
+      "label": "build",
+      "command": [
+        "cargo",
+        "build"
+      ],
+      "exit_code": 0,
+      "blocks": 0,
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "label": "debug-tests",
+      "command": [
+        "cargo",
+        "test",
+        "--all-targets"
+      ],
+      "exit_code": 0,
+      "blocks": 51,
+      "passed": 576,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "label": "release-build",
+      "command": [
+        "cargo",
+        "build",
+        "--release"
+      ],
+      "exit_code": 0,
+      "blocks": 0,
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "label": "release-tests",
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--all-targets"
+      ],
+      "exit_code": 0,
+      "blocks": 51,
+      "passed": 576,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "independent_sql_cases": 62,
+  "independent_database_cases": 6,
+  "independent_decimal_trait_law_cases": 1,
+  "independent_total_cases": 69,
+  "legacy_0_5_1_fixtures_tested": 2,
+  "legacy_originals_unchanged": true,
+  "audit": {
+    "case_count": 92,
+    "statements": 309,
+    "statuses": {
+      "implemented": 83,
+      "unsupported": 8,
+      "unverified": 1
+    },
+    "unsupported": [
+      "timestamp_literal",
+      "savepoint",
+      "serializable",
+      "readonly",
+      "cte",
+      "window",
+      "json_value",
+      "cursor"
+    ],
+    "unverified": [
+      "comment"
+    ],
+    "historical_harness_version": "0.5.1",
+    "linked_package_version": "0.6.0"
+  },
+  "clippy": {
+    "baseline_count": 381,
+    "current_count": 194,
+    "new_signatures": [],
+    "global_strict_gate": "fails on existing diagnostics"
+  },
+  "rustfmt": {
+    "baseline_unformatted_paths": 50,
+    "current_unformatted_paths": 47,
+    "new_unformatted_paths": [],
+    "global_gate": "fails on existing formatting"
+  },
+  "new_rust_files_formatted": 22,
+  "scoped_cleanup_files_formatted": 6,
+  "security": {
+    "hit_counts": {
+      "hardcoded_secret": 0,
+      "shell_injection": 0,
+      "unsafe_deserialization": 0,
+      "rust_unsafe": 0,
+      "host_eval": 723
+    },
+    "host_eval_disposition": "reviewed typed Rust SQL evaluator and test helpers, not host-code evaluation",
+    "blocking_findings": []
+  },
+  "baseline_and_oracles_unchanged": true,
+  "notes": [
+    "Evidence is pinned to the cleanup source commit; the commit adding this file changes only documentation/evidence. Integrated master is reverified before pushing/tagging.",
+    "Strict global Clippy and cargo fmt remain baseline-failing; no new diagnostic signatures or unformatted paths.",
+    "This is tested scoped SQL functionality, not full ANSI/SQL:2023 conformance or an overall percentage.",
+    "Historical audit/results-0.5.1.json and audit/results-0.6.0.json are preserved. Fresh exact-head runs are retained by the release supervisor."
+  ]
+}
