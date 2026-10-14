@@ -1,5 +1,5 @@
 use super::Constraint;
-use super::keys::{Pending, Removal, check_foreign_keys, check_removed_keys, visible_rows};
+use super::keys::{Pending, Removal, check_foreign_keys, check_removed_keys, check_restrict, visible_rows};
 use crate::catalog::{Catalog, TableInfo};
 use crate::error::DbResult;
 use crate::sql::ast::ForeignKey;
@@ -28,8 +28,8 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
         check_foreign_keys(catalog, &view, row, snapshot, &pending)
     }
 
-    /// Deleting the visible row(s) of `table` equal to `row` must not orphan
-    /// a NO ACTION / RESTRICT reference. Pure check: ON DELETE CASCADE
+    /// Deleting the visible row(s) of `table` equal to `row` must not hit an
+    /// ON DELETE RESTRICT reference or orphan a NO ACTION one. Pure check: ON DELETE CASCADE
     /// references are allowed here and carried out by the DELETE executor.
     fn validate_delete(
         &self,
@@ -38,6 +38,7 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
         row: &RowData,
         snapshot: &Snapshot,
     ) -> DbResult<()> {
+        check_restrict(catalog, table, &[(row.clone(), None)], snapshot)?;
         let mut pending = Pending::new();
         for r in visible_rows(catalog, table, snapshot, &Pending::new())? {
             if r.data == *row {

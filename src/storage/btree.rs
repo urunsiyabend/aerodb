@@ -13,6 +13,22 @@ use crate::transaction::{
 use log::debug;
 use std::io;
 
+/// Largest serialized row image (`RowData::serialize`) a table can store: one
+/// leaf page must hold the cell (key, length, MVCC header with the worst-case
+/// deleter stamp and version pointer, row data) on its own, since rows never
+/// span pages. With 4 KiB pages this is about 4 KB per row.
+pub fn max_row_data_size() -> usize {
+    let probe = Row {
+        key: 0,
+        data: RowData(Vec::new()),
+        created_tx: TransactionId::MAX,
+        deleted_tx: Some(TransactionId::MAX),
+        version_ptr: Some(crate::storage::row::RowVersionRef { page_num: u32::MAX, slot_index: u16::MAX }),
+    };
+    let mvcc_overhead = probe.serialize_mvcc_payload().len() - RowData(Vec::new()).serialize().len();
+    PAGE_SIZE - HEADER_SIZE - 8 - mvcc_overhead
+}
+
 /// store multiple separator keys and child pointers.
 ///
 /// Page format is:

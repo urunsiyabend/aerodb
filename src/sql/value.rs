@@ -158,8 +158,8 @@ fn is_temporal(v: &Value) -> bool {
 fn temporal_cmp(a: &Value, b: &Value) -> Option<Ordering> {
     match (a, b) {
         (Value::Date(x), Value::Date(y)) => Some(x.cmp(y)),
-        (Value::DateTime(x), Value::DateTime(y)) => Some(x.cmp(y)),
-        (Value::Timestamp(x), Value::Timestamp(y)) => Some(x.cmp(y)),
+        // DATETIME and TIMESTAMP share one representation (seconds).
+        (Value::DateTime(x) | Value::Timestamp(x), Value::DateTime(y) | Value::Timestamp(y)) => Some(x.cmp(y)),
         (Value::Time(x), Value::Time(y)) => Some(x.cmp(y)),
         (Value::Year(x), Value::Year(y)) => Some(x.cmp(y)),
         _ => None,

@@ -67,6 +67,12 @@ pub enum DbError {
     /// is e.g. "v is not a table".
     #[error("{0}")]
     WrongObjectType(String),
+    /// A constraint name given twice for one table.
+    #[error("constraint \"{name}\" for relation \"{table}\" already exists")]
+    DuplicateConstraint { name: String, table: String },
+    /// A row image whose serialized form cannot fit in one B-tree leaf page.
+    #[error("row is too large for a page: {0}")]
+    RowTooLarge(String),
 }
 
 impl DbError {
@@ -103,6 +109,8 @@ impl DbError {
             DbError::DuplicateObject(_) => "42P07",
             DbError::DuplicateColumn(_) => "42701",
             DbError::WrongObjectType(_) => "42809",
+            DbError::DuplicateConstraint { .. } => "42710",
+            DbError::RowTooLarge(_) => "54000",
         }
     }
 }

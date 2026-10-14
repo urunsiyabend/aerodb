@@ -26,6 +26,7 @@ fn not_null_constraint_fails_on_null() {
         auto_increment: vec![false],
         fks: vec![],
         primary_key: None,
+        primary_key_name: None,
         uniques: vec![],
         checks: vec![],
     };
@@ -61,6 +62,7 @@ fn foreign_key_constraint_detects_missing_parent() {
         auto_increment: vec![false],
         fks: vec![],
         primary_key: None,
+        primary_key_name: None,
         uniques: vec![],
         checks: vec![],
     };
@@ -86,8 +88,10 @@ fn foreign_key_constraint_detects_missing_parent() {
             parent_columns: vec!["id".into()],
             on_delete: None,
             on_update: None,
+            name: None,
         }],
         primary_key: None,
+        primary_key_name: None,
         uniques: vec![],
         checks: vec![],
     };

@@ -320,10 +320,12 @@ pub fn check_foreign_keys(
         let parent_idx = positions(&parent, &fk.parent_columns)?;
         if !key_provided(catalog, &parent, &parent_idx, &key, snapshot, pending)? {
             return Err(DbError::ForeignKeyViolation(format!(
-                "key ({}) = {} of table \"{}\" is not present in table \"{}\"",
+                "insert or update on table \"{}\" violates foreign key constraint \"{}\": \
+                 key ({}) = {} is not present in table \"{}\"",
+                table.name,
+                fk_name(table, fk),
                 names(&fk.columns),
                 render_key(&key),
-                table.name,
                 parent.name
             )));
         }
@@ -343,8 +345,8 @@ pub enum Removal {
     Delete,
     /// UPDATE: the old row images are replaced. ON UPDATE CASCADE children
     /// were rewritten by [`plan_update`] (their old versions are removed in
-    /// the overlay), so every remaining reference is a violation
-    /// (NO ACTION / RESTRICT).
+    /// the overlay), so every remaining reference is a violation (NO ACTION;
+    /// RESTRICT references were already checked by [`check_restrict`]).
     Update,
     /// Commit recheck: no action can run any more; every remaining reference
     /// is a violation.
@@ -432,9 +434,11 @@ pub fn check_removed_keys(
         }
         let what = if removal == Removal::Update { "update" } else { "delete" };
         return Err(DbError::ForeignKeyViolation(format!(
-            "{} on table \"{}\" leaves rows of \"{}\" referencing ({}) without a parent",
+            "{} on table \"{}\" violates foreign key constraint \"{}\" on table \"{}\": \
+             rows still reference ({}) without a parent",
             what,
             table.name,
+            fk_name(&child, &fk),
             child.name,
             names(&fk.parent_columns)
         )));
@@ -442,14 +446,74 @@ pub fn check_removed_keys(
     Ok(())
 }
 
+/// Immediate referential check for `ON DELETE RESTRICT` / `ON UPDATE
+/// RESTRICT` foreign keys referencing `table`. `changes` are the parent rows
+/// leaving their key: (old image, new image), the new image `None` for a
+/// DELETE. A changed (UPDATE: old key not equal to the new key) or deleted
+/// non-NULL referenced key that any child row visible at statement start
+/// references is a violation — regardless of what the rest of the statement
+/// does (another row re-providing the key, or the referencing row being
+/// deleted or updated by the same statement). NO ACTION, by contrast, is
+/// checked against the statement's end state ([`check_removed_keys`]).
+pub fn check_restrict(
+    catalog: &Catalog,
+    table: &TableInfo,
+    changes: &[(RowData, Option<RowData>)],
+    snapshot: &Snapshot,
+) -> DbResult<()> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let mut children: Vec<TableInfo> = catalog.all_tables();
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    for child in &children {
+        for fk in child.fks.iter().filter(|fk| fk.parent_table.value == table.name) {
+            let parent_idx = positions(table, &fk.parent_columns)?;
+            let child_idx = positions(child, &fk.columns)?;
+            let mut child_rows: Option<Vec<Row>> = None;
+            for (old, new) in changes {
+                let action = if new.is_some() { &fk.on_update } else { &fk.on_delete };
+                if *action != Some(Action::Restrict) {
+                    continue;
+                }
+                let key = key_of(old, &parent_idx);
+                if has_null(&key) {
+                    continue;
+                }
+                if let Some(new) = new {
+                    if key_values_equal(&key, &key_of(new, &parent_idx)) {
+                        continue;
+                    }
+                }
+                let rows = match &mut child_rows {
+                    Some(r) => r,
+                    slot => slot.insert(visible_rows(catalog, child, snapshot, &Pending::new())?),
+                };
+                if rows.iter().any(|r| key_values_equal(&key_of(&r.data, &child_idx), &key)) {
+                    let (what, event) = if new.is_some() { ("update", "UPDATE") } else { ("delete", "DELETE") };
+                    return Err(DbError::ForeignKeyViolation(format!(
+                        "{} on table \"{}\" violates foreign key constraint \"{}\" on table \"{}\" \
+                         (ON {} RESTRICT): key ({}) = {} is referenced",
+                        what,
+                        table.name,
+                        fk_name(child, fk),
+                        child.name,
+                        event,
+                        names(&fk.parent_columns),
+                        render_key(&key)
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Plan a DELETE of `rows` from `table`: follow ON DELETE CASCADE references
-/// recursively, then check every other reference to the deleted keys
-/// (NO ACTION / RESTRICT) against the final set of deleted rows. Returns the
-/// rows to delete per table, `table` first.
-///
-/// RESTRICT is checked exactly like NO ACTION (at the end of the statement).
-/// SQL distinguishes them only for deferred constraints, which do not exist
-/// here, so the difference is not observable.
+/// recursively, then check ON DELETE RESTRICT references immediately
+/// ([`check_restrict`]: any reference visible at statement start) and every
+/// other reference to the deleted keys (NO ACTION) against the final set of
+/// deleted rows. Returns the rows to delete per table, `table` first.
 pub fn plan_delete(
     catalog: &Catalog,
     table: &TableInfo,
@@ -479,6 +543,10 @@ pub fn plan_delete(
             }
             batches.push((child, fresh));
         }
+    }
+    for (t, batch) in &batches {
+        let changes: Vec<(RowData, Option<RowData>)> = batch.iter().map(|r| (r.data.clone(), None)).collect();
+        check_restrict(catalog, t, &changes, snapshot)?;
     }
     for (t, batch) in &batches {
         let data: Vec<RowData> = batch.iter().map(|r| r.data.clone()).collect();
@@ -666,10 +734,12 @@ fn resolve_check_expr(expr: &Expr, table_name: &str, columns: &[(String, ColumnT
         },
         other => other,
     });
-    match failure {
-        Some(err) => Err(err),
-        None => Ok(canonical),
+    if let Some(err) = failure {
+        return Err(err);
     }
+    // The expression must be BOOLEAN (TypeMismatch 42804 otherwise).
+    crate::execution::bind::bind_check(&scope, &canonical)?;
+    Ok(canonical)
 }
 
 /// `base`, or `base1`, `base2`, ... — the first name not in `used`.
@@ -684,6 +754,8 @@ pub fn fresh_name(base: String, used: &HashSet<String>) -> String {
 #[derive(Debug, Default)]
 pub struct ResolvedConstraints {
     pub primary_key: Option<Vec<String>>,
+    /// Given or generated (`{table}_pkey`) name of the PRIMARY KEY.
+    pub primary_key_name: Option<String>,
     pub fks: Vec<ForeignKey>,
     pub uniques: Vec<UniqueConstraint>,
     pub checks: Vec<CheckConstraint>,
@@ -693,10 +765,12 @@ pub struct ResolvedConstraints {
 /// resolve with the identifier rule and are stored as the declared (quoted)
 /// names. Each foreign key references exactly the parent's PRIMARY KEY or one
 /// of its UNIQUE column sets (no column list = the PRIMARY KEY) with the same
-/// arity and comparable types. UNIQUE / CHECK constraints get their given
-/// name, else `{table}_{cols}_key`, `{table}_{col}_check` (column CHECK) or
-/// `{table}_check{n}` (n-th unnamed table CHECK); a generated name that is
-/// taken gets a numeric suffix, a duplicate given name is an error.
+/// arity and comparable types. CHECK expressions must be BOOLEAN (42804).
+/// Every constraint gets its given name, else `{table}_pkey` (PRIMARY KEY),
+/// `{table}_{cols}_key` (UNIQUE), `{table}_{col}_check` (column CHECK),
+/// `{table}_check{n}` (n-th unnamed table CHECK) or `{table}_{cols}_fkey`
+/// (FOREIGN KEY); a generated name that is taken gets a numeric suffix, a
+/// given name used twice is `DuplicateConstraint` (42710).
 pub fn resolve_table_constraints(
     catalog: &Catalog,
     table_name: &str,
@@ -710,24 +784,39 @@ pub fn resolve_table_constraints(
         None => None,
     };
 
+    // Given constraint names (any kind) must be distinct within the table.
     let mut used: HashSet<String> = HashSet::new();
-    for c in &constraints {
-        let (TableConstraint::Unique { name: Some(n), .. } | TableConstraint::Check { name: Some(n), .. }) = c
-        else {
-            continue;
-        };
+    let given = constraints
+        .iter()
+        .filter_map(|c| match c {
+            TableConstraint::Unique { name, .. } | TableConstraint::Check { name, .. } => name.as_ref(),
+            TableConstraint::PrimaryKeyName(n) => Some(n),
+        })
+        .chain(fks.iter().filter_map(|fk| fk.name.as_ref()));
+    for n in given {
         if !used.insert(n.clone()) {
-            return Err(DbError::Syntax(format!(
-                "constraint \"{}\" for relation \"{}\" already exists",
-                n, table_name
-            )));
+            return Err(DbError::DuplicateConstraint { name: n.clone(), table: table_name.to_string() });
         }
     }
+    let given_pk_name = constraints.iter().find_map(|c| match c {
+        TableConstraint::PrimaryKeyName(n) => Some(n.clone()),
+        _ => None,
+    });
+    let primary_key_name = match (&pk, given_pk_name) {
+        (Some(_), Some(n)) => Some(n),
+        (Some(_), None) => {
+            let n = fresh_name(default_pk_name(table_name), &used);
+            used.insert(n.clone());
+            Some(n)
+        }
+        (None, _) => None,
+    };
     let mut uniques: Vec<UniqueConstraint> = Vec::new();
     let mut checks: Vec<CheckConstraint> = Vec::new();
     let mut table_checks = 0usize;
     for c in constraints {
         match c {
+            TableConstraint::PrimaryKeyName(_) => {}
             TableConstraint::Unique { name, columns: cols } => {
                 let cols = resolve_column_list(columns, &cols, table_name, "unique")?;
                 let name = name.unwrap_or_else(|| {
@@ -823,15 +912,44 @@ pub fn resolve_table_constraints(
                 )));
             }
         }
+        let child_cols: Vec<String> = child_idx.iter().map(|&i| columns[i].0.clone()).collect();
+        let name = match fk.name {
+            Some(n) => n,
+            None => {
+                let n = fresh_name(default_fk_name(table_name, &child_cols), &used);
+                used.insert(n.clone());
+                n
+            }
+        };
         resolved.push(ForeignKey {
-            columns: child_idx.iter().map(|&i| Ident::quoted(columns[i].0.clone())).collect(),
+            columns: child_cols.into_iter().map(Ident::quoted).collect(),
             parent_table: Ident::quoted(parent_name),
             parent_columns: referenced.into_iter().map(Ident::quoted).collect(),
             on_delete: fk.on_delete,
             on_update: fk.on_update,
+            name: Some(name),
         });
     }
-    Ok(ResolvedConstraints { primary_key: pk, fks: resolved, uniques, checks })
+    Ok(ResolvedConstraints { primary_key: pk, primary_key_name, fks: resolved, uniques, checks })
+}
+
+/// Default name of a table's PRIMARY KEY constraint.
+pub fn default_pk_name(table: &str) -> String {
+    format!("{}_pkey", table)
+}
+
+/// Default name of a FOREIGN KEY constraint over the child columns `cols`.
+pub fn default_fk_name(table: &str, cols: &[String]) -> String {
+    format!("{}_{}_fkey", table, cols.join("_"))
+}
+
+/// The name of foreign key `fk` declared on table `child` (stored, else the
+/// deterministic default).
+pub fn fk_name(child: &TableInfo, fk: &ForeignKey) -> String {
+    fk.name.clone().unwrap_or_else(|| {
+        let cols: Vec<String> = fk.columns.iter().map(|c| c.value.clone()).collect();
+        default_fk_name(&child.name, &cols)
+    })
 }
 
 #[cfg(test)]

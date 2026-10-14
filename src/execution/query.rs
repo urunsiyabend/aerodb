@@ -30,12 +30,18 @@ pub struct QueryResult {
     pub rows: Vec<Vec<Value>>,
 }
 
-/// Execute `query`, optionally correlated with an outer environment.
+/// Execute `query`, optionally correlated with an outer environment. The
+/// whole query (subqueries, views and FROM-subqueries included) is first
+/// bound statically ([`crate::execution::bind`]), so type-category errors
+/// are reported before any row is read.
 pub fn execute_query(catalog: &mut Catalog, query: &Query, outer: Option<&Env>) -> DbResult<QueryResult> {
+    crate::execution::bind::bind_query(catalog, query, outer)?;
     run_query(catalog, query, outer)
 }
 
-/// Shared-borrow form of [`execute_query`] used by the evaluator for subqueries.
+/// Shared-borrow form of [`execute_query`] used by the evaluator for
+/// subqueries and by view / FROM-subquery loading; the enclosing statement
+/// has already been bound.
 pub fn run_query(catalog: &Catalog, query: &Query, outer: Option<&Env>) -> DbResult<QueryResult> {
     let mut result = match &query.body {
         SetExpr::Select(sel) => run_select(catalog, sel, &query.order_by, outer)?.0,

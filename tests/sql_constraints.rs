@@ -600,3 +600,381 @@ fn database_concurrent_same_pk_inserts_second_commit_is_duplicate_key() {
     assert_unique(&db.commit(t2).unwrap_err(), "u_n_key");
     assert_eq!(db_rows(&db, "SELECT id FROM u"), table(&[&["1"]]));
 }
+
+// ---- RESTRICT is immediate, NO ACTION is end of statement (0.6.0 task 7a, G3) ----------
+
+fn key_swap_tables(e: &mut Engine, action: &str) {
+    exec(e, "CREATE TABLE p (id INTEGER PRIMARY KEY)");
+    exec(
+        e,
+        &format!("CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) {action})"),
+    );
+    exec(e, "INSERT INTO p VALUES (1), (2)");
+    exec(e, "INSERT INTO c VALUES (1, 1)");
+}
+
+#[test]
+fn on_update_restrict_rejects_key_swap() {
+    // Supervisor repro restrict-key-swap-quota.json: the referenced key 1 is
+    // changed (to 2) even though another row of the statement re-provides 1.
+    let (_dir, mut e) = engine();
+    key_swap_tables(&mut e, "ON UPDATE RESTRICT");
+    let v = err(&mut e, "UPDATE p SET id = 3 - id");
+    assert!(matches!(v, DbError::ForeignKeyViolation(_)), "{v:?}");
+    assert_eq!(v.sqlstate(), "23503");
+    assert!(v.to_string().contains("RESTRICT"), "{v}");
+    assert_eq!(q_set(&mut e, "SELECT id FROM p"), table(&[&["1"], &["2"]]));
+    assert_eq!(q(&mut e, "SELECT pid FROM c"), table(&[&["1"]]));
+    // Rows whose key is unreferenced, or whose key does not change, may be updated.
+    exec(&mut e, "UPDATE p SET id = 7 WHERE id = 2");
+    exec(&mut e, "UPDATE p SET id = id WHERE id = 1");
+    assert_eq!(q_set(&mut e, "SELECT id FROM p"), table(&[&["1"], &["7"]]));
+}
+
+#[test]
+fn on_update_no_action_accepts_key_swap() {
+    for action in ["ON UPDATE NO ACTION", ""] {
+        let (_dir, mut e) = engine();
+        key_swap_tables(&mut e, action);
+        exec(&mut e, "UPDATE p SET id = 3 - id");
+        assert_eq!(q_set(&mut e, "SELECT id FROM p"), table(&[&["1"], &["2"]]));
+        assert_eq!(q(&mut e, "SELECT pid FROM c"), table(&[&["1"]]));
+        // NO ACTION still rejects a key that is gone at the end of the statement.
+        assert_eq!(state(&mut e, "UPDATE p SET id = id + 10"), "23503");
+    }
+}
+
+#[test]
+fn on_delete_restrict_ignores_children_deleted_by_the_same_statement() {
+    // Self-reference: deleting the whole table also deletes the referencing row.
+    // NO ACTION checks the end state (nothing references the deleted keys); RESTRICT
+    // rejects as soon as a deleted key is referenced by a row visible at
+    // statement start.
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER, FOREIGN KEY (boss) REFERENCES emp(id) ON DELETE RESTRICT)");
+    exec(&mut e, "INSERT INTO emp VALUES (1, NULL), (2, 1)");
+    let v = err(&mut e, "DELETE FROM emp");
+    assert_eq!(v.sqlstate(), "23503");
+    assert!(v.to_string().contains("RESTRICT"), "{v}");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM emp"), table(&[&["2"]]));
+    // Leaves first is fine.
+    exec(&mut e, "DELETE FROM emp WHERE id = 2");
+    exec(&mut e, "DELETE FROM emp");
+
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER, FOREIGN KEY (boss) REFERENCES emp(id) ON DELETE NO ACTION)");
+    exec(&mut e, "INSERT INTO emp VALUES (1, NULL), (2, 1)");
+    exec(&mut e, "DELETE FROM emp");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM emp"), table(&[&["0"]]));
+}
+
+#[test]
+fn on_delete_restrict_through_a_cascade() {
+    // gp -> p (ON DELETE CASCADE) -> c (ON DELETE RESTRICT): the cascaded
+    // delete of p hits the RESTRICT reference.
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE gp (id INTEGER PRIMARY KEY)");
+    exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY, g INTEGER, FOREIGN KEY (g) REFERENCES gp(id) ON DELETE CASCADE)");
+    exec(&mut e, "CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) ON DELETE RESTRICT)");
+    exec(&mut e, "INSERT INTO gp VALUES (1), (2)");
+    exec(&mut e, "INSERT INTO p VALUES (10, 1), (20, 2)");
+    exec(&mut e, "INSERT INTO c VALUES (100, 10)");
+    assert_eq!(state(&mut e, "DELETE FROM gp WHERE id = 1"), "23503");
+    exec(&mut e, "DELETE FROM gp WHERE id = 2");
+    assert_eq!(q(&mut e, "SELECT id FROM gp"), table(&[&["1"]]));
+    assert_eq!(q(&mut e, "SELECT id FROM p"), table(&[&["10"]]));
+}
+
+#[test]
+fn on_update_restrict_through_a_cascade() {
+    // gp -> p (ON UPDATE CASCADE) -> c (ON UPDATE RESTRICT on p.id).
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE gp (id INTEGER PRIMARY KEY)");
+    exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY, FOREIGN KEY (id) REFERENCES gp(id) ON UPDATE CASCADE)");
+    exec(&mut e, "CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) ON UPDATE RESTRICT)");
+    exec(&mut e, "INSERT INTO gp VALUES (1)");
+    exec(&mut e, "INSERT INTO p VALUES (1)");
+    exec(&mut e, "INSERT INTO c VALUES (1, 1)");
+    assert_eq!(state(&mut e, "UPDATE gp SET id = 5"), "23503");
+    assert_eq!(q(&mut e, "SELECT id FROM gp"), table(&[&["1"]]));
+    assert_eq!(q(&mut e, "SELECT id FROM p"), table(&[&["1"]]));
+}
+
+// ---- carried from the Task 5 review ---------------------------------------------------
+
+#[test]
+fn create_table_inside_failed_transaction_is_refused() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE t (id INTEGER PRIMARY KEY)");
+    exec(&mut e, "BEGIN");
+    exec(&mut e, "INSERT INTO t VALUES (1)");
+    assert_eq!(state(&mut e, "INSERT INTO t VALUES (1)"), "23505");
+    assert_failed_tx(&err(&mut e, "CREATE TABLE z (id INTEGER PRIMARY KEY)"));
+    assert_failed_tx(&err(&mut e, "CREATE INDEX t_id ON t (id)"));
+    exec(&mut e, "ROLLBACK");
+    assert_eq!(state(&mut e, "SELECT id FROM z"), "42P01");
+    assert!(q(&mut e, "SELECT id FROM t").is_empty());
+}
+
+#[test]
+fn on_update_cascade_into_child_unique_violation_changes_nothing() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE p (a INTEGER, b INTEGER, PRIMARY KEY (a, b))");
+    exec(
+        &mut e,
+        "CREATE TABLE c (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, UNIQUE (a), \
+         FOREIGN KEY (a, b) REFERENCES p(a, b) ON UPDATE CASCADE)",
+    );
+    exec(&mut e, "INSERT INTO p VALUES (1, 1), (2, 2)");
+    exec(&mut e, "INSERT INTO c VALUES (1, 1, 1), (2, 2, 2)");
+    // p (1,1) -> (2,1) is a valid parent key, but the cascaded child row 1
+    // becomes a = 2, which collides with child row 2 on UNIQUE (a).
+    let v = err(&mut e, "UPDATE p SET a = 2 WHERE b = 1");
+    assert_unique(&v, "c_a_key");
+    assert_eq!(q_set(&mut e, "SELECT a, b FROM p"), table(&[&["1", "1"], &["2", "2"]]));
+    assert_eq!(q_set(&mut e, "SELECT id, a, b FROM c"), table(&[&["1", "1", "1"], &["2", "2", "2"]]));
+}
+
+#[test]
+fn check_persistence_round_trip_with_quotes_decimal_cast_and_like() {
+    let (dir, mut e) = engine();
+    exec(
+        &mut e,
+        "CREATE TABLE k (id INTEGER PRIMARY KEY, \
+         s TEXT CONSTRAINT no_quote CHECK (s <> 'it''s'), \
+         x DECIMAL(5,2) CONSTRAINT x_min CHECK (x > 1.50), \
+         n INTEGER CONSTRAINT not_13 CHECK (CAST(n AS TEXT) <> '13'), \
+         w TEXT CONSTRAINT a_prefix CHECK (w LIKE 'a%' ESCAPE '!'))",
+    );
+    let check_all = |e: &mut Engine| {
+        assert_check(&err(e, "INSERT INTO k VALUES (1, 'it''s', 2, 1, 'ab')"), "no_quote");
+        assert_check(&err(e, "INSERT INTO k VALUES (1, 'x', 1.50, 1, 'ab')"), "x_min");
+        assert_check(&err(e, "INSERT INTO k VALUES (1, 'x', 1.51, 13, 'ab')"), "not_13");
+        assert_check(&err(e, "INSERT INTO k VALUES (1, 'x', 1.51, 12, 'ba')"), "a_prefix");
+    };
+    check_all(&mut e);
+    let mut e = reopen(&dir, e);
+    check_all(&mut e);
+    exec(&mut e, "INSERT INTO k VALUES (1, 'its', 1.51, 12, 'abc')");
+    let mut e = reopen(&dir, e);
+    check_all(&mut e);
+    assert_eq!(q(&mut e, "SELECT s, x, n, w FROM k"), table(&[&["its", "1.51", "12", "abc"]]));
+}
+
+#[test]
+fn primary_and_foreign_key_constraint_names_are_stored() {
+    let (dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE p (id INTEGER, CONSTRAINT p_main PRIMARY KEY (id))");
+    exec(&mut e, "CREATE TABLE p2 (id INTEGER PRIMARY KEY)");
+    exec(
+        &mut e,
+        "CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER, q INTEGER CONSTRAINT inline_ref REFERENCES p2(id), \
+         CONSTRAINT c_parent FOREIGN KEY (pid) REFERENCES p(id))",
+    );
+    exec(&mut e, "CREATE TABLE d (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id))");
+    exec(&mut e, "INSERT INTO p VALUES (1)");
+    exec(&mut e, "INSERT INTO p2 VALUES (1)");
+    exec(&mut e, "INSERT INTO c VALUES (1, 1, 1)");
+    exec(&mut e, "INSERT INTO d VALUES (1, 1)");
+    let check_names = |e: &mut Engine| {
+        let p = e.catalog.get_table("p").unwrap().clone();
+        assert_eq!(p.primary_key_name.as_deref(), Some("p_main"));
+        let p2 = e.catalog.get_table("p2").unwrap().clone();
+        assert_eq!(p2.primary_key_name.as_deref(), Some("p2_pkey"));
+        let c = e.catalog.get_table("c").unwrap().clone();
+        let mut names: Vec<String> = c.fks.iter().map(|f| f.name.clone().unwrap_or_default()).collect();
+        names.sort();
+        assert_eq!(names, vec!["c_parent".to_string(), "inline_ref".to_string()]);
+        let d = e.catalog.get_table("d").unwrap().clone();
+        assert_eq!(d.fks[0].name.as_deref(), Some("d_pid_fkey"));
+        // The names appear in FOREIGN KEY violations (insert and delete side).
+        let v = err(e, "INSERT INTO c VALUES (2, 9, NULL)");
+        assert!(v.to_string().contains("c_parent"), "{v}");
+        let v = err(e, "INSERT INTO c VALUES (2, NULL, 9)");
+        assert!(v.to_string().contains("inline_ref"), "{v}");
+        let v = err(e, "INSERT INTO d VALUES (2, 9)");
+        assert!(v.to_string().contains("d_pid_fkey"), "{v}");
+        let v = err(e, "DELETE FROM p2");
+        assert!(v.to_string().contains("inline_ref"), "{v}");
+    };
+    check_names(&mut e);
+    let mut e = reopen(&dir, e);
+    check_names(&mut e);
+}
+
+#[test]
+fn duplicate_constraint_name_is_42710() {
+    let (_dir, mut e) = engine();
+    for sql in [
+        "CREATE TABLE d (a INTEGER, CONSTRAINT x UNIQUE (a), CONSTRAINT x CHECK (a > 0))",
+        "CREATE TABLE d (a INTEGER, CONSTRAINT x PRIMARY KEY (a), CONSTRAINT x UNIQUE (a))",
+        "CREATE TABLE d (a INTEGER CONSTRAINT x CHECK (a > 0), b INTEGER CONSTRAINT x CHECK (b > 0))",
+    ] {
+        let v = err(&mut e, sql);
+        assert_eq!(v.sqlstate(), "42710", "`{sql}`: {v:?}");
+    }
+    exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY)");
+    let v = err(
+        &mut e,
+        "CREATE TABLE d (a INTEGER, CONSTRAINT x FOREIGN KEY (a) REFERENCES p(id), CONSTRAINT x CHECK (a > 0))",
+    );
+    assert_eq!(v.sqlstate(), "42710", "{v:?}");
+    assert_eq!(state(&mut e, "SELECT a FROM d"), "42P01");
+    exec(&mut e, "CREATE TABLE d (a INTEGER CONSTRAINT x CHECK (a > 0))");
+    assert_eq!(state(&mut e, "ALTER TABLE d ADD COLUMN b INTEGER CONSTRAINT x UNIQUE"), "42710");
+}
+
+// ---- oversized rows (G6) ----------------------------------------------------------------
+
+#[test]
+fn oversized_row_is_rejected_before_any_write() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE t (id INTEGER PRIMARY KEY, s VARCHAR(10000))");
+    let big = "x".repeat(5000);
+    let v = err(&mut e, &format!("INSERT INTO t VALUES (1, '{big}')"));
+    assert_eq!(v.sqlstate(), "54000", "{v:?}");
+    assert!(v.to_string().starts_with("row is too large for a page: "), "{v}");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["0"]]));
+    // Multi-row: the small row is not written either.
+    let v = err(&mut e, &format!("INSERT INTO t VALUES (2, 'small'), (3, '{big}')"));
+    assert_eq!(v.sqlstate(), "54000");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["0"]]));
+    // A large row that fits is fine; growing it past the limit is rejected.
+    let fits = "y".repeat(3000);
+    exec(&mut e, &format!("INSERT INTO t VALUES (4, '{fits}')"));
+    let v = err(&mut e, &format!("UPDATE t SET s = '{big}' WHERE id = 4"));
+    assert_eq!(v.sqlstate(), "54000");
+    assert_eq!(q(&mut e, "SELECT CHAR_LENGTH(s) FROM t"), table(&[&["3000"]]));
+    // Inside an explicit transaction the statement fails cleanly too.
+    exec(&mut e, "BEGIN");
+    assert_eq!(state(&mut e, &format!("INSERT INTO t VALUES (5, '{big}')")), "54000");
+    exec(&mut e, "ROLLBACK");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM t"), table(&[&["1"]]));
+}
+
+// ---- Database path release gates (supervisor storage runner, ported) --------------------
+
+fn stmt(sql: &str) -> aerodb::sql::ast::Statement {
+    aerodb::sql::parser::parse_sql(sql).unwrap()
+}
+
+fn db_count(db: &Database, table: &str) -> usize {
+    let tx = db.begin().unwrap();
+    let n = db.query_all(&tx, table).unwrap().len();
+    db.abort(tx).unwrap();
+    n
+}
+
+fn db_setup(db: &Database, statements: &[&str]) {
+    for s in statements {
+        db.autocommit(stmt(s)).unwrap();
+    }
+}
+
+#[test]
+fn database_failed_multirow_statement_never_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open_db(&dir);
+    db_setup(&db, &["CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)", "INSERT INTO t VALUES (1, 1)"]);
+    let tx = db.begin().unwrap();
+    assert!(db.execute(&tx, stmt("INSERT INTO t VALUES (2, 2), (1, 9)")).is_err());
+    assert_eq!(db.commit(tx).unwrap_err().sqlstate(), "25P02");
+    assert_eq!(db_count(&db, "t"), 1);
+}
+
+#[test]
+fn database_concurrent_unique_commit_sees_latest_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open_db(&dir);
+    db_setup(&db, &["CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER UNIQUE)"]);
+    let a = db.begin().unwrap();
+    let b = db.begin().unwrap();
+    db.execute(&a, stmt("INSERT INTO t VALUES (1, 7)")).unwrap();
+    db.execute(&b, stmt("INSERT INTO t VALUES (2, 7)")).unwrap();
+    db.commit(a).unwrap();
+    assert_eq!(db.commit(b).unwrap_err().sqlstate(), "23505");
+    assert_eq!(db_count(&db, "t"), 1);
+}
+
+#[test]
+fn database_stale_fk_references_are_rejected_at_commit() {
+    let cases: [(&str, [&str; 2], &str, &str, &str); 3] = [
+        (
+            "text_fk",
+            ["CREATE TABLE p (n TEXT PRIMARY KEY)", "CREATE TABLE c (id INTEGER PRIMARY KEY, n TEXT, FOREIGN KEY (n) REFERENCES p(n))"],
+            "INSERT INTO p VALUES ('x')",
+            "INSERT INTO c VALUES (1, 'x')",
+            "DELETE FROM p WHERE n = 'x'",
+        ),
+        (
+            "composite_fk",
+            [
+                "CREATE TABLE p (a INTEGER, b INTEGER, PRIMARY KEY (a, b))",
+                "CREATE TABLE c (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, FOREIGN KEY (a, b) REFERENCES p(a, b))",
+            ],
+            "INSERT INTO p VALUES (1, 2)",
+            "INSERT INTO c VALUES (1, 1, 2)",
+            "DELETE FROM p WHERE a = 1 AND b = 2",
+        ),
+        (
+            "nonfirst_fk",
+            [
+                "CREATE TABLE p (a INTEGER, n INTEGER PRIMARY KEY)",
+                "CREATE TABLE c (id INTEGER PRIMARY KEY, n INTEGER, FOREIGN KEY (n) REFERENCES p(n))",
+            ],
+            "INSERT INTO p VALUES (1, 20)",
+            "INSERT INTO c VALUES (1, 20)",
+            "DELETE FROM p WHERE n = 20",
+        ),
+    ];
+    for (case, defs, insert_parent, insert_child, delete_parent) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_db(&dir);
+        db_setup(&db, &defs);
+        db.autocommit(stmt(insert_parent)).unwrap();
+        let child = db.begin().unwrap();
+        db.execute(&child, stmt(insert_child)).unwrap();
+        let parent = db.begin().unwrap();
+        db.execute(&parent, stmt(delete_parent)).unwrap();
+        db.commit(parent).unwrap();
+        let v = db.commit(child).expect_err(case);
+        assert_eq!(v.sqlstate(), "23503", "{case}: {v:?}");
+        assert_eq!(db_count(&db, "c"), 0, "{case}");
+    }
+}
+
+#[test]
+fn database_identity_and_fk_actions_survive_reopen() {
+    use aerodb::storage::row::ColumnValue;
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let db = open_db(&dir);
+        db_setup(
+            &db,
+            &[
+                "CREATE TABLE p (n TEXT PRIMARY KEY)",
+                "CREATE TABLE c (id INTEGER PRIMARY KEY, n TEXT, FOREIGN KEY (n) REFERENCES p(n) ON UPDATE CASCADE ON DELETE CASCADE)",
+                "INSERT INTO p VALUES ('a')",
+                "INSERT INTO c VALUES (1, 'a')",
+                "UPDATE p SET n = 'b' WHERE n = 'a'",
+                "CREATE TABLE k (a INTEGER, b INTEGER, PRIMARY KEY (a, b))",
+                "INSERT INTO k VALUES (1, 2), (1, 3)",
+            ],
+        );
+    }
+    {
+        let db = open_db(&dir);
+        let tx = db.begin().unwrap();
+        let rows = db.query_all(&tx, "c").unwrap();
+        assert_eq!(rows[0].data.0[1], ColumnValue::Text("b".into()));
+        db.abort(tx).unwrap();
+        assert_eq!(db_count(&db, "k"), 2);
+        db.autocommit(stmt("DELETE FROM k WHERE b = 2")).unwrap();
+        db.autocommit(stmt("DELETE FROM p WHERE n = 'b'")).unwrap();
+        assert_eq!(db_count(&db, "c"), 0);
+        assert!(db.autocommit(stmt("INSERT INTO c VALUES (2, 'missing')")).is_err());
+    }
+    let db = open_db(&dir);
+    assert_eq!(db_count(&db, "c"), 0);
+    assert_eq!(db_count(&db, "k"), 1);
+}

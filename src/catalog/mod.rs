@@ -19,6 +19,9 @@ pub struct TableInfo {
     pub auto_increment: Vec<bool>,
     pub fks: Vec<crate::sql::ast::ForeignKey>,
     pub primary_key: Option<Vec<String>>,
+    /// Name of the PRIMARY KEY constraint (`CONSTRAINT name PRIMARY KEY`, else
+    /// `{table}_pkey`); `None` only for tables built without SQL validation.
+    pub primary_key_name: Option<String>,
     /// UNIQUE constraints (declared column names), in declaration order.
     pub uniques: Vec<UniqueConstraint>,
     /// CHECK constraints, in declaration order (column-level first as they
@@ -36,6 +39,26 @@ impl TableInfo {
         if data.0.len() < self.columns.len() {
             data.0.resize(self.columns.len(), ColumnValue::Null);
         }
+    }
+
+    /// Give an unnamed PRIMARY KEY / FOREIGN KEY its deterministic default
+    /// name (`{table}_pkey`, `{table}_{cols}_fkey`). Used for tables created
+    /// through the raw catalog API and for catalog rows written before
+    /// constraint names were persisted.
+    pub fn fill_default_constraint_names(&mut self) {
+        if self.primary_key.as_ref().is_some_and(|pk| !pk.is_empty()) && self.primary_key_name.is_none() {
+            self.primary_key_name = Some(crate::constraints::keys::default_pk_name(&self.name));
+        }
+        let fks = std::mem::take(&mut self.fks);
+        self.fks = fks
+            .into_iter()
+            .map(|mut fk| {
+                if fk.name.is_none() {
+                    fk.name = Some(crate::constraints::keys::fk_name(self, &fk));
+                }
+                fk
+            })
+            .collect();
     }
 }
 
@@ -637,18 +660,22 @@ impl Catalog {
         fks: Vec<crate::sql::ast::ForeignKey>,
         primary_key: Option<Vec<String>>,
     ) -> io::Result<()> {
-        self.create_table_with_constraints(name, columns, fks, primary_key, Vec::new(), Vec::new())
+        self.create_table_with_constraints(name, columns, fks, primary_key, None, Vec::new(), Vec::new())
     }
 
-    /// [`Catalog::create_table_with_fks`] plus UNIQUE and CHECK constraints.
-    /// No validation: SQL CREATE TABLE validates through
-    /// [`crate::constraints::keys::resolve_table_constraints`].
+    /// [`Catalog::create_table_with_fks`] plus the PRIMARY KEY constraint name
+    /// and UNIQUE and CHECK constraints. No validation: SQL CREATE TABLE
+    /// validates through [`crate::constraints::keys::resolve_table_constraints`].
+    /// Missing PRIMARY KEY / FOREIGN KEY names get their deterministic
+    /// defaults (`{table}_pkey`, `{table}_{cols}_fkey`).
+    #[allow(clippy::too_many_arguments)]
     pub fn create_table_with_constraints(
         &mut self,
         name: &str,
         columns: Vec<(String, ColumnType, bool, Option<Expr>, bool)>,
         fks: Vec<crate::sql::ast::ForeignKey>,
         primary_key: Option<Vec<String>>,
+        primary_key_name: Option<String>,
         uniques: Vec<UniqueConstraint>,
         checks: Vec<CheckConstraint>,
     ) -> io::Result<()> {
@@ -682,6 +709,7 @@ impl Catalog {
             auto_increment: Vec::new(),
             fks,
             primary_key,
+            primary_key_name,
             uniques,
             checks,
         };
@@ -691,6 +719,7 @@ impl Catalog {
             info.default_values.push(d);
             info.auto_increment.push(ai);
         }
+        info.fill_default_constraint_names();
 
         // A synthetic key not used by any table or view row (a count-based
         // key could collide once a relation was dropped).
@@ -1149,8 +1178,13 @@ impl Catalog {
     /// for each column: [u32 col_len][col_bytes]
     /// then [u16 num_fks] followed by each foreign key description, then the
     /// PRIMARY KEY columns, then (since 0.6.0; absent in 0.5.1 rows) the
-    /// UNIQUE section `[n] { name, ncols, cols... }` and the CHECK section
-    /// `[n] { name, marker + Expr::to_sql() }`.
+    /// UNIQUE section `[n] { name, ncols, cols... }`, the CHECK section
+    /// `[n] { name, Expr::to_sql() }` (plain SQL text, no marker; parsed back
+    /// with `parse_expression_sql`), and the constraint-name section
+    /// `{ pk_name ('' = none), [n_fks] { fk_name... } }`. Each section is
+    /// appended after the previous one, so an older reader stops before the
+    /// sections it does not know, and a row without a trailing section
+    /// decodes with its defaults (empty lists, default constraint names).
     fn serialize_catalog_row(info: &TableInfo) -> RowData {
         let mut vals = Vec::new();
         vals.push(ColumnValue::Text(info.name.clone()));
@@ -1240,6 +1274,13 @@ impl Catalog {
         for c in &info.checks {
             vals.push(ColumnValue::Text(c.name.clone()));
             vals.push(ColumnValue::Text(c.expr.to_sql()));
+        }
+        // Constraint-name section: PRIMARY KEY name ('' = none), then one
+        // name per foreign key, in the order of the FOREIGN KEY section.
+        vals.push(ColumnValue::Text(info.primary_key_name.clone().unwrap_or_default()));
+        vals.push(ColumnValue::Integer(info.fks.len() as i32));
+        for fk in &info.fks {
+            vals.push(ColumnValue::Text(crate::constraints::keys::fk_name(info, fk)));
         }
         RowData(vals)
     }
@@ -1460,6 +1501,7 @@ impl Catalog {
                 parent_columns: parent_cols,
                 on_delete,
                 on_update,
+                name: None,
             });
         }
         let pk_len = match values.get(idx) {
@@ -1514,7 +1556,25 @@ impl Catalog {
                 checks.push(CheckConstraint { name: cname, expr });
             }
         }
-        Ok(TableInfo {
+        // Constraint-name section (absent in 0.5.1 rows and rows written by
+        // earlier 0.6.0 development builds: deterministic defaults then).
+        let mut primary_key_name = None;
+        if idx < values.len() {
+            let pk_name = text_at(idx, "primary key name")?;
+            let n = count_at(idx + 1, "foreign key name count")?;
+            idx += 2;
+            if n != fks.len() {
+                return Err(bad("foreign key name count"));
+            }
+            for fk in fks.iter_mut() {
+                fk.name = Some(text_at(idx, "foreign key name")?);
+                idx += 1;
+            }
+            if !pk_name.is_empty() {
+                primary_key_name = Some(pk_name);
+            }
+        }
+        let mut info = TableInfo {
             name,
             root_page,
             columns,
@@ -1523,9 +1583,12 @@ impl Catalog {
             auto_increment: auto_inc,
             fks,
             primary_key: if pk_cols.is_empty() { None } else { Some(pk_cols) },
+            primary_key_name,
             uniques,
             checks,
-        })
+        };
+        info.fill_default_constraint_names();
+        Ok(info)
     }
 
     fn serialize_sequence_row(name: &str, current: i64, start: i64, increment: i64) -> RowData {
@@ -1636,8 +1699,10 @@ mod tests {
                 parent_columns: vec![Ident::quoted("id")],
                 on_delete: Some(Action::Restrict),
                 on_update: Some(Action::Cascade),
+                name: Some("t_fk".into()),
             }],
             primary_key: Some(vec!["a".into()]),
+            primary_key_name: Some("t_pk".into()),
             uniques: vec![UniqueConstraint { name: "t_a_b_key".into(), columns: vec!["a".into(), "b".into()] }],
             checks: vec![CheckConstraint {
                 name: "t_a_check".into(),
@@ -1658,6 +1723,8 @@ mod tests {
         assert_eq!(back.fks[0].on_delete, Some(Action::Restrict));
         assert_eq!(back.fks[0].on_update, Some(Action::Cascade));
         assert_eq!(back.primary_key, info.primary_key);
+        assert_eq!(back.primary_key_name.as_deref(), Some("t_pk"));
+        assert_eq!(back.fks[0].name.as_deref(), Some("t_fk"));
         assert_eq!(back.columns, info.columns);
         assert_eq!(back.not_null, info.not_null);
         assert_eq!(back.root_page, 7);
@@ -1670,11 +1737,38 @@ mod tests {
         info.uniques.clear();
         info.checks.clear();
         let mut data = Catalog::serialize_catalog_row(&info);
-        assert_eq!(data.0.split_off(data.0.len() - 2), vec![ColumnValue::Integer(0), ColumnValue::Integer(0)]);
+        // Tail: UNIQUE count, CHECK count, PK name, FK name count, one FK name.
+        assert_eq!(
+            data.0.split_off(data.0.len() - 5),
+            vec![
+                ColumnValue::Integer(0),
+                ColumnValue::Integer(0),
+                ColumnValue::Text("t_pk".into()),
+                ColumnValue::Integer(1),
+                ColumnValue::Text("t_fk".into()),
+            ]
+        );
         let back = Catalog::deserialize_catalog_row(&Row::new(1, data)).unwrap();
         assert!(back.uniques.is_empty() && back.checks.is_empty());
-        assert_eq!(back.fks, info.fks);
         assert_eq!(back.primary_key, info.primary_key);
+        // Rows without the name section get the deterministic default names.
+        assert_eq!(back.primary_key_name.as_deref(), Some("t_pkey"));
+        assert_eq!(back.fks[0].name.as_deref(), Some("t_a_fkey"));
+        assert_eq!(back.fks[0].on_update, info.fks[0].on_update);
+    }
+
+    #[test]
+    fn row_without_constraint_name_section_decodes_with_default_names() {
+        // Rows written by 0.6.0 builds before the name section existed end
+        // after the CHECK section.
+        let info = constrained_table();
+        let mut data = Catalog::serialize_catalog_row(&info);
+        data.0.truncate(data.0.len() - 3);
+        let back = Catalog::deserialize_catalog_row(&Row::new(1, data)).unwrap();
+        assert_eq!(back.uniques, info.uniques);
+        assert_eq!(back.checks, info.checks);
+        assert_eq!(back.primary_key_name.as_deref(), Some("t_pkey"));
+        assert_eq!(back.fks[0].name.as_deref(), Some("t_a_fkey"));
     }
 
     #[test]

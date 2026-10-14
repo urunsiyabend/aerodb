@@ -603,8 +603,7 @@ impl Parser {
         let mut primary_key: Option<Vec<Ident>> = None;
         let mut constraints: Vec<TableConstraint> = Vec::new();
         loop {
-            // `CONSTRAINT name` prefixes a table constraint. Names of PRIMARY
-            // KEY / FOREIGN KEY constraints are accepted but not stored.
+            // `CONSTRAINT name` prefixes a table constraint.
             let name = if self.eat_kw("CONSTRAINT") {
                 let n = self.parse_ident()?;
                 if !["PRIMARY", "FOREIGN", "UNIQUE", "CHECK"].iter().any(|k| self.is_kw(k)) {
@@ -622,11 +621,16 @@ impl Parser {
                     return Err(DbError::Syntax("multiple primary keys defined".into()));
                 }
                 primary_key = Some(cols);
+                if let Some(n) = name {
+                    constraints.push(TableConstraint::PrimaryKeyName(n));
+                }
             } else if self.is_kw("FOREIGN") {
                 self.advance();
                 self.expect_kw("KEY")?;
                 let cols = self.parse_ident_list()?;
-                fks.push(self.parse_references(cols)?);
+                let mut fk = self.parse_references(cols)?;
+                fk.name = name;
+                fks.push(fk);
             } else if self.eat_kw("UNIQUE") {
                 let cols = self.parse_ident_list()?;
                 constraints.push(TableConstraint::Unique { name, columns: cols });
@@ -704,7 +708,7 @@ impl Parser {
                 on_update = Some(action);
             }
         }
-        Ok(ForeignKey { columns, parent_table, parent_columns, on_delete, on_update })
+        Ok(ForeignKey { columns, parent_table, parent_columns, on_delete, on_update, name: None })
     }
 
     /// A column definition with its column constraints. UNIQUE / CHECK are
@@ -721,7 +725,8 @@ impl Parser {
         let mut fks = Vec::new();
         loop {
             // `CONSTRAINT name` names the next column constraint (stored for
-            // UNIQUE and CHECK only).
+            // PRIMARY KEY, UNIQUE, CHECK and REFERENCES; ignored for NOT NULL,
+            // NULL and DEFAULT, which are not named constraints here).
             let cname = if self.eat_kw("CONSTRAINT") {
                 let n = self.parse_ident()?;
                 if !["NOT", "NULL", "PRIMARY", "UNIQUE", "CHECK", "REFERENCES", "DEFAULT"]
@@ -759,6 +764,9 @@ impl Parser {
                 self.advance();
                 self.expect_kw("KEY")?;
                 primary_key = true;
+                if let Some(n) = cname {
+                    constraints.push(TableConstraint::PrimaryKeyName(n));
+                }
             } else if self.eat_kw("AUTO_INCREMENT") {
                 auto_increment = true;
             } else if self.eat_kw("UNIQUE") {
@@ -770,7 +778,9 @@ impl Parser {
                 let expr = self.parse_check_body()?;
                 constraints.push(TableConstraint::Check { name: cname, expr, column: Some(name.clone()) });
             } else if self.is_kw("REFERENCES") {
-                fks.push(self.parse_references(vec![Ident::quoted(name.clone())])?);
+                let mut fk = self.parse_references(vec![Ident::quoted(name.clone())])?;
+                fk.name = cname;
+                fks.push(fk);
             } else if self.is_symbol(",") || self.is_symbol(")") || self.is_symbol(";") || self.at_eof() {
                 // `;` / end of input end the column of ALTER TABLE ... ADD
                 // COLUMN; inside CREATE TABLE the caller then expects `)`.

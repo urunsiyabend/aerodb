@@ -66,6 +66,20 @@ fn assignment_error(column: &str, e: ValueError) -> DbError {
     }
 }
 
+/// A row image must fit in one B-tree leaf page (rows never span pages):
+/// checked for every new image before a statement writes anything, so an
+/// oversized row fails cleanly with `RowTooLarge` (54000) and no effect.
+fn ensure_rows_fit<'a>(images: impl IntoIterator<Item = &'a RowData>) -> DbResult<()> {
+    let max = crate::storage::btree::max_row_data_size();
+    for image in images {
+        let size = image.serialize().len();
+        if size > max {
+            return Err(DbError::RowTooLarge(format!("{} bytes, max {}", size, max)));
+        }
+    }
+    Ok(())
+}
+
 fn coerce(v: &Value, ty: &ColumnType, column: &str) -> DbResult<ColumnValue> {
     v.to_column_value(ty, column).map_err(|e| assignment_error(column, e))
 }
@@ -288,6 +302,15 @@ pub fn execute_update(
     // changes are rewritten in the same statement.
     let snapshot = read_snapshot(catalog);
     let plan = keys::plan_update(catalog, &info, ops, &snapshot)?;
+    ensure_rows_fit(plan.iter().flat_map(|(_, ops)| ops.iter().map(|(_, new)| new)))?;
+
+    // ON UPDATE RESTRICT is immediate: a changed key referenced at statement
+    // start is a violation even if the statement re-provides it.
+    for (table, ops) in &plan {
+        let changes: Vec<(RowData, Option<RowData>)> =
+            ops.iter().map(|(old, new)| (old.data.clone(), Some(new.clone()))).collect();
+        keys::check_restrict(catalog, table, &changes, &snapshot)?;
+    }
 
     // Constraint checks against the statement's final state: every old
     // version (direct and cascaded) is gone and every new image is present.
@@ -421,6 +444,7 @@ pub fn execute_insert(
     for row_vals in &rows {
         images.push(build_insert_row(catalog, &info, targets.as_deref(), row_vals)?);
     }
+    ensure_rows_fit(&images)?;
     let snapshot = read_snapshot(catalog);
     let mut pending = Pending::new();
     for image in &images {
@@ -526,15 +550,18 @@ fn alter_add_column(
     columns.push((column.name.clone(), column.col_type));
 
     // Constraint names must not collide with the table's existing ones.
-    let mut used: HashSet<String> =
-        info.uniques.iter().map(|u| u.name.clone()).chain(info.checks.iter().map(|c| c.name.clone())).collect();
+    let mut used: HashSet<String> = info
+        .uniques
+        .iter()
+        .map(|u| u.name.clone())
+        .chain(info.checks.iter().map(|c| c.name.clone()))
+        .chain(info.primary_key_name.clone())
+        .chain(info.fks.iter().map(|fk| keys::fk_name(&info, fk)))
+        .collect();
     for c in &constraints {
         if let TableConstraint::Unique { name: Some(n), .. } | TableConstraint::Check { name: Some(n), .. } = c {
             if used.contains(n) {
-                return Err(DbError::Syntax(format!(
-                    "constraint \"{}\" for relation \"{}\" already exists",
-                    n, info.name
-                )));
+                return Err(DbError::DuplicateConstraint { name: n.clone(), table: info.name.clone() });
             }
         }
     }
@@ -573,6 +600,7 @@ fn alter_add_column(
             data
         })
         .collect();
+    ensure_rows_fit(&images)?;
     let snapshot = read_snapshot(catalog);
     let mut pending = Pending::new();
     for (old, new) in rows.iter().zip(&images) {
@@ -617,6 +645,9 @@ pub fn execute_select_with_indexes(
     let info = table_info(catalog, table_name)?;
     let snapshot = read_snapshot(catalog);
     let scope = table_scope(&info);
+    if let Some(pred) = &selection {
+        crate::execution::bind::bind_predicate(catalog, &scope, pred, "WHERE")?;
+    }
 
     if let Some(Expr::Binary { op: BinaryOp::Eq, left, right }) = &selection {
         let probe = match (left.as_ref(), right.as_ref()) {
@@ -691,6 +722,11 @@ pub fn execute_select_with_indexes(
 }
 
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> {
+    // Static binding of DML expressions before any row is touched (queries
+    // are bound by `execute_query`).
+    if !matches!(stmt, Statement::Query(_)) {
+        crate::execution::bind::bind_statement(catalog, &stmt)?;
+    }
     match stmt {
         Statement::CreateTable {
             table_name,
@@ -740,6 +776,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 cols.clone(),
                 resolved.fks,
                 resolved.primary_key,
+                resolved.primary_key_name,
                 resolved.uniques,
                 resolved.checks,
             ) {

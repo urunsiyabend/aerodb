@@ -327,6 +327,9 @@ pub struct ForeignKey {
     pub parent_columns: Vec<Ident>,
     pub on_delete: Option<Action>,
     pub on_update: Option<Action>,
+    /// Constraint name (`CONSTRAINT name FOREIGN KEY ...` / `CONSTRAINT name
+    /// REFERENCES ...`, else `{table}_{cols}_fkey` once resolved).
+    pub name: Option<String>,
 }
 
 /// A UNIQUE or CHECK constraint of a CREATE TABLE (table- or column-level).
@@ -338,6 +341,10 @@ pub enum TableConstraint {
     /// `[CONSTRAINT name] CHECK (expr)`; `column` is the declaring column of
     /// a column-level CHECK (used for its default name only).
     Check { name: Option<String>, expr: Expr, column: Option<String> },
+    /// `CONSTRAINT name PRIMARY KEY ...` (table- or column-level): the given
+    /// name of the table's PRIMARY KEY constraint (its columns are in
+    /// `Statement::CreateTable::primary_key`).
+    PrimaryKeyName(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
