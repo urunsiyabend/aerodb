@@ -205,10 +205,10 @@ impl TransactionManager {
         catalog: &mut Catalog,
         tx_id: TransactionId,
     ) -> DbResult<()> {
-        if self.failed_detached.remove(&tx_id) {
-            if let Err(e) = self.abort_detached(catalog, tx_id) {
-                error!("rollback of failed transaction {} at COMMIT failed: {}", tx_id, e);
-            }
+        if self.failed_detached.contains(&tx_id) {
+            // A rollback failure is reported (and the transaction stays
+            // failed and live), never swallowed.
+            self.abort_detached(catalog, tx_id)?;
             return Err(DbError::InFailedTransaction);
         }
         let transaction = self
@@ -227,15 +227,27 @@ impl TransactionManager {
         Ok(())
     }
 
-    /// Abort detached transaction `tx_id`.
+    /// Abort detached transaction `tx_id`. If the rollback fails, the
+    /// transaction is detached again (so it can still be aborted later), keeps
+    /// its failed state, and the error is returned.
     pub fn abort_detached(&mut self, catalog: &mut Catalog, tx_id: TransactionId) -> io::Result<()> {
-        self.failed_detached.remove(&tx_id);
         let transaction = self
             .detached
             .remove(&tx_id)
             .expect("abort_detached called for a live transaction");
         catalog.pager.install_transaction(transaction);
-        self.rollback(catalog)
+        let rollback = self.rollback(catalog);
+        if rollback.is_err() {
+            if let Some(transaction) = catalog.pager.uninstall_transaction() {
+                self.detached.insert(tx_id, transaction);
+            }
+        }
+        let mut failed = self.failed_detached.contains(&tx_id);
+        let result = settle_failed(&mut failed, rollback);
+        if !failed {
+            self.failed_detached.remove(&tx_id);
+        }
+        result
     }
 
     /// Re-check every recorded write intent of the installed transaction against
@@ -273,14 +285,20 @@ impl TransactionManager {
     {
         if self.failed {
             match stmt {
-                // ROLLBACK ends the failed transaction normally.
-                Statement::Rollback => self.failed = false,
-                // COMMIT of a failed transaction rolls it back and reports it.
+                // ROLLBACK ends the failed transaction normally. The flag is
+                // cleared only once the rollback succeeded; if it fails the
+                // transaction stays failed and the error is returned.
+                Statement::Rollback => {
+                    let rollback = self.rollback(catalog);
+                    settle_failed(&mut self.failed, rollback)?;
+                    self.mode = TransactionMode::None;
+                    return Ok(());
+                }
+                // COMMIT of a failed transaction rolls it back and reports it
+                // (or reports the rollback failure, staying failed).
                 Statement::Commit => {
-                    self.failed = false;
-                    if let Err(e) = self.rollback(catalog) {
-                        error!("rollback of failed transaction at COMMIT failed: {}", e);
-                    }
+                    let rollback = self.rollback(catalog);
+                    settle_failed(&mut self.failed, rollback)?;
                     self.mode = TransactionMode::None;
                     return Err(DbError::InFailedTransaction);
                 }
@@ -378,6 +396,15 @@ impl TransactionManager {
     }
 }
 
+/// End a failed transaction with the result of its rollback: the failed flag
+/// is cleared only if the rollback succeeded; a rollback error leaves the
+/// transaction failed and is returned.
+fn settle_failed(failed: &mut bool, rollback: io::Result<()>) -> io::Result<()> {
+    rollback?;
+    *failed = false;
+    Ok(())
+}
+
 /// The error a commit reports after its constraint recheck failed with
 /// `original` and the transaction was rolled back with result `rollback`:
 /// always the constraint error; a rollback failure is logged, not surfaced
@@ -392,6 +419,16 @@ fn commit_failure(original: DbError, rollback: io::Result<()>) -> DbError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_flag_is_cleared_only_after_a_successful_rollback() {
+        let mut failed = true;
+        let e = settle_failed(&mut failed, Err(io::Error::other("disk gone"))).unwrap_err();
+        assert_eq!(e.to_string(), "disk gone");
+        assert!(failed, "a failed rollback must leave the transaction failed");
+        settle_failed(&mut failed, Ok(())).unwrap();
+        assert!(!failed);
+    }
 
     #[test]
     fn failed_rollback_keeps_the_constraint_error() {
