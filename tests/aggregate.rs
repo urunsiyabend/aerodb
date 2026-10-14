@@ -24,7 +24,7 @@ fn basic_count() {
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false }
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     for i in 1..=3 {
         aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO employees VALUES ({})", i)).unwrap()).unwrap();
@@ -44,7 +44,7 @@ fn simple_grouping() {
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             aerodb::sql::ast::ColumnDef { name: "department".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     let data = vec![
         (1, "d1"),
@@ -71,7 +71,7 @@ fn sum_double_basic() {
             aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             aerodb::sql::ast::ColumnDef { name: "total".into(), col_type: ColumnType::Double { precision: 10, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1, 2, 20)").unwrap()).unwrap();
     let (header, out) = run(&mut catalog, "SELECT user_id, SUM(total) FROM orders GROUP BY user_id");

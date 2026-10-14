@@ -19,6 +19,27 @@ pub struct TableInfo {
     pub auto_increment: Vec<bool>,
     pub fks: Vec<crate::sql::ast::ForeignKey>,
     pub primary_key: Option<Vec<String>>,
+    /// UNIQUE constraints (declared column names), in declaration order.
+    pub uniques: Vec<UniqueConstraint>,
+    /// CHECK constraints, in declaration order (column-level first as they
+    /// appear in the column list, interleaved with table-level ones).
+    pub checks: Vec<CheckConstraint>,
+}
+
+/// A UNIQUE constraint: rows whose key (`columns`, declared names) has no
+/// NULL must be pairwise distinct.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UniqueConstraint {
+    pub name: String,
+    pub columns: Vec<String>,
+}
+
+/// A CHECK constraint: `expr` (column references canonicalised to the
+/// declared, quoted names) must not evaluate to FALSE for any row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckConstraint {
+    pub name: String,
+    pub expr: Expr,
 }
 
 #[derive(Debug, Clone)]
@@ -116,21 +137,8 @@ impl Catalog {
             let catalog_btree = BTree::open_root(&pager, 1)?;
             let mut cursor = catalog_btree.scan_all_rows();
             while let Some(blob_row) = cursor.next() {
-                let (table_name, root_page, columns, not_null, defaults, auto_inc, fks, pk) =
-                    Self::deserialize_catalog_row(&blob_row)?;
-                tables.insert(
-                    table_name.clone(),
-                    TableInfo {
-                        name: table_name,
-                        root_page,
-                        columns,
-                        not_null,
-                        default_values: defaults,
-                        fks,
-                        auto_increment: auto_inc,
-                        primary_key: if pk.is_empty() { None } else { Some(pk) },
-                    },
-                );
+                let info = Self::deserialize_catalog_row(&blob_row)?;
+                tables.insert(info.name.clone(), info);
             }
         }
 
@@ -168,21 +176,8 @@ impl Catalog {
         let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
         let mut cursor = catalog_btree.scan_all_rows();
         while let Some(blob_row) = cursor.next() {
-            let (table_name, root_page, columns, not_null, defaults, auto_inc, fks, pk) =
-                Self::deserialize_catalog_row(&blob_row)?;
-            self.tables.insert(
-                table_name.clone(),
-                TableInfo {
-                    name: table_name,
-                    root_page,
-                    columns,
-                    not_null,
-                    default_values: defaults,
-                    fks,
-                    auto_increment: auto_inc,
-                    primary_key: if pk.is_empty() { None } else { Some(pk) },
-                },
-            );
+            let info = Self::deserialize_catalog_row(&blob_row)?;
+            self.tables.insert(info.name.clone(), info);
         }
         // reload sequences
         self.sequences.clear();
@@ -206,47 +201,25 @@ impl Catalog {
     }
 
     pub(crate) fn update_catalog_root(&mut self, name: &str, new_root: u32) -> io::Result<()> {
-        let (target_key, columns, not_null, defaults, ai_vec, fks, pk_cols) = {
-            let mut tree = BTree::open_root(&self.pager, 1)?;
+        let target = {
+            let tree = BTree::open_root(&self.pager, 1)?;
             let mut cursor = tree.scan_all_rows();
             let mut found = None;
-            let mut cols = Vec::new();
-            let mut nn_vec = Vec::new();
-            let mut fk_vec = Vec::new();
-            let mut def_vec = Vec::new();
-            let mut ai_vec = Vec::new();
-            let mut pk_vec = Vec::new();
             while let Some(row) = cursor.next() {
-                let (tbl, _rp, c, nn, def, ai, f, pk) = Self::deserialize_catalog_row(&row)?;
-                if tbl == name {
-                    found = Some(row.key);
-                    cols = c;
-                    nn_vec = nn;
-                    def_vec = def;
-                    ai_vec = ai;
-                    fk_vec = f;
-                    pk_vec = pk;
+                let info = Self::deserialize_catalog_row(&row)?;
+                if info.name == name {
+                    found = Some((row.key, info));
                     break;
                 }
             }
-            (found, cols, nn_vec, def_vec, ai_vec, fk_vec, pk_vec)
+            found
         };
 
-        if let Some(key) = target_key {
+        if let Some((key, mut info)) = target {
+            info.root_page = new_root;
             let mut tree = BTree::open_root(&self.pager, 1)?;
             tree.delete(key)?;
-            let cols: Vec<_> = columns
-                .iter()
-                .cloned()
-                .zip(not_null.iter().cloned())
-                .zip(defaults.iter().cloned())
-                .zip(ai_vec.iter().cloned())
-                .map(|((((n, t), nn), d), a)| (n, t, nn, d, a))
-                .collect();
-            tree.insert(
-                key,
-                Self::serialize_catalog_row(name, new_root, &cols, &fks, &pk_cols),
-            )?;
+            tree.insert(key, Self::serialize_catalog_row(&info))?;
             let new_root_page = tree.root_page();
             if new_root_page != 1 {
                 // Copy the split-out root back into the fixed catalog page. The
@@ -282,18 +255,17 @@ impl Catalog {
 
     /// Deferred re-validation at COMMIT against everything committed so far
     /// plus the transaction's own writes. Uses the same logical key checks as
-    /// statement execution ([`crate::constraints::keys`]), with no pending
-    /// overlay: PRIMARY KEY uniqueness and FOREIGN KEY existence for rows the
-    /// transaction created, and the referential check for row versions it
+    /// statement execution ([`crate::constraints::keys::check_new_rows`]):
+    /// NOT NULL, CHECK, PRIMARY KEY / UNIQUE uniqueness and FOREIGN KEY
+    /// existence for rows the transaction created, and the referential check
+    /// for row versions it
     /// deleted or replaced (no referential action can run at commit, so any
     /// orphaned reference is a violation).
     pub(crate) fn recheck_constraints_for_commit(
         &mut self,
         transaction_id: TransactionId,
     ) -> crate::error::DbResult<()> {
-        use crate::constraints::keys::{
-            Pending, Removal, check_foreign_keys, check_primary_key, check_removed_keys,
-        };
+        use crate::constraints::keys::{Pending, Removal, check_new_rows, check_removed_keys};
         let snapshot =
             Snapshot::new_for_transaction(transaction_id, TransactionId::MAX, Vec::new());
         let mut tables = self.all_tables();
@@ -308,16 +280,16 @@ impl Catalog {
                 .collect();
             drop(tree);
             if !created.is_empty() {
-                // Compare each created row with every *other* visible row.
+                // The created rows are the candidates; key checks compare
+                // them with every *other* visible row (the overlay removes
+                // and re-adds them, so FK lookups still see them).
                 let mut own = Pending::new();
                 for row in &created {
                     own.remove(&table.name, row);
+                    own.add(&table.name, row.data.clone());
                 }
                 let images: Vec<RowData> = created.iter().map(|r| r.data.clone()).collect();
-                check_primary_key(self, table, &snapshot, &images, &own)?;
-                for image in &images {
-                    check_foreign_keys(self, table, image, &snapshot, &Pending::new())?;
-                }
+                check_new_rows(self, table, &snapshot, &images, &own)?;
             }
 
             let mut tree = BTree::open_root(&self.pager, table.root_page)?;
@@ -459,6 +431,21 @@ impl Catalog {
         fks: Vec<crate::sql::ast::ForeignKey>,
         primary_key: Option<Vec<String>>,
     ) -> io::Result<()> {
+        self.create_table_with_constraints(name, columns, fks, primary_key, Vec::new(), Vec::new())
+    }
+
+    /// [`Catalog::create_table_with_fks`] plus UNIQUE and CHECK constraints.
+    /// No validation: SQL CREATE TABLE validates through
+    /// [`crate::constraints::keys::resolve_table_constraints`].
+    pub fn create_table_with_constraints(
+        &mut self,
+        name: &str,
+        columns: Vec<(String, ColumnType, bool, Option<Expr>, bool)>,
+        fks: Vec<crate::sql::ast::ForeignKey>,
+        primary_key: Option<Vec<String>>,
+        uniques: Vec<UniqueConstraint>,
+        checks: Vec<CheckConstraint>,
+    ) -> io::Result<()> {
         if self.tables.contains_key(name) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -474,41 +461,32 @@ impl Catalog {
         let new_root = self.pager.allocate_page()?;
         init_leaf_root(&self.pager, new_root)?;
 
-        // Build the catalog row payload: [name_len][name][root_page][num_columns][col1_len][col1]...
-        let pk_cols = primary_key.clone().unwrap_or_default();
-        let blob_data = Self::serialize_catalog_row(name, new_root, &columns, &fks, &pk_cols);
+        let mut info = TableInfo {
+            name: name.to_string(),
+            root_page: new_root,
+            columns: Vec::new(),
+            not_null: Vec::new(),
+            default_values: Vec::new(),
+            auto_increment: Vec::new(),
+            fks,
+            primary_key,
+            uniques,
+            checks,
+        };
+        for (n, t, nn, d, ai) in columns {
+            info.columns.push((n, t));
+            info.not_null.push(nn);
+            info.default_values.push(d);
+            info.auto_increment.push(ai);
+        }
 
         // Use a synthetic key = (current number of tables + 1)
         let key = (self.tables.len() as i32) + 1;
         {
             let mut catalog_btree = BTree::open_root(&self.pager, 1)?;
-            catalog_btree.insert(key, blob_data)?;
+            catalog_btree.insert(key, Self::serialize_catalog_row(&info))?;
         }
-
-        // Update in-memory
-        let mut cols = Vec::new();
-        let mut not_null = Vec::new();
-        let mut defaults = Vec::new();
-        let mut auto_inc = Vec::new();
-        for (n, t, nn, d, ai) in columns {
-            cols.push((n, t));
-            not_null.push(nn);
-            defaults.push(d);
-            auto_inc.push(ai);
-        }
-        self.tables.insert(
-            name.to_string(),
-            TableInfo {
-                name: name.to_string(),
-                root_page: new_root,
-                columns: cols,
-                not_null,
-                default_values: defaults,
-                fks,
-                auto_increment: auto_inc,
-                primary_key,
-            },
-        );
+        self.tables.insert(name.to_string(), info);
         Ok(())
     }
 
@@ -938,9 +916,7 @@ impl Catalog {
             let mut cursor = catalog_btree.scan_all_rows();
             let mut found = None;
             while let Some(row) = cursor.next() {
-                let (table_name, _rp, _cols, _nn, _defaults, _ai, _fks, _) =
-                    Self::deserialize_catalog_row(&row)?;
-                if table_name == name {
+                if Self::deserialize_catalog_row(&row)?.name == name {
                     found = Some(row.key);
                     break;
                 }
@@ -969,19 +945,19 @@ impl Catalog {
     ///
     /// [u32 name_len][name_bytes][u32 root_page][u16 num_columns]
     /// for each column: [u32 col_len][col_bytes]
-    /// then [u16 num_fks] followed by each foreign key description
-    fn serialize_catalog_row(
-        name: &str,
-        root_page: u32,
-        columns: &[(String, ColumnType, bool, Option<Expr>, bool)],
-        fks: &[crate::sql::ast::ForeignKey],
-        pk: &[String],
-    ) -> RowData {
+    /// then [u16 num_fks] followed by each foreign key description, then the
+    /// PRIMARY KEY columns, then (since 0.6.0; absent in 0.5.1 rows) the
+    /// UNIQUE section `[n] { name, ncols, cols... }` and the CHECK section
+    /// `[n] { name, marker + Expr::to_sql() }`.
+    fn serialize_catalog_row(info: &TableInfo) -> RowData {
         let mut vals = Vec::new();
-        vals.push(ColumnValue::Text(name.to_string()));
-        vals.push(ColumnValue::Integer(root_page as i32));
-        vals.push(ColumnValue::Integer(columns.len() as i32));
-        for (name, ty, nn, default, ai) in columns {
+        vals.push(ColumnValue::Text(info.name.clone()));
+        vals.push(ColumnValue::Integer(info.root_page as i32));
+        vals.push(ColumnValue::Integer(info.columns.len() as i32));
+        for (i, (name, ty)) in info.columns.iter().enumerate() {
+            let nn = info.not_null.get(i).copied().unwrap_or(false);
+            let default = info.default_values.get(i).cloned().flatten();
+            let ai = info.auto_increment.get(i).copied().unwrap_or(false);
             vals.push(ColumnValue::Text(name.clone()));
             vals.push(ColumnValue::Integer(ty.to_code()));
             match ty {
@@ -1010,7 +986,7 @@ impl Catalog {
                 }
                 _ => {}
             }
-            vals.push(ColumnValue::Integer(if *nn { 1 } else { 0 }));
+            vals.push(ColumnValue::Integer(if nn { 1 } else { 0 }));
             match default {
                 Some(expr) => {
                     vals.push(ColumnValue::Integer(1));
@@ -1024,10 +1000,10 @@ impl Catalog {
                     vals.push(ColumnValue::Integer(0));
                 }
             }
-            vals.push(ColumnValue::Integer(if *ai { 1 } else { 0 }));
+            vals.push(ColumnValue::Integer(if ai { 1 } else { 0 }));
         }
-        vals.push(ColumnValue::Integer(fks.len() as i32));
-        for fk in fks {
+        vals.push(ColumnValue::Integer(info.fks.len() as i32));
+        for fk in &info.fks {
             vals.push(ColumnValue::Integer(fk.columns.len() as i32));
             for c in &fk.columns {
                 vals.push(ColumnValue::Text(c.value.clone()));
@@ -1045,26 +1021,30 @@ impl Catalog {
             vals.push(ColumnValue::Integer(to_code(&fk.on_delete)));
             vals.push(ColumnValue::Integer(to_code(&fk.on_update)));
         }
+        let pk = info.primary_key.as_deref().unwrap_or(&[]);
         vals.push(ColumnValue::Integer(pk.len() as i32));
         for c in pk {
             vals.push(ColumnValue::Text(c.clone()));
         }
+        vals.push(ColumnValue::Integer(info.uniques.len() as i32));
+        for u in &info.uniques {
+            vals.push(ColumnValue::Text(u.name.clone()));
+            vals.push(ColumnValue::Integer(u.columns.len() as i32));
+            for c in &u.columns {
+                vals.push(ColumnValue::Text(c.clone()));
+            }
+        }
+        vals.push(ColumnValue::Integer(info.checks.len() as i32));
+        for c in &info.checks {
+            vals.push(ColumnValue::Text(c.name.clone()));
+            vals.push(ColumnValue::Text(c.expr.to_sql()));
+        }
         RowData(vals)
     }
 
-    /// Deserialize a catalog row back into (table_name, root_page, Vec<columns>, Vec<ForeignKey>).
-    fn deserialize_catalog_row(
-        row: &Row,
-    ) -> io::Result<(
-        String,
-        u32,
-        Vec<(String, ColumnType)>,
-        Vec<bool>,
-        Vec<Option<Expr>>,
-        Vec<bool>,
-        Vec<crate::sql::ast::ForeignKey>,
-        Vec<String>,
-    )> {
+    /// Deserialize a catalog row (see [`Catalog::serialize_catalog_row`]).
+    /// Trailing sections missing in older rows decode as empty.
+    fn deserialize_catalog_row(row: &Row) -> io::Result<TableInfo> {
         let values = &row.data.0;
         if values.len() < 3 {
             return Err(io::Error::new(
@@ -1292,9 +1272,58 @@ impl Catalog {
                 idx += 1;
             }
         }
-        Ok((
-            name, root_page, columns, not_null, defaults, auto_inc, fks, pk_cols,
-        ))
+        let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, format!("catalog row: bad {}", what));
+        let text_at = |i: usize, what: &str| match values.get(i) {
+            Some(ColumnValue::Text(s)) => Ok(s.clone()),
+            _ => Err(bad(what)),
+        };
+        let count_at = |i: usize, what: &str| match values.get(i) {
+            Some(ColumnValue::Integer(n)) if *n >= 0 => Ok(*n as usize),
+            _ => Err(bad(what)),
+        };
+        // UNIQUE and CHECK sections (absent in rows written before 0.6.0).
+        let mut uniques = Vec::new();
+        if idx < values.len() {
+            let n = count_at(idx, "unique count")?;
+            idx += 1;
+            for _ in 0..n {
+                let uname = text_at(idx, "unique name")?;
+                let ncols = count_at(idx + 1, "unique column count")?;
+                idx += 2;
+                let mut cols = Vec::with_capacity(ncols);
+                for _ in 0..ncols {
+                    cols.push(text_at(idx, "unique column")?);
+                    idx += 1;
+                }
+                uniques.push(UniqueConstraint { name: uname, columns: cols });
+            }
+        }
+        let mut checks = Vec::new();
+        if idx < values.len() {
+            let n = count_at(idx, "check count")?;
+            idx += 1;
+            for _ in 0..n {
+                let cname = text_at(idx, "check name")?;
+                let sql = text_at(idx + 1, "check expression")?;
+                idx += 2;
+                let expr = crate::sql::parser::parse_expression_sql(&sql).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("bad stored CHECK '{}': {}", sql, e))
+                })?;
+                checks.push(CheckConstraint { name: cname, expr });
+            }
+        }
+        Ok(TableInfo {
+            name,
+            root_page,
+            columns,
+            not_null,
+            default_values: defaults,
+            auto_increment: auto_inc,
+            fks,
+            primary_key: if pk_cols.is_empty() { None } else { Some(pk_cols) },
+            uniques,
+            checks,
+        })
     }
 
     fn serialize_sequence_row(name: &str, current: i64, start: i64, increment: i64) -> RowData {
@@ -1388,6 +1417,62 @@ mod tests {
         catalog.note_rowid_used("n", 10);
         catalog.note_rowid_used("n", 5);
         assert_eq!(catalog.allocate_rowid("n").unwrap(), 11);
+    }
+
+    fn constrained_table() -> TableInfo {
+        use crate::sql::ast::{Action, ForeignKey};
+        TableInfo {
+            name: "t".into(),
+            root_page: 7,
+            columns: vec![("a".into(), ColumnType::Integer), ("b".into(), ColumnType::Text)],
+            not_null: vec![true, false],
+            default_values: vec![None, None],
+            auto_increment: vec![false, false],
+            fks: vec![ForeignKey {
+                columns: vec![Ident::quoted("a")],
+                parent_table: Ident::quoted("p"),
+                parent_columns: vec![Ident::quoted("id")],
+                on_delete: Some(Action::Restrict),
+                on_update: Some(Action::Cascade),
+            }],
+            primary_key: Some(vec!["a".into()]),
+            uniques: vec![UniqueConstraint { name: "t_a_b_key".into(), columns: vec!["a".into(), "b".into()] }],
+            checks: vec![CheckConstraint {
+                name: "t_a_check".into(),
+                expr: crate::sql::parser::parse_expression_sql("\"a\" > 0 AND \"b\" <> 'x'").unwrap(),
+            }],
+        }
+    }
+
+    #[test]
+    fn catalog_row_round_trips_constraints() {
+        use crate::sql::ast::Action;
+        let info = constrained_table();
+        let row = Row::new(1, Catalog::serialize_catalog_row(&info));
+        let back = Catalog::deserialize_catalog_row(&row).unwrap();
+        assert_eq!(back.uniques, info.uniques);
+        assert_eq!(back.checks, info.checks);
+        assert_eq!(back.fks, info.fks);
+        assert_eq!(back.fks[0].on_delete, Some(Action::Restrict));
+        assert_eq!(back.fks[0].on_update, Some(Action::Cascade));
+        assert_eq!(back.primary_key, info.primary_key);
+        assert_eq!(back.columns, info.columns);
+        assert_eq!(back.not_null, info.not_null);
+        assert_eq!(back.root_page, 7);
+    }
+
+    #[test]
+    fn pre_0_6_catalog_row_decodes_without_unique_or_check() {
+        // A 0.5.1 row ends after the PRIMARY KEY section.
+        let mut info = constrained_table();
+        info.uniques.clear();
+        info.checks.clear();
+        let mut data = Catalog::serialize_catalog_row(&info);
+        assert_eq!(data.0.split_off(data.0.len() - 2), vec![ColumnValue::Integer(0), ColumnValue::Integer(0)]);
+        let back = Catalog::deserialize_catalog_row(&Row::new(1, data)).unwrap();
+        assert!(back.uniques.is_empty() && back.checks.is_empty());
+        assert_eq!(back.fks, info.fks);
+        assert_eq!(back.primary_key, info.primary_key);
     }
 
     #[test]

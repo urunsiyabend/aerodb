@@ -18,7 +18,7 @@ fn create_matches_table(catalog: &mut Catalog) {
         ],
         fks: Vec::new(),
         primary_key: None,
-        if_not_exists: false,
+        if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     let rows = vec![(1, "a", "l1", 10), (2, "a", "l2", 20), (3, "b", "l1", 15)];
     for (id, team, league, score) in rows {

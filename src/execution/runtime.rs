@@ -1,6 +1,6 @@
 use crate::catalog::{Catalog, TableInfo};
 use crate::constraints::keys::{self, Pending, Removal};
-use crate::constraints::{Constraint, default::DefaultConstraint, not_null::NotNullConstraint};
+use crate::constraints::default::DefaultConstraint;
 use crate::error::{DbError, DbResult};
 use crate::execution::eval::{Ctx, Env, Scope, eval, eval_predicate};
 use crate::execution::query::{ResultColumn, execute_query};
@@ -8,7 +8,7 @@ use crate::sql::ast::{BinaryOp, Expr, Ident, Statement};
 use crate::sql::value::{SqlType, Value, ValueError};
 use crate::storage::btree::BTree;
 use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, ColumnType, ColumnValue, Row, RowData};
-use crate::transaction::Snapshot;
+use crate::transaction::{Snapshot, TransactionStatus};
 use std::collections::{HashMap, HashSet};
 
 /// The MVCC snapshot reads and DML scans use: the active transaction's
@@ -47,11 +47,7 @@ fn table_info(catalog: &Catalog, table_name: &str) -> DbResult<TableInfo> {
 
 /// Columns of a base table as an expression scope qualified by the table name.
 fn table_scope(info: &TableInfo) -> Scope {
-    let mut scope = Scope::new();
-    for (name, ty) in &info.columns {
-        scope.push(Some(info.name.clone()), name.clone(), SqlType::from_column_type(ty));
-    }
-    scope
+    keys::table_scope(info)
 }
 
 fn row_values(row: &RowData) -> Vec<Value> {
@@ -177,18 +173,29 @@ fn record_write_intents(catalog: &mut Catalog, table_name: &str, rows: &[Row]) -
 /// same alias value share the chain, as in 0.5.1.
 fn alias_key(catalog: &mut Catalog, table_name: &str, alias_idx: usize, alias: i32) -> DbResult<i32> {
     let root = catalog.get_table(table_name)?.root_page;
-    let foreign = BTree::open_root(&catalog.pager, root)?
-        .versions_of(alias)?
+    let versions = BTree::open_root(&catalog.pager, root)?.versions_of(alias)?;
+    let foreign = versions
         .iter()
         .any(|r| r.data.0.get(alias_idx) != Some(&ColumnValue::Integer(alias)));
-    // A committed, live same-alias version that our snapshot cannot see must
-    // not be collided with physically: use a fresh rowid so the commit
-    // re-check reports DuplicateKey (23505) rather than a raw B-tree error.
-    let committed_live = !foreign
-        && BTree::open_root(&catalog.pager, root)?
-            .find_visible(alias, &Snapshot::new(u64::MAX, Vec::new()))?
-            .is_some();
-    if foreign || committed_live { catalog.allocate_rowid(table_name) } else { Ok(alias) }
+    // A same-alias version of another transaction that is or may become live
+    // (committed and not deleted, or still in progress) must not be collided
+    // with physically: the two versions would share one chain and hide each
+    // other from scans. A fresh rowid lets the statement-time or commit-time
+    // PRIMARY KEY check report DuplicateKey (23505) instead.
+    let current = catalog.transaction_id();
+    let occupied = catalog.pager.with_transaction_table(|tx_table| {
+        let gone = |tx: u64| matches!(tx_table.get(&tx), Some(TransactionStatus::Aborted));
+        let pending = |tx: u64| matches!(tx_table.get(&tx), Some(TransactionStatus::Active | TransactionStatus::Aborted));
+        versions.iter().any(|r| {
+            Some(r.created_tx) != current
+                && !gone(r.created_tx)
+                && match r.deleted_tx {
+                    None => true,
+                    Some(d) => Some(d) != current && pending(d),
+                }
+        })
+    });
+    if foreign || occupied { catalog.allocate_rowid(table_name) } else { Ok(alias) }
 }
 
 /// Write `data` as a new version with physical key `key` and index it.
@@ -279,40 +286,53 @@ pub fn execute_update(
     }
     let count = ops.len();
 
-    // Constraint checks against the statement's final state: the old versions
-    // are gone and every new image is present.
+    // ON UPDATE CASCADE closure: child rows whose referenced parent key
+    // changes are rewritten in the same statement.
     let snapshot = read_snapshot(catalog);
+    let plan = keys::plan_update(catalog, &info, ops, &snapshot)?;
+
+    // Constraint checks against the statement's final state: every old
+    // version (direct and cascaded) is gone and every new image is present.
     let mut pending = Pending::new();
-    for (old, new) in &ops {
-        pending.remove(table_name, old);
-        pending.add(table_name, new.clone());
+    for (table, ops) in &plan {
+        for (old, new) in ops {
+            pending.remove(&table.name, old);
+            pending.add(&table.name, new.clone());
+        }
     }
-    for (_, new) in &mut ops {
-        NotNullConstraint.validate_insert(catalog, &info, new, &snapshot)?;
-        keys::check_foreign_keys(catalog, &info, new, &snapshot, &pending)?;
+    for (table, ops) in &plan {
+        let images: Vec<RowData> = ops.iter().map(|(_, new)| new.clone()).collect();
+        keys::check_new_rows(catalog, table, &snapshot, &images, &pending)?;
     }
-    let images: Vec<RowData> = ops.iter().map(|(_, new)| new.clone()).collect();
-    keys::check_primary_key(catalog, &info, &snapshot, &images, &pending)?;
-    let olds: Vec<RowData> = ops.iter().map(|(old, _)| old.data.clone()).collect();
-    keys::check_removed_keys(catalog, &info, &olds, &snapshot, &pending, Removal::Update)?;
+    for (table, ops) in &plan {
+        let olds: Vec<RowData> = ops.iter().map(|(old, _)| old.data.clone()).collect();
+        keys::check_removed_keys(catalog, table, &olds, &snapshot, &pending, Removal::Update)?;
+    }
 
     // Apply: retire every old version first, so a new image may take a
     // physical key another updated row is vacating (`SET id = id + 1`).
-    let old_rows: Vec<Row> = ops.iter().map(|(old, _)| old.clone()).collect();
-    delete_versions(catalog, table_name, &old_rows)?;
-    let alias = Catalog::rowid_alias_column(&info);
-    for (old, new) in ops {
-        let key = match alias {
-            Some(i) if new.0[i] != old.data.0[i] => match new.0[i] {
-                ColumnValue::Integer(v) => alias_key(catalog, table_name, i, v)?,
-                _ => return Err(DbError::NullViolation(info.columns[i].0.clone())),
-            },
-            _ => old.key,
-        };
-        write_version(catalog, table_name, key, new, false)?;
+    for (table, ops) in &plan {
+        let old_rows: Vec<Row> = ops.iter().map(|(old, _)| old.clone()).collect();
+        delete_versions(catalog, &table.name, &old_rows)?;
+    }
+    for (table, ops) in &plan {
+        let alias = Catalog::rowid_alias_column(table);
+        for (old, new) in ops {
+            let key = match alias {
+                Some(i) if new.0[i] != old.data.0[i] => match new.0[i] {
+                    ColumnValue::Integer(v) => alias_key(catalog, &table.name, i, v)?,
+                    _ => return Err(DbError::NullViolation(table.columns[i].0.clone())),
+                },
+                _ => old.key,
+            };
+            write_version(catalog, &table.name, key, new.clone(), false)?;
+        }
     }
     // After the new versions: their inserts may have split the root.
-    record_write_intents(catalog, table_name, &old_rows)?;
+    for (table, ops) in &plan {
+        let old_rows: Vec<Row> = ops.iter().map(|(old, _)| old.clone()).collect();
+        record_write_intents(catalog, &table.name, &old_rows)?;
+    }
     Ok(count)
 }
 
@@ -397,26 +417,29 @@ pub fn execute_insert(
     };
     let alias = Catalog::rowid_alias_column(&info);
 
-    let mut inserted = 0usize;
-    for row_vals in rows {
-        let mut row_data = build_insert_row(catalog, &info, targets.as_deref(), &row_vals)?;
-        // Rows written earlier by this statement are own writes, visible here.
-        let snapshot = read_snapshot(catalog);
-        NotNullConstraint.validate_insert(catalog, &info, &mut row_data, &snapshot)?;
-        let mut pending = Pending::new();
-        pending.add(table_name, row_data.clone());
-        keys::check_foreign_keys(catalog, &info, &row_data, &snapshot, &pending)?;
-        keys::check_primary_key(catalog, &info, &snapshot, std::slice::from_ref(&row_data), &Pending::new())?;
+    // Build every row first, then check them all against the statement's
+    // final state (existing rows plus all new images), then write.
+    let mut images: Vec<RowData> = Vec::with_capacity(rows.len());
+    for row_vals in &rows {
+        images.push(build_insert_row(catalog, &info, targets.as_deref(), row_vals)?);
+    }
+    let snapshot = read_snapshot(catalog);
+    let mut pending = Pending::new();
+    for image in &images {
+        pending.add(table_name, image.clone());
+    }
+    keys::check_new_rows(catalog, &info, &snapshot, &images, &pending)?;
 
+    let inserted = images.len();
+    for row_data in images {
         let key = match alias {
             Some(i) => match row_data.0[i] {
                 ColumnValue::Integer(v) => alias_key(catalog, table_name, i, v)?,
                 _ => return Err(DbError::NullViolation(info.columns[i].0.clone())),
             },
-            None =>catalog.allocate_rowid(table_name)?,
+            None => catalog.allocate_rowid(table_name)?,
         };
         write_version(catalog, table_name, key, row_data, true)?;
-        inserted += 1;
     }
     Ok(inserted)
 }
@@ -524,6 +547,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             fks,
             primary_key,
             if_not_exists,
+            constraints,
         } => {
             let auto_cols: Vec<_> = columns.iter().filter(|c| c.auto_increment).collect();
             if auto_cols.len() > 1 {
@@ -537,8 +561,14 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             }
             let declared: Vec<(String, ColumnType)> =
                 columns.iter().map(|c| (c.name.clone(), c.col_type)).collect();
-            let (primary_key, fks) =
-                keys::resolve_table_constraints(catalog, &table_name, &declared, primary_key, fks)?;
+            let resolved = keys::resolve_table_constraints(
+                catalog,
+                &table_name,
+                &declared,
+                primary_key,
+                fks,
+                constraints,
+            )?;
             let cols: Vec<_> = columns
                 .into_iter()
                 .map(|c| {
@@ -551,8 +581,14 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     )
                 })
                 .collect();
-            match catalog.create_table_with_fks(&table_name, cols.clone(), fks, primary_key.clone())
-            {
+            match catalog.create_table_with_constraints(
+                &table_name,
+                cols.clone(),
+                resolved.fks,
+                resolved.primary_key,
+                resolved.uniques,
+                resolved.checks,
+            ) {
                 Ok(()) => println!("Table {} created", table_name),
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {

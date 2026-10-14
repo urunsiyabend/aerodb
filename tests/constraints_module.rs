@@ -26,6 +26,8 @@ fn not_null_constraint_fails_on_null() {
         auto_increment: vec![false],
         fks: vec![],
         primary_key: None,
+        uniques: vec![],
+        checks: vec![],
     };
     let mut row = RowData(vec![ColumnValue::Null]);
     let mut catalog = setup_catalog("nn_fail.db");
@@ -59,6 +61,8 @@ fn foreign_key_constraint_detects_missing_parent() {
         auto_increment: vec![false],
         fks: vec![],
         primary_key: None,
+        uniques: vec![],
+        checks: vec![],
     };
     catalog
         .create_table_with_fks(
@@ -84,6 +88,8 @@ fn foreign_key_constraint_detects_missing_parent() {
             on_update: None,
         }],
         primary_key: None,
+        uniques: vec![],
+        checks: vec![],
     };
     catalog
         .create_table_with_fks(

@@ -31,14 +31,21 @@ impl Engine {
 
     /// Parse and execute one SQL statement (printing query results like the REPL).
     pub fn execute_sql(&mut self, sql: &str) -> DbResult<()> {
-        self.execute(parse_sql(sql)?)
+        let stmt = self.parse(sql)?;
+        self.execute(stmt)
+    }
+
+    /// Parse one statement; a syntax error inside an explicit transaction
+    /// fails the transaction like any other statement error.
+    fn parse(&mut self, sql: &str) -> DbResult<Statement> {
+        parse_sql(sql).inspect_err(|_| self.transaction_manager.statement_failed(&self.catalog))
     }
 
     /// Parse and run one statement inside the transaction manager, returning
     /// the typed result rows of a query without printing them. Non-query
     /// statements are executed and yield an empty result.
     pub fn query(&mut self, sql: &str) -> DbResult<QueryResult> {
-        let stmt = parse_sql(sql)?;
+        let stmt = self.parse(sql)?;
         let mut result = QueryResult::default();
         self.transaction_manager
             .execute(&mut self.catalog, stmt, |catalog, stmt| match stmt {

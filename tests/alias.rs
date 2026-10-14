@@ -18,7 +18,7 @@ fn column_aliases() {
             ColumnDef { name: "first_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "last_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO employees VALUES (1, 'John', 'Doe')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT first_name AS fname, last_name lname FROM employees").unwrap();
@@ -41,7 +41,7 @@ fn table_aliases() {
             ColumnDef { name: "first_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "departments".into(),
@@ -49,7 +49,7 @@ fn table_aliases() {
             ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "department_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO employees VALUES (1, 'John', 1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO departments VALUES (1, 'Sales')").unwrap()).unwrap();
@@ -73,7 +73,7 @@ fn mixed_aliases() {
             ColumnDef { name: "last_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "departments".into(),
@@ -81,7 +81,7 @@ fn mixed_aliases() {
             ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "department_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO employees VALUES (1, 'John', 'Doe', 1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO departments VALUES (1, 'Sales')").unwrap()).unwrap();
@@ -104,7 +104,7 @@ fn subquery_alias() {
             ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "salary".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     let data = vec![
         (1, 1, 100),
@@ -138,7 +138,7 @@ fn handle_statement_join_alias() {
             ColumnDef { name: "first_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "departments".into(),
@@ -146,7 +146,7 @@ fn handle_statement_join_alias() {
             ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "department_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO employees VALUES (1, 'John', 1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO departments VALUES (1, 'Sales')").unwrap()).unwrap();

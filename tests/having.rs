@@ -26,7 +26,7 @@ fn having_basic_sum() {
             aerodb::sql::ast::ColumnDef { name: "region".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "amount".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     let rows = vec![
         (1, "north", 50),
@@ -56,7 +56,7 @@ fn having_with_where() {
             aerodb::sql::ast::ColumnDef { name: "dept".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "active".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     let rows = vec![
         (1, "a", 1),
@@ -89,7 +89,7 @@ fn having_filters_all() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "t".into(),
         columns: vec![aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     for i in 1..=3 {
         aerodb::execution::handle_statement(&mut catalog, parse_statement(&format!("INSERT INTO t VALUES ({})", i)).unwrap()).unwrap();
@@ -109,7 +109,7 @@ fn having_sum_double() {
             aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "total".into(), col_type: ColumnType::Double { precision: 10, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (2, 2, 20)").unwrap()).unwrap();
     let (header, out) = run(&mut catalog, "SELECT user_id, SUM(TOTAL) FROM orders GROUP BY user_id HAVING SUM(TOTAL) > 100;");
@@ -129,7 +129,7 @@ fn having_ignores_alias() {
             aerodb::sql::ast::ColumnDef { name: "user_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "total".into(), col_type: ColumnType::Double { precision: 10, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1, 2, 20)").unwrap()).unwrap();
     let (header, out) = run(&mut catalog, "SELECT user_id, SUM(total) AS total_spent FROM orders GROUP BY user_id HAVING SUM(total) > 3");

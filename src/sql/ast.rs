@@ -329,6 +329,17 @@ pub struct ForeignKey {
     pub on_update: Option<Action>,
 }
 
+/// A UNIQUE or CHECK constraint of a CREATE TABLE (table- or column-level).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TableConstraint {
+    /// `[CONSTRAINT name] UNIQUE (cols)`; a column-level `UNIQUE` names its
+    /// own column (quoted, i.e. exactly).
+    Unique { name: Option<String>, columns: Vec<Ident> },
+    /// `[CONSTRAINT name] CHECK (expr)`; `column` is the declaring column of
+    /// a column-level CHECK (used for its default name only).
+    Check { name: Option<String>, expr: Expr, column: Option<String> },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnDef {
     pub name: String,
@@ -354,6 +365,9 @@ pub enum Statement {
         fks: Vec<ForeignKey>,
         primary_key: Option<Vec<Ident>>,
         if_not_exists: bool,
+        /// UNIQUE and CHECK constraints, table- and column-level, in
+        /// declaration order.
+        constraints: Vec<TableConstraint>,
     },
     CreateIndex {
         index_name: String,

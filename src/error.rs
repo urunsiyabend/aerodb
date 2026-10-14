@@ -51,6 +51,12 @@ pub enum DbError {
     AmbiguousColumn(String),
     #[error("invalid foreign key: {0}")]
     InvalidForeignKey(String),
+    #[error("duplicate key value violates unique constraint {constraint}: {key}")]
+    UniqueViolation { constraint: String, key: String },
+    #[error("new row violates check constraint {constraint}")]
+    CheckViolation { constraint: String },
+    #[error("current transaction is aborted, commands ignored until end of transaction block")]
+    InFailedTransaction,
 }
 
 impl DbError {
@@ -80,6 +86,9 @@ impl DbError {
             DbError::CardinalityViolation(_) => "21000",
             DbError::AmbiguousColumn(_) => "42702",
             DbError::InvalidForeignKey(_) => "42830",
+            DbError::UniqueViolation { .. } => "23505",
+            DbError::CheckViolation { .. } => "23514",
+            DbError::InFailedTransaction => "25P02",
         }
     }
 }

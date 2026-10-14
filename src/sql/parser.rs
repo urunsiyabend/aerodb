@@ -5,7 +5,7 @@
 use crate::error::{DbError, DbResult};
 use crate::sql::ast::{
     Action, AggFunc, BinaryOp, ColumnDef, CreateSequence, Expr, ForeignKey, Ident, JoinClause, JoinType,
-    OrderByItem, Query, Select, SelectItem, SetExpr, SetOperator, Statement, TableRef, UnaryOp,
+    OrderByItem, Query, Select, SelectItem, SetExpr, SetOperator, Statement, TableConstraint, TableRef, UnaryOp,
     is_reserved_word,
 };
 use crate::sql::decimal::Decimal;
@@ -544,7 +544,19 @@ impl Parser {
         let mut columns: Vec<ColumnDef> = Vec::new();
         let mut fks = Vec::new();
         let mut primary_key: Option<Vec<Ident>> = None;
+        let mut constraints: Vec<TableConstraint> = Vec::new();
         loop {
+            // `CONSTRAINT name` prefixes a table constraint. Names of PRIMARY
+            // KEY / FOREIGN KEY constraints are accepted but not stored.
+            let name = if self.eat_kw("CONSTRAINT") {
+                let n = self.parse_ident()?;
+                if !["PRIMARY", "FOREIGN", "UNIQUE", "CHECK"].iter().any(|k| self.is_kw(k)) {
+                    return Err(self.error_here("PRIMARY KEY, FOREIGN KEY, UNIQUE or CHECK"));
+                }
+                Some(n)
+            } else {
+                None
+            };
             if self.is_kw("PRIMARY") {
                 self.advance();
                 self.expect_kw("KEY")?;
@@ -556,15 +568,19 @@ impl Parser {
             } else if self.is_kw("FOREIGN") {
                 self.advance();
                 self.expect_kw("KEY")?;
-                fks.push(self.parse_foreign_key()?);
-            } else if self.is_kw("UNIQUE") {
-                return Err(unsupported("UNIQUE constraints"));
-            } else if self.is_kw("CHECK") {
-                return Err(unsupported("CHECK constraints"));
-            } else if self.is_kw("CONSTRAINT") {
-                return Err(unsupported("named constraints (CONSTRAINT name)"));
+                let cols = self.parse_ident_list()?;
+                fks.push(self.parse_references(cols)?);
+            } else if self.eat_kw("UNIQUE") {
+                let cols = self.parse_ident_list()?;
+                constraints.push(TableConstraint::Unique { name, columns: cols });
+            } else if self.eat_kw("CHECK") {
+                let expr = self.parse_check_body()?;
+                constraints.push(TableConstraint::Check { name, expr, column: None });
             } else {
-                columns.push(self.parse_column_def()?);
+                let (column, inline, inline_fks) = self.parse_column_def()?;
+                columns.push(column);
+                constraints.extend(inline);
+                fks.extend(inline_fks);
             }
             if !self.eat_symbol(",") {
                 break;
@@ -583,14 +599,24 @@ impl Parser {
             }
             primary_key = Some(inline_pk);
         }
-        Ok(Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists })
+        Ok(Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists, constraints })
     }
 
-    fn parse_foreign_key(&mut self) -> DbResult<ForeignKey> {
-        let columns = self.parse_ident_list()?;
+    /// `( expr )` of a CHECK constraint.
+    fn parse_check_body(&mut self) -> DbResult<Expr> {
+        self.expect_symbol("(")?;
+        let expr = self.parse_expr()?;
+        self.expect_symbol(")")?;
+        Ok(expr)
+    }
+
+    /// `REFERENCES parent [(cols)] [ON DELETE|UPDATE action]...` for the
+    /// referencing `columns`. Without a column list the parent's PRIMARY KEY
+    /// is meant (left empty here, resolved at CREATE TABLE).
+    fn parse_references(&mut self, columns: Vec<Ident>) -> DbResult<ForeignKey> {
         self.expect_kw("REFERENCES")?;
         let parent_table = self.parse_ident_ref()?;
-        let parent_columns = self.parse_ident_list()?;
+        let parent_columns = if self.is_symbol("(") { self.parse_ident_list()? } else { Vec::new() };
         let mut on_delete = None;
         let mut on_update = None;
         while self.is_kw("ON") {
@@ -624,14 +650,33 @@ impl Parser {
         Ok(ForeignKey { columns, parent_table, parent_columns, on_delete, on_update })
     }
 
-    fn parse_column_def(&mut self) -> DbResult<ColumnDef> {
+    /// A column definition with its column constraints. UNIQUE / CHECK are
+    /// returned as table constraints naming this column, REFERENCES as a
+    /// single-column foreign key.
+    fn parse_column_def(&mut self) -> DbResult<(ColumnDef, Vec<TableConstraint>, Vec<ForeignKey>)> {
         let name = self.parse_ident()?;
         let col_type = self.parse_column_type()?;
         let mut not_null = false;
         let mut default_value = None;
         let mut auto_increment = false;
         let mut primary_key = false;
+        let mut constraints = Vec::new();
+        let mut fks = Vec::new();
         loop {
+            // `CONSTRAINT name` names the next column constraint (stored for
+            // UNIQUE and CHECK only).
+            let cname = if self.eat_kw("CONSTRAINT") {
+                let n = self.parse_ident()?;
+                if !["NOT", "NULL", "PRIMARY", "UNIQUE", "CHECK", "REFERENCES", "DEFAULT"]
+                    .iter()
+                    .any(|k| self.is_kw(k))
+                {
+                    return Err(self.error_here("column constraint after CONSTRAINT name"));
+                }
+                Some(n)
+            } else {
+                None
+            };
             if self.is_kw("NOT") && self.is_kw_at(1, "NULL") {
                 self.advance();
                 self.advance();
@@ -659,14 +704,16 @@ impl Parser {
                 primary_key = true;
             } else if self.eat_kw("AUTO_INCREMENT") {
                 auto_increment = true;
-            } else if self.is_kw("UNIQUE") {
-                return Err(unsupported("UNIQUE constraints"));
-            } else if self.is_kw("CHECK") {
-                return Err(unsupported("CHECK constraints"));
+            } else if self.eat_kw("UNIQUE") {
+                constraints.push(TableConstraint::Unique {
+                    name: cname,
+                    columns: vec![Ident::quoted(name.clone())],
+                });
+            } else if self.eat_kw("CHECK") {
+                let expr = self.parse_check_body()?;
+                constraints.push(TableConstraint::Check { name: cname, expr, column: Some(name.clone()) });
             } else if self.is_kw("REFERENCES") {
-                return Err(unsupported("column REFERENCES constraints"));
-            } else if self.is_kw("CONSTRAINT") {
-                return Err(unsupported("named constraints (CONSTRAINT name)"));
+                fks.push(self.parse_references(vec![Ident::quoted(name.clone())])?);
             } else if self.is_symbol(",") || self.is_symbol(")") {
                 break;
             } else {
@@ -685,7 +732,7 @@ impl Parser {
                 return Err(DbError::Syntax("AUTO_INCREMENT columns must be NOT NULL".into()));
             }
         }
-        Ok(ColumnDef { name, col_type, not_null, default_value, auto_increment, primary_key })
+        Ok((ColumnDef { name, col_type, not_null, default_value, auto_increment, primary_key }, constraints, fks))
     }
 
     /// Reads the type words of a column definition and resolves them through

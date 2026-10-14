@@ -83,18 +83,22 @@ impl Database {
         Ok(TxHandle { id })
     }
 
-    /// Execute one DML/DDL statement within transaction `tx`.
+    /// Execute one DML/DDL statement within transaction `tx`. A failing
+    /// statement fails the transaction: later statements return
+    /// [`crate::error::DbError::InFailedTransaction`] (25P02) and
+    /// [`Database::commit`] rolls it back with that error;
+    /// [`Database::abort`] ends it normally.
     pub fn execute(&self, tx: &TxHandle, stmt: Statement) -> DbResult<()> {
         let mut core = self.lock();
         let Core { catalog, manager } = &mut *core;
-        manager.run_with(catalog, tx.id, |catalog| handle_statement(catalog, stmt))
+        manager.run_statement(catalog, tx.id, |catalog| handle_statement(catalog, stmt))
     }
 
     /// Read every row of `table` visible to `tx`'s snapshot.
     pub fn query_all(&self, tx: &TxHandle, table: &str) -> DbResult<Vec<Row>> {
         let mut core = self.lock();
         let Core { catalog, manager } = &mut *core;
-        manager.run_with(catalog, tx.id, |catalog| {
+        manager.run_statement(catalog, tx.id, |catalog| {
             let mut rows = Vec::new();
             execute_select_with_indexes(catalog, table, None, &mut rows)?;
             Ok(rows)
@@ -104,10 +108,11 @@ impl Database {
     /// Run one SQL query within transaction `tx` and return its typed result.
     /// Non-query statements are executed and yield an empty result.
     pub fn query(&self, tx: &TxHandle, sql: &str) -> DbResult<QueryResult> {
-        let stmt = parse_sql(sql)?;
+        let parsed = parse_sql(sql);
         let mut core = self.lock();
         let Core { catalog, manager } = &mut *core;
-        manager.run_with(catalog, tx.id, |catalog| match stmt {
+        // A syntax error fails the transaction like any other statement error.
+        manager.run_statement(catalog, tx.id, |catalog| match parsed? {
             Statement::Query(q) => execute_query(catalog, &q, None),
             other => handle_statement(catalog, other).map(|()| QueryResult::default()),
         })

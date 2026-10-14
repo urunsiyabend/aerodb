@@ -1,7 +1,7 @@
 use crate::storage::btree::BTree;
 use crate::{catalog::Catalog, error::DbError, error::DbResult, sql::ast::Statement};
 use log::{debug, error};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 
 use super::{
@@ -30,6 +30,12 @@ pub struct TransactionManager {
     /// operation (operations are serialized by the shared-storage lock). The
     /// single-session `Engine` path leaves this empty.
     detached: HashMap<TransactionId, Transaction>,
+    /// The explicit (Engine) transaction had a failed statement: every later
+    /// statement except COMMIT/ROLLBACK is refused with `InFailedTransaction`
+    /// and COMMIT rolls back (PostgreSQL's aborted-transaction state).
+    failed: bool,
+    /// Detached (Database) transactions in that same failed state.
+    failed_detached: HashSet<TransactionId>,
 }
 
 impl TransactionManager {
@@ -168,14 +174,40 @@ impl TransactionManager {
         result
     }
 
+    /// Run one statement `f` of detached transaction `tx_id` under the
+    /// failed-transaction policy: a transaction with an earlier failed
+    /// statement refuses it with `InFailedTransaction`; an error marks the
+    /// transaction failed (its partial effects can then never commit).
+    pub fn run_statement<F, R>(&mut self, catalog: &mut Catalog, tx_id: TransactionId, f: F) -> DbResult<R>
+    where
+        F: FnOnce(&mut Catalog) -> DbResult<R>,
+    {
+        if self.failed_detached.contains(&tx_id) {
+            return Err(DbError::InFailedTransaction);
+        }
+        let result = self.run_with(catalog, tx_id, f);
+        if result.is_err() {
+            self.failed_detached.insert(tx_id);
+        }
+        result
+    }
+
     /// Commit detached transaction `tx_id`, first re-validating write/write
     /// conflicts (first-committer-wins). On conflict the transaction is aborted
-    /// and `WriteConflict` returned.
+    /// and `WriteConflict` returned. A failed transaction (see
+    /// [`TransactionManager::run_statement`]) is rolled back instead and
+    /// `InFailedTransaction` returned.
     pub fn commit_detached(
         &mut self,
         catalog: &mut Catalog,
         tx_id: TransactionId,
     ) -> DbResult<()> {
+        if self.failed_detached.remove(&tx_id) {
+            if let Err(e) = self.abort_detached(catalog, tx_id) {
+                error!("rollback of failed transaction {} at COMMIT failed: {}", tx_id, e);
+            }
+            return Err(DbError::InFailedTransaction);
+        }
         let transaction = self
             .detached
             .remove(&tx_id)
@@ -194,6 +226,7 @@ impl TransactionManager {
 
     /// Abort detached transaction `tx_id`.
     pub fn abort_detached(&mut self, catalog: &mut Catalog, tx_id: TransactionId) -> io::Result<()> {
+        self.failed_detached.remove(&tx_id);
         let transaction = self
             .detached
             .remove(&tx_id)
@@ -235,13 +268,49 @@ impl TransactionManager {
     where
         F: FnOnce(&mut Catalog, Statement) -> DbResult<()>,
     {
+        if self.failed {
+            match stmt {
+                // ROLLBACK ends the failed transaction normally.
+                Statement::Rollback => self.failed = false,
+                // COMMIT of a failed transaction rolls it back and reports it.
+                Statement::Commit => {
+                    self.failed = false;
+                    if let Err(e) = self.rollback(catalog) {
+                        error!("rollback of failed transaction at COMMIT failed: {}", e);
+                    }
+                    self.mode = TransactionMode::None;
+                    return Err(DbError::InFailedTransaction);
+                }
+                _ => return Err(DbError::InFailedTransaction),
+            }
+        }
         if self.handle_transaction_control(catalog, &stmt)? {
             return Ok(());
         }
 
+        let explicit = self.in_explicit_transaction(catalog);
         let implicit = self.begin_implicit_if_needed(catalog, &stmt)?;
         let result = execute_stmt(catalog, stmt);
+        if explicit && result.is_err() {
+            // Statement atomicity inside BEGIN ... COMMIT: the statement may
+            // have left partial effects, so the transaction can no longer
+            // commit (PostgreSQL's 25P02 policy).
+            self.failed = true;
+        }
         self.finish_implicit_if_needed(catalog, implicit, result)
+    }
+
+    fn in_explicit_transaction(&self, catalog: &Catalog) -> bool {
+        self.mode == TransactionMode::Explicit && catalog.transaction_active()
+    }
+
+    /// Record that a statement of the current explicit transaction failed
+    /// before reaching [`TransactionManager::execute`] (e.g. a parse error).
+    /// No effect outside an explicit transaction.
+    pub fn statement_failed(&mut self, catalog: &Catalog) {
+        if self.in_explicit_transaction(catalog) {
+            self.failed = true;
+        }
     }
 
     fn handle_transaction_control(

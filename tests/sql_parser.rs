@@ -1,6 +1,6 @@
 //! Parse-level behaviour of the fail-closed SQL front end.
 use aerodb::sql::ast::{
-    Action, Expr, SelectItem, SetExpr, SetOperator, Statement,
+    Action, Expr, SelectItem, SetExpr, SetOperator, Statement, TableConstraint,
 };
 use aerodb::sql::parser::{parse_script, parse_sql};
 use aerodb::storage::row::ColumnType;
@@ -208,11 +208,30 @@ fn unterminated_string() {
 }
 
 #[test]
-fn column_constraints_are_unsupported_not_ignored() {
-    assert_eq!(sqlstate("CREATE TABLE d (n INTEGER UNIQUE)"), "0A000");
-    assert_eq!(sqlstate("CREATE TABLE d (n INTEGER CHECK (n > 0))"), "0A000");
-    assert_eq!(sqlstate("CREATE TABLE d (n INTEGER, CONSTRAINT k UNIQUE (n))"), "0A000");
+fn column_constraints_are_parsed_not_ignored() {
+    // UNIQUE / CHECK / CONSTRAINT name / inline REFERENCES are supported since
+    // task 5; each one must show up in the AST (never silently dropped).
+    let constraints = |sql: &str| match parse_sql(sql).unwrap_or_else(|e| panic!("`{sql}`: {e}")) {
+        Statement::CreateTable { constraints, fks, .. } => (constraints, fks),
+        other => panic!("expected create table, got {other:?}"),
+    };
+    let (c, _) = constraints("CREATE TABLE d (n INTEGER UNIQUE)");
+    assert!(matches!(&c[..], [TableConstraint::Unique { name: None, columns }] if columns[0].value == "n"));
+    let (c, _) = constraints("CREATE TABLE d (n INTEGER CHECK (n > 0))");
+    assert!(matches!(&c[..], [TableConstraint::Check { name: None, column: Some(col), .. }] if col == "n"));
+    let (c, _) = constraints("CREATE TABLE d (n INTEGER, CONSTRAINT k UNIQUE (n))");
+    assert!(matches!(&c[..], [TableConstraint::Unique { name: Some(k), .. }] if k == "k"));
+    let (c, _) = constraints("CREATE TABLE d (n INTEGER CONSTRAINT pos CHECK (n > 0), CHECK (n < 9))");
+    assert!(matches!(&c[..], [
+        TableConstraint::Check { name: Some(p), column: Some(_), .. },
+        TableConstraint::Check { name: None, column: None, .. },
+    ] if p == "pos"));
+    let (_, fks) = constraints("CREATE TABLE d (n INTEGER REFERENCES p(id) ON UPDATE CASCADE)");
+    assert_eq!(fks.len(), 1);
+    assert_eq!(fks[0].on_update, Some(Action::Cascade));
     assert_eq!(sqlstate("CREATE TABLE d (n INTEGER BOGUS)"), "42601");
+    assert_eq!(sqlstate("CREATE TABLE d (n INTEGER, CONSTRAINT k)"), "42601");
+    assert_eq!(sqlstate("CREATE TABLE d (n INTEGER REFERENCES p(id) ON DELETE SET NULL)"), "0A000");
 }
 
 #[test]

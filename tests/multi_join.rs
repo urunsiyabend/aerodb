@@ -19,7 +19,7 @@ fn join_two_tables() {
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
@@ -28,7 +28,7 @@ fn join_two_tables() {
             aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     // insert rows
     for (id, v) in &[(1,"av1"),(2,"av2")] {
@@ -62,7 +62,7 @@ fn join_three_tables() {
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
@@ -71,7 +71,7 @@ fn join_three_tables() {
             aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "c".into(),
@@ -80,7 +80,7 @@ fn join_three_tables() {
             aerodb::sql::ast::ColumnDef { name: "b_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "x".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1, 'av1')").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2, 'av2')").unwrap()).unwrap();
@@ -107,7 +107,7 @@ fn join_with_where() {
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "v".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
@@ -116,7 +116,7 @@ fn join_with_where() {
             aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "w".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1, 'av1')").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2, 'av2')").unwrap()).unwrap();
@@ -140,7 +140,7 @@ fn left_join_preserves_left_rows() {
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
@@ -148,7 +148,7 @@ fn left_join_preserves_left_rows() {
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2)").unwrap()).unwrap();
@@ -173,7 +173,7 @@ fn right_join_preserves_right_rows() {
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
@@ -181,7 +181,7 @@ fn right_join_preserves_right_rows() {
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "a_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (10, 1)").unwrap()).unwrap();
@@ -206,14 +206,14 @@ fn cross_join_and_non_equality_predicate() {
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "b".into(),
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2)").unwrap()).unwrap();

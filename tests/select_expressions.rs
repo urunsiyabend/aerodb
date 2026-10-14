@@ -31,7 +31,7 @@ fn execute_select_add_expr() {
             ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "val".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO numbers VALUES (1, 10)").unwrap()).unwrap();
     let stmt = parse_statement("SELECT val + 5 FROM numbers WHERE id = 1").unwrap();
@@ -51,7 +51,7 @@ fn execute_select_mul_double_expr() {
             ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
             ColumnDef { name: "total".into(), col_type: ColumnType::Double { precision: 8, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1, 20.0)").unwrap()).unwrap();
     let stmt = parse_statement("SELECT id, total * 1.05 FROM orders WHERE id = 1").unwrap();

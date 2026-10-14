@@ -25,7 +25,7 @@ fn insert_and_retrieve_null() {
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false},
             aerodb::sql::ast::ColumnDef { name: "nickname".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false},
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, NULL)").unwrap()).unwrap();
     let mut out = Vec::new();

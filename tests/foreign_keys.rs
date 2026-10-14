@@ -15,7 +15,7 @@ fn foreign_key_basic() {
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}
         ],
-        fks: Vec::new(), primary_key: Some(vec!["id".into()]), if_not_exists: false,
+        fks: Vec::new(), primary_key: Some(vec!["id".into()]), if_not_exists: false, constraints: Vec::new(),
     };
     aerodb::execution::handle_statement(&mut catalog, create_users).unwrap();
 
@@ -24,9 +24,9 @@ fn foreign_key_basic() {
         "CREATE TABLE orders (id INTEGER, user_id INTEGER, FOREIGN KEY (user_id) REFERENCES users (id))",
     )
     .unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = stmt {
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists, constraints } = stmt {
         assert_eq!(fks.len(), 1);
-        aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+        aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists, constraints }).unwrap();
     } else { panic!("expected create table") }
 
     // insert a user id=1
@@ -61,7 +61,7 @@ fn foreign_key_on_delete_cascade() {
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}
         ],
-        fks: Vec::new(), primary_key: Some(vec!["id".into()]), if_not_exists: false,
+        fks: Vec::new(), primary_key: Some(vec!["id".into()]), if_not_exists: false, constraints: Vec::new(),
     };
     aerodb::execution::handle_statement(&mut catalog, create_users).unwrap();
 
@@ -69,8 +69,8 @@ fn foreign_key_on_delete_cascade() {
     let stmt = parse_statement(
         "CREATE TABLE orders (id INTEGER, user_id INTEGER, FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE)"
     ).unwrap();
-    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists } = stmt {
-        aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists }).unwrap();
+    if let Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists, constraints } = stmt {
+        aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable { table_name, columns, fks, primary_key, if_not_exists, constraints }).unwrap();
     } else { panic!("expected create") }
 
     let insert_user = parse_statement("INSERT INTO users VALUES (1)").unwrap();

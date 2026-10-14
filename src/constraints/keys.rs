@@ -7,15 +7,16 @@
 //! not-yet-applied changes) and at commit recheck (empty overlay, against the
 //! commit-time view).
 
-use crate::catalog::{Catalog, TableInfo};
+use crate::catalog::{Catalog, CheckConstraint, TableInfo, UniqueConstraint};
 use crate::error::{DbError, DbResult};
-use crate::sql::ast::{Action, ForeignKey, Ident};
+use crate::execution::eval::{Ctx, Env, Scope, display_column, eval, truth};
+use crate::sql::ast::{Action, Expr, ForeignKey, Ident, TableConstraint};
 use crate::sql::value::{SqlType, Value};
 use crate::storage::btree::BTree;
 use crate::storage::row::{ColumnType, ColumnValue, Row, RowData};
 use crate::transaction::{Snapshot, TransactionId};
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Typed equality of two key tuples. A tuple containing NULL equals nothing.
 pub fn key_values_equal(a: &[ColumnValue], b: &[ColumnValue]) -> bool {
@@ -156,6 +157,115 @@ pub fn check_primary_key(
     Ok(())
 }
 
+/// UNIQUE check for `candidates` (row images a statement or committing
+/// transaction makes visible in `table`): per UNIQUE constraint, a candidate
+/// key without NULLs must differ from every other candidate and from every
+/// visible row not removed by `pending`. Keys with a NULL never conflict.
+pub fn check_unique(
+    catalog: &Catalog,
+    table: &TableInfo,
+    snapshot: &Snapshot,
+    candidates: &[RowData],
+    pending: &Pending,
+) -> DbResult<()> {
+    if table.uniques.is_empty() || candidates.is_empty() {
+        return Ok(());
+    }
+    let visible = visible_rows(catalog, table, snapshot, pending)?;
+    for u in &table.uniques {
+        let idx: Vec<usize> =
+            u.columns.iter().map(|c| column_position(table, c)).collect::<DbResult<_>>()?;
+        let existing: Vec<Vec<ColumnValue>> =
+            visible.iter().map(|r| key_of(&r.data, &idx)).filter(|k| !has_null(k)).collect();
+        let mut seen: Vec<Vec<ColumnValue>> = Vec::new();
+        for c in candidates {
+            let key = key_of(c, &idx);
+            if has_null(&key) {
+                continue;
+            }
+            if existing.iter().chain(seen.iter()).any(|k| key_values_equal(k, &key)) {
+                return Err(unique_violation(u, &key));
+            }
+            seen.push(key);
+        }
+    }
+    Ok(())
+}
+
+fn unique_violation(u: &UniqueConstraint, key: &[ColumnValue]) -> DbError {
+    let values: Vec<String> = key.iter().map(|v| Value::from_column_value(v).to_string()).collect();
+    DbError::UniqueViolation {
+        constraint: u.name.clone(),
+        key: format!("({})=({})", u.columns.join(", "), values.join(", ")),
+    }
+}
+
+/// Expression scope over the columns of `table`, qualified by its name.
+pub fn table_scope(table: &TableInfo) -> Scope {
+    column_scope(&table.name, &table.columns)
+}
+
+fn column_scope(table_name: &str, columns: &[(String, ColumnType)]) -> Scope {
+    let mut scope = Scope::new();
+    for (name, ty) in columns {
+        scope.push(Some(table_name.to_string()), name.clone(), SqlType::from_column_type(ty));
+    }
+    scope
+}
+
+/// CHECK constraints of `table` for one row image: FALSE is a violation,
+/// TRUE and UNKNOWN (NULL) pass.
+pub fn check_checks(table: &TableInfo, row: &RowData) -> DbResult<()> {
+    if table.checks.is_empty() {
+        return Ok(());
+    }
+    let scope = table_scope(table);
+    let vals: Vec<Value> = row.0.iter().map(Value::from_column_value).collect();
+    let env = Env::new(&scope, &vals, None);
+    for c in &table.checks {
+        let v = eval(&c.expr, &env, &Ctx { catalog: None })?;
+        if truth(&v)? == Some(false) {
+            return Err(DbError::CheckViolation { constraint: c.name.clone() });
+        }
+    }
+    Ok(())
+}
+
+fn check_not_null(table: &TableInfo, row: &RowData) -> DbResult<()> {
+    for (i, (name, _)) in table.columns.iter().enumerate() {
+        let nn = table.not_null.get(i).copied().unwrap_or(false);
+        if nn && matches!(row.0.get(i), None | Some(ColumnValue::Null)) {
+            return Err(DbError::NullViolation(name.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Every constraint on new row images `images` of `table`: NOT NULL and
+/// CHECK per row, then PRIMARY KEY and UNIQUE across the images and the
+/// remaining rows, then FOREIGN KEY existence. `pending` describes the
+/// statement's (or committing transaction's) final state and must list
+/// `images` as added rows of `table`. Used by INSERT, UPDATE (including
+/// cascaded rows) and the commit recheck alike.
+pub fn check_new_rows(
+    catalog: &Catalog,
+    table: &TableInfo,
+    snapshot: &Snapshot,
+    images: &[RowData],
+    pending: &Pending,
+) -> DbResult<()> {
+    for image in images {
+        check_not_null(table, image)?;
+        check_checks(table, image)?;
+    }
+    check_primary_key(catalog, table, snapshot, images, pending)?;
+    check_unique(catalog, table, snapshot, images, pending)?;
+    for image in images {
+        check_foreign_keys(catalog, table, image, snapshot, pending)?;
+    }
+    Ok(())
+}
+
 /// The parent table of `fk` declared on `child` (a self-reference resolves to
 /// `child` itself).
 fn parent_of(catalog: &Catalog, child: &TableInfo, fk: &ForeignKey) -> DbResult<TableInfo> {
@@ -227,8 +337,10 @@ pub enum Removal {
     /// DELETE: ON DELETE CASCADE children are handled by [`plan_delete`];
     /// other references are violations.
     Delete,
-    /// UPDATE: the old row images are replaced. ON UPDATE CASCADE is not
-    /// implemented yet and behaves like NO ACTION.
+    /// UPDATE: the old row images are replaced. ON UPDATE CASCADE children
+    /// were rewritten by [`plan_update`] (their old versions are removed in
+    /// the overlay), so every remaining reference is a violation
+    /// (NO ACTION / RESTRICT).
     Update,
     /// Commit recheck: no action can run any more; every remaining reference
     /// is a violation.
@@ -330,6 +442,10 @@ pub fn check_removed_keys(
 /// recursively, then check every other reference to the deleted keys
 /// (NO ACTION / RESTRICT) against the final set of deleted rows. Returns the
 /// rows to delete per table, `table` first.
+///
+/// RESTRICT is checked exactly like NO ACTION (at the end of the statement).
+/// SQL distinguishes them only for deferred constraints, which do not exist
+/// here, so the difference is not observable.
 pub fn plan_delete(
     catalog: &Catalog,
     table: &TableInfo,
@@ -367,6 +483,109 @@ pub fn plan_delete(
     Ok(batches)
 }
 
+/// Row replacements of one UPDATE, grouped by table: (old visible version,
+/// new row image).
+pub type UpdatePlan = Vec<(TableInfo, Vec<(Row, RowData)>)>;
+
+/// Upper bound on cascade steps of one statement (guards against a cascade
+/// cycle that never settles).
+const MAX_CASCADE_STEPS: usize = 1_000_000;
+
+/// Plan an UPDATE of `table` replacing each old row with its new image
+/// (`ops`): follow ON UPDATE CASCADE references recursively, rewriting the
+/// referencing columns of child rows (in the state before the statement) that
+/// matched a parent row's old key to that row's new key. A child row reached
+/// more than once (or also updated directly) gets one combined new image.
+/// Returns the replacements per table, `table` first; constraints are not
+/// checked here (see [`check_new_rows`] / [`check_removed_keys`]).
+pub fn plan_update(
+    catalog: &Catalog,
+    table: &TableInfo,
+    ops: Vec<(Row, RowData)>,
+    snapshot: &Snapshot,
+) -> DbResult<UpdatePlan> {
+    let mut tables: Vec<TableInfo> = vec![table.clone()];
+    // (table index, old version, new image)
+    let mut plan: Vec<(usize, Row, RowData)> = Vec::with_capacity(ops.len());
+    let mut index: HashMap<(String, i32, TransactionId), usize> = HashMap::new();
+    for (old, new) in ops {
+        index.insert((table.name.clone(), old.key, old.created_tx), plan.len());
+        plan.push((0, old, new));
+    }
+    let mut all = catalog.all_tables();
+    all.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut child_rows: HashMap<String, Vec<Row>> = HashMap::new();
+    let mut queue: VecDeque<usize> = (0..plan.len()).collect();
+    let mut steps = 0usize;
+    while let Some(i) = queue.pop_front() {
+        steps += 1;
+        if steps > MAX_CASCADE_STEPS {
+            return Err(DbError::FeatureNotSupported(
+                "ON UPDATE CASCADE cycle that does not settle".into(),
+            ));
+        }
+        let parent = tables[plan[i].0].clone();
+        let (old, new) = (plan[i].1.data.clone(), plan[i].2.clone());
+        for child in &all {
+            for fk in child.fks.iter().filter(|fk| {
+                fk.parent_table.value == parent.name && fk.on_update == Some(Action::Cascade)
+            }) {
+                let parent_idx = positions(&parent, &fk.parent_columns)?;
+                let old_key = key_of(&old, &parent_idx);
+                let new_key = key_of(&new, &parent_idx);
+                if has_null(&old_key) || key_values_equal(&old_key, &new_key) {
+                    continue;
+                }
+                let child_idx = positions(child, &fk.columns)?;
+                if !child_rows.contains_key(&child.name) {
+                    let rows = visible_rows(catalog, child, snapshot, &Pending::new())?;
+                    child_rows.insert(child.name.clone(), rows);
+                }
+                let referencing: Vec<Row> = child_rows[&child.name]
+                    .iter()
+                    .filter(|r| key_values_equal(&key_of(&r.data, &child_idx), &old_key))
+                    .cloned()
+                    .collect();
+                for r in referencing {
+                    let id = (child.name.clone(), r.key, r.created_tx);
+                    let j = match index.get(&id) {
+                        Some(&j) => j,
+                        None => {
+                            let t = match tables.iter().position(|t| t.name == child.name) {
+                                Some(t) => t,
+                                None => {
+                                    tables.push(child.clone());
+                                    tables.len() - 1
+                                }
+                            };
+                            let data = r.data.clone();
+                            plan.push((t, r, data));
+                            index.insert(id, plan.len() - 1);
+                            plan.len() - 1
+                        }
+                    };
+                    let mut image = plan[j].2.clone();
+                    for (k, &ci) in child_idx.iter().enumerate() {
+                        let (name, ty) = &child.columns[ci];
+                        image.0[ci] = Value::from_column_value(&new_key[k])
+                            .to_column_value(ty, name)
+                            .map_err(DbError::from)?;
+                    }
+                    if image != plan[j].2 {
+                        plan[j].2 = image;
+                        queue.push_back(j);
+                    }
+                }
+            }
+        }
+    }
+    let mut out: UpdatePlan = tables.into_iter().map(|t| (t, Vec::new())).collect();
+    for (t, old, new) in plan {
+        out[t].1.push((old, new));
+    }
+    Ok(out)
+}
+
 /// Resolve `ident` against declared column names with the identifier rule.
 fn resolve_column(columns: &[(String, ColumnType)], ident: &Ident, table: &str) -> DbResult<usize> {
     let hits: Vec<usize> =
@@ -385,34 +604,153 @@ fn comparable(a: &ColumnType, b: &ColumnType) -> bool {
         || std::mem::discriminant(&x) == std::mem::discriminant(&y)
 }
 
-/// Validate and canonicalise the PRIMARY KEY and FOREIGN KEY clauses of a
-/// CREATE TABLE: names resolve with the identifier rule and are stored as
-/// the declared (quoted) names; each foreign key references exactly the
-/// parent's PRIMARY KEY column set with the same arity and comparable types.
+/// Resolve a constraint's column list to declared names (no duplicates).
+fn resolve_column_list(
+    columns: &[(String, ColumnType)],
+    idents: &[Ident],
+    table_name: &str,
+    what: &str,
+) -> DbResult<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for c in idents {
+        let name = columns[resolve_column(columns, c, table_name)?].0.clone();
+        if out.contains(&name) {
+            return Err(DbError::Syntax(format!("column \"{}\" appears twice in {} constraint", name, what)));
+        }
+        out.push(name);
+    }
+    Ok(out)
+}
+
+/// Validate a CHECK expression of table `table_name` and canonicalise its
+/// column references to the declared names (quoted, unqualified): only
+/// columns of the table itself (42703 otherwise); no subqueries or aggregates
+/// (0A000).
+fn resolve_check_expr(expr: &Expr, table_name: &str, columns: &[(String, ColumnType)]) -> DbResult<Expr> {
+    let mut unsupported: Option<&str> = None;
+    expr.walk(&mut |e| match e {
+        Expr::ScalarSubquery(_) | Expr::Exists { .. } | Expr::InSubquery { .. } => {
+            unsupported.get_or_insert("subqueries in CHECK constraints");
+        }
+        Expr::Aggregate { .. } => {
+            unsupported.get_or_insert("aggregate functions in CHECK constraints");
+        }
+        Expr::Default => {
+            unsupported.get_or_insert("DEFAULT in CHECK constraints");
+        }
+        _ => {}
+    });
+    if let Some(what) = unsupported {
+        return Err(DbError::FeatureNotSupported(what.into()));
+    }
+    let scope = column_scope(table_name, columns);
+    let mut failure: Option<DbError> = None;
+    let canonical = expr.transform(&mut |e| match e {
+        Expr::Column { table, name } => match scope.resolve(table.as_ref(), &name) {
+            Ok(Some(i)) => Expr::Column { table: None, name: Ident::quoted(columns[i].0.clone()) },
+            Ok(None) => {
+                failure.get_or_insert(DbError::ColumnNotFound(display_column(
+                    table.as_ref().map(Ident::as_str),
+                    &name,
+                )));
+                Expr::Column { table, name }
+            }
+            Err(err) => {
+                failure.get_or_insert(err);
+                Expr::Column { table, name }
+            }
+        },
+        other => other,
+    });
+    match failure {
+        Some(err) => Err(err),
+        None => Ok(canonical),
+    }
+}
+
+/// `base`, or `base1`, `base2`, ... — the first name not in `used`.
+fn fresh_name(base: String, used: &HashSet<String>) -> String {
+    if !used.contains(&base) {
+        return base;
+    }
+    (1..).map(|n| format!("{}{}", base, n)).find(|c| !used.contains(c)).expect("unbounded")
+}
+
+/// The validated, canonical constraints of a CREATE TABLE.
+#[derive(Debug, Default)]
+pub struct ResolvedConstraints {
+    pub primary_key: Option<Vec<String>>,
+    pub fks: Vec<ForeignKey>,
+    pub uniques: Vec<UniqueConstraint>,
+    pub checks: Vec<CheckConstraint>,
+}
+
+/// Validate and canonicalise the constraints of a CREATE TABLE: column names
+/// resolve with the identifier rule and are stored as the declared (quoted)
+/// names. Each foreign key references exactly the parent's PRIMARY KEY or one
+/// of its UNIQUE column sets (no column list = the PRIMARY KEY) with the same
+/// arity and comparable types. UNIQUE / CHECK constraints get their given
+/// name, else `{table}_{cols}_key`, `{table}_{col}_check` (column CHECK) or
+/// `{table}_check{n}` (n-th unnamed table CHECK); a generated name that is
+/// taken gets a numeric suffix, a duplicate given name is an error.
 pub fn resolve_table_constraints(
     catalog: &Catalog,
     table_name: &str,
     columns: &[(String, ColumnType)],
     primary_key: Option<Vec<Ident>>,
     fks: Vec<ForeignKey>,
-) -> DbResult<(Option<Vec<String>>, Vec<ForeignKey>)> {
+    constraints: Vec<TableConstraint>,
+) -> DbResult<ResolvedConstraints> {
     let pk = match primary_key {
-        Some(cols) => {
-            let mut out: Vec<String> = Vec::new();
-            for c in &cols {
-                let name = columns[resolve_column(columns, c, table_name)?].0.clone();
-                if out.contains(&name) {
-                    return Err(DbError::Syntax(format!(
-                        "column \"{}\" appears twice in primary key constraint",
-                        name
-                    )));
-                }
-                out.push(name);
-            }
-            Some(out)
-        }
+        Some(cols) => Some(resolve_column_list(columns, &cols, table_name, "primary key")?),
         None => None,
     };
+
+    let mut used: HashSet<String> = HashSet::new();
+    for c in &constraints {
+        let (TableConstraint::Unique { name: Some(n), .. } | TableConstraint::Check { name: Some(n), .. }) = c
+        else {
+            continue;
+        };
+        if !used.insert(n.clone()) {
+            return Err(DbError::Syntax(format!(
+                "constraint \"{}\" for relation \"{}\" already exists",
+                n, table_name
+            )));
+        }
+    }
+    let mut uniques: Vec<UniqueConstraint> = Vec::new();
+    let mut checks: Vec<CheckConstraint> = Vec::new();
+    let mut table_checks = 0usize;
+    for c in constraints {
+        match c {
+            TableConstraint::Unique { name, columns: cols } => {
+                let cols = resolve_column_list(columns, &cols, table_name, "unique")?;
+                let name = name.unwrap_or_else(|| {
+                    let n = fresh_name(format!("{}_{}_key", table_name, cols.join("_")), &used);
+                    used.insert(n.clone());
+                    n
+                });
+                uniques.push(UniqueConstraint { name, columns: cols });
+            }
+            TableConstraint::Check { name, expr, column } => {
+                let expr = resolve_check_expr(&expr, table_name, columns)?;
+                if column.is_none() {
+                    table_checks += 1;
+                }
+                let name = name.unwrap_or_else(|| {
+                    let base = match &column {
+                        Some(col) => format!("{}_{}_check", table_name, col),
+                        None => format!("{}_check{}", table_name, table_checks),
+                    };
+                    let n = fresh_name(base, &used);
+                    used.insert(n.clone());
+                    n
+                });
+                checks.push(CheckConstraint { name, expr });
+            }
+        }
+    }
 
     let mut resolved = Vec::with_capacity(fks.len());
     for fk in fks {
@@ -422,14 +760,26 @@ pub fn resolve_table_constraints(
             .map(|c| resolve_column(columns, c, table_name))
             .collect::<DbResult<_>>()?;
         let self_ref = fk.parent_table.matches(table_name);
-        let (parent_name, parent_cols, parent_pk) = if self_ref {
-            (table_name.to_string(), columns.to_vec(), pk.clone())
+        let (parent_name, parent_cols, parent_pk, parent_uniques) = if self_ref {
+            (table_name.to_string(), columns.to_vec(), pk.clone(), uniques.clone())
         } else {
             let p = catalog.resolve_table(&fk.parent_table)?;
-            (p.name.clone(), p.columns.clone(), p.primary_key.clone())
+            (p.name.clone(), p.columns.clone(), p.primary_key.clone(), p.uniques.clone())
         };
-        let parent_idx: Vec<usize> = fk
-            .parent_columns
+        let parent_idents: Vec<Ident> = if fk.parent_columns.is_empty() {
+            match &parent_pk {
+                Some(cols) => cols.iter().map(|c| Ident::quoted(c.clone())).collect(),
+                None => {
+                    return Err(DbError::InvalidForeignKey(format!(
+                        "there is no primary key for referenced table \"{}\"",
+                        parent_name
+                    )));
+                }
+            }
+        } else {
+            fk.parent_columns.clone()
+        };
+        let parent_idx: Vec<usize> = parent_idents
             .iter()
             .map(|c| resolve_column(&parent_cols, c, &parent_name))
             .collect::<DbResult<_>>()?;
@@ -442,14 +792,18 @@ pub fn resolve_table_constraints(
             )));
         }
         let referenced: Vec<String> = parent_idx.iter().map(|&i| parent_cols[i].0.clone()).collect();
-        let mut ref_set: Vec<&String> = referenced.iter().collect();
-        ref_set.sort();
-        ref_set.dedup();
-        let mut key_set: Vec<&String> = parent_pk.iter().flatten().collect();
-        key_set.sort();
-        if ref_set.len() != referenced.len() || ref_set != key_set {
+        let as_set = |cols: &[String]| {
+            let mut set: Vec<String> = cols.to_vec();
+            set.sort();
+            set
+        };
+        let ref_set = as_set(&referenced);
+        let distinct = ref_set.windows(2).all(|w| w[0] != w[1]);
+        let is_key = parent_pk.as_deref().is_some_and(|pk| as_set(pk) == ref_set)
+            || parent_uniques.iter().any(|u| as_set(&u.columns) == ref_set);
+        if !distinct || !is_key {
             return Err(DbError::InvalidForeignKey(format!(
-                "referenced columns ({}) are not the primary key of table \"{}\"",
+                "referenced columns ({}) are not the primary key or a unique key of table \"{}\"",
                 referenced.join(", "),
                 parent_name
             )));
@@ -473,7 +827,7 @@ pub fn resolve_table_constraints(
             on_update: fk.on_update,
         });
     }
-    Ok((pk, resolved))
+    Ok(ResolvedConstraints { primary_key: pk, fks: resolved, uniques, checks })
 }
 
 #[cfg(test)]
