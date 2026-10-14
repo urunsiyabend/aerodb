@@ -16,14 +16,22 @@ single-session `Engine` API, or the thread-safe, multi-session `Database` API.
 > [!IMPORTANT]
 > AeroDB is under active development and is not production-ready. SQL coverage
 > is intentionally limited, some metadata is still process-local, and the
-> on-disk format may change between versions.
+> on-disk format may change between versions. AeroDB is not certified against
+> any SQL standard and makes no overall conformance claim. The per-feature
+> audit evidence is in
+> [`specs/sql-conformance-0.6.0.md`](specs/sql-conformance-0.6.0.md).
 
 ## Highlights
 
 - 4 KiB page-based B-Tree storage
-- Persistent table and sequence catalogs
-- SQL DDL, DML, joins, aggregates, aliases, and nested queries
-- Primary key, `NOT NULL`, default-value, and foreign-key constraints
+- Persistent table, view and sequence catalogs
+- A fail-closed SQL parser: unsupported syntax is rejected, never ignored
+- Typed values, three-valued logic, and exact `DECIMAL`/`NUMERIC`
+- SQL DDL, DML, joins, aggregates, set operations, views, and nested queries
+- `PRIMARY KEY` (composite, text, any column), `UNIQUE`, `CHECK`, `NOT NULL`,
+  default-value, and foreign-key constraints
+- A read-only `information_schema` subset
+- SQLSTATE codes for every error
 - Single-column secondary indexes for equality lookups
 - Automatic and explicit transactions
 - Snapshot isolation with MVCC row versions
@@ -33,7 +41,7 @@ single-session `Engine` API, or the thread-safe, multi-session `Database` API.
 - Logical rollback and explicit MVCC vacuum
 - A library API and an interactive command-line interface
 
-The current package version is `0.5.1`. See [`CHANGELOG.md`](CHANGELOG.md).
+The current package version is `0.6.0`. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Quick start
 
@@ -51,8 +59,8 @@ cargo run --release
 ```
 
 The CLI opens `data.aerodb` in the current directory and displays the
-`aerodb>` prompt. Enter one statement per line. For maximum parser
-compatibility, omit trailing semicolons.
+`aerodb>` prompt. Enter one statement per line; a single trailing semicolon is
+optional.
 
 ```sql
 CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, active BOOLEAN DEFAULT true)
@@ -88,34 +96,82 @@ path.
 ## SQL support
 
 AeroDB implements a focused SQL subset. The examples below reflect behavior
-covered by the current test suite.
+covered by the current test suite. The parser is fail-closed:
+- A statement must consume its whole input.
+- Unknown syntax is a syntax error (SQLSTATE 42601).
+- Unknown functions are 42883.
+- Recognized but unimplemented features are rejected with 0A000 instead of
+  being ignored.
+
+Identifiers follow the standard rule: unquoted names match
+case-insensitively, `"quoted"` names match exactly, and an ambiguous reference
+is 42702. Comments (`-- …` and `/* … */`) are accepted. A bareword is always
+an identifier, never a string literal.
 
 ### Schema definition
 
 ```sql
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY,
-    email TEXT NOT NULL,
-    balance DOUBLE(12, 2) UNSIGNED DEFAULT 0,
+    email VARCHAR(200) NOT NULL UNIQUE,
+    balance DECIMAL(12, 2) DEFAULT 0 CHECK (balance >= 0),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 
+CREATE TABLE orders (
+    account_id INTEGER,
+    order_no INTEGER,
+    total DECIMAL(12, 2) NOT NULL,
+    PRIMARY KEY (account_id, order_no),
+    CONSTRAINT orders_account_fk FOREIGN KEY (account_id)
+        REFERENCES accounts(id) ON DELETE CASCADE ON UPDATE CASCADE
+)
+
+ALTER TABLE accounts ADD COLUMN nickname TEXT DEFAULT 'none'
+CREATE VIEW big_orders AS SELECT account_id, total FROM orders WHERE total > 100
+DROP VIEW big_orders
+
 CREATE INDEX idx_accounts_email ON accounts(email)
 DROP INDEX idx_accounts_email
-DROP TABLE IF EXISTS accounts
+DROP TABLE IF EXISTS orders RESTRICT
 
 CREATE SEQUENCE invoice_ids START WITH 1000 INCREMENT BY 5
 ```
 
-Supported column features:
+Supported schema features:
 
-- Inline and table-level primary keys, including composite primary keys
-- `NULL` and `NOT NULL`
-- Literal defaults and the `DEFAULT` keyword in inserts
-- `AUTO_INCREMENT` on a single `NOT NULL` integer column per table
-- Foreign keys with `NO ACTION` or `ON DELETE CASCADE`
-- `CURRENT_TIMESTAMP`, `CURRENT_TIMESTAMP()`, `GETDATE()`, and
-  `GETUTCDATE()` defaults
+- `PRIMARY KEY` on any column or column set (composite, text, not necessarily
+  the first column). Rows have a logical row identity, so the first column
+  does not have to be an `INTEGER` storage key.
+- `NULL`/`NOT NULL`, literal and expression defaults, and the `DEFAULT`
+  keyword in `INSERT` and `UPDATE`.
+- `UNIQUE` and `CHECK` at column or table level, optionally named with
+  `CONSTRAINT name`. NULLs never collide under `UNIQUE`, and a `CHECK` fails
+  only when it evaluates to FALSE.
+- `FOREIGN KEY … REFERENCES parent(cols)`:
+  - The referenced columns must be the parent's PRIMARY KEY or a UNIQUE
+    column set (42830).
+  - Composite keys use `MATCH SIMPLE`: a row with any NULL key column is not
+    checked.
+  - Actions are `NO ACTION` (default, checked at the end of the statement),
+    `RESTRICT` (checked immediately), `ON DELETE CASCADE` and
+    `ON UPDATE CASCADE`.
+  - Foreign keys are rechecked at COMMIT.
+- `AUTO_INCREMENT` on a single `NOT NULL` integer column per table.
+- `CURRENT_TIMESTAMP`, `CURRENT_TIMESTAMP()`, `GETDATE()`, and `GETUTCDATE()`
+  defaults.
+- `ALTER TABLE t ADD [COLUMN]` with `DEFAULT`, `NOT NULL`, `UNIQUE`, and
+  `CHECK`, validated against existing rows. Other `ALTER` forms are 0A000.
+- Views:
+  - `CREATE VIEW v [(columns)] AS query` and `DROP VIEW [IF EXISTS] v
+    [RESTRICT]`.
+  - Views persist across reopen and can be joined, filtered, aggregated, and
+    nested.
+  - `*` is expanded when the view is created.
+  - Views are read-only.
+- `DROP TABLE [IF EXISTS] t [RESTRICT]` fails with 2BP01 while a foreign key
+  or a view depends on `t`. `CASCADE` is 0A000.
+- Single-column secondary indexes, plus standalone sequences.
 
 ### Data manipulation
 
@@ -126,49 +182,85 @@ VALUES
     (2, 'bob@example.com', 80.00)
 
 UPDATE accounts
-SET balance = 140.00
+SET balance = balance + 14.50, nickname = DEFAULT
 WHERE id = 1
 
 DELETE FROM accounts WHERE id = 2
+DELETE FROM accounts
 ```
 
-`INSERT` supports column lists, multiple value tuples, omitted nullable/default
-columns, and explicit `DEFAULT` values. In autocommit mode, a failed multi-row
-insert rolls back the entire statement.
+`INSERT` supports column lists, multiple value tuples, omitted nullable or
+default columns, and explicit `DEFAULT` values. `UPDATE` assignments are
+expressions evaluated per row, and `DELETE` without `WHERE` deletes every
+visible row. Each statement is atomic: if any row fails a constraint, the
+statement has no effect.
 
-The first column of every stored table must currently produce an `INTEGER`
-value because AeroDB uses it as the physical B-Tree row key.
+Assignment rules:
+- A character literal converts to the column type when the statement is bound
+  (an invalid literal is 22xxx).
+- Numeric values go into numeric columns, and integers into `YEAR`.
+- Any value may go into `CHAR`/`VARCHAR`/`TEXT`. This follows PostgreSQL and
+  is more permissive than the SQL standard.
+- Other cross-category assignments are 42804.
+- `DECIMAL` values are rounded half away from zero to the column scale;
+  overflow is 22003.
+- Too-long `CHAR`/`VARCHAR` values are 22001.
 
 ### Queries
 
 ```sql
-SELECT * FROM accounts
+SELECT a.id, a.email AS address
+FROM accounts AS a
+WHERE a.balance >= 100 AND a.email LIKE '%@example.com' AND a.nickname IS NOT NULL
+ORDER BY a.balance DESC NULLS LAST, 2
+LIMIT 10 OFFSET 0
 
-SELECT id, email AS address
-FROM accounts
-WHERE balance >= 100 AND id <> 5
-
-SELECT department, COUNT(*) AS employee_count, AVG(salary) AS average_salary
-FROM employees
-WHERE active = true
-GROUP BY department
+SELECT account_id, COUNT(*) AS n, SUM(total), AVG(DISTINCT total)
+FROM orders
+GROUP BY account_id
 HAVING COUNT(*) >= 2
+
+SELECT id FROM accounts
+UNION ALL
+SELECT account_id FROM orders
+EXCEPT
+SELECT 3
 ```
 
 Supported query features include:
 
-- `*`, column projections, literals, arithmetic expressions, and aliases
-- `SELECT` expressions without `FROM`, such as `SELECT 2 + 3, 'hello'`
-- `WHERE` with `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `AND`, and
-  `OR`
-- Arithmetic and bitwise operators: `+`, `-`, `*`, `/`, `%`, `&`, `|`, and `^`
-- `COUNT`, `SUM`, `AVG`, `MIN`, and `MAX`
-- `GROUP BY` and `HAVING`, with grouped-column validation
-- Single-column `ORDER BY`, plus `LIMIT` and `OFFSET` parsing
-- Quoted string literals and quoted identifiers
+- `*`, `t.*`, projections, literals, expressions, and aliases. `SELECT`
+  without `FROM`, such as `SELECT 2 + 3, 'hello'`.
+- Three-valued logic. NULL comparisons are UNKNOWN; `AND`/`OR`/`NOT` follow
+  the SQL truth tables. `WHERE`, `HAVING` and `ON` keep only TRUE rows.
+- Comparisons: `=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN (list)`,
+  `LIKE … [ESCAPE …]`, `IS [NOT] NULL`, and `IS [NOT] TRUE/FALSE/UNKNOWN`.
+- Operators: `+`, `-`, `*`, `/`, `%`, `||`, and the integer-only bitwise
+  operators `&`, `|`, `^`.
+  - `INTEGER / INTEGER` truncates toward zero.
+  - Division by zero is 22012.
+  - Overflow is 22003.
+- `CAST`, searched and simple `CASE`, `COALESCE`, `NULLIF`, `UPPER`, `LOWER`,
+  `CHAR_LENGTH`, `ABS`, and `DATE 'YYYY-MM-DD'` literals.
+- Aggregates: `COUNT(*)`, `COUNT`, `SUM`, `AVG`, `MIN`, and `MAX`, each with
+  optional `DISTINCT`. NULLs are ignored, and an aggregate over no rows
+  returns NULL (`COUNT` returns 0). `SUM`/`AVG` over `DECIMAL` are exact.
+- `GROUP BY` (columns, expressions, select-list ordinals) and `HAVING`, with
+  grouping validation (42803).
+- `SELECT DISTINCT`, and `UNION`/`EXCEPT`/`INTERSECT` with or without `ALL`.
+  `INTERSECT` binds tighter; arity and column categories are checked. With
+  `DISTINCT` or a set operation, `ORDER BY` must name output columns.
+- `ORDER BY`:
+  - Keys can be expressions, output aliases, ordinals, and columns not in the
+    select list.
+  - Multiple keys, `ASC`/`DESC`, and `NULLS FIRST/LAST` are supported.
+  - `LIMIT`/`OFFSET` are applied after ordering.
+- Quoted string literals (`''` escapes) and quoted identifiers.
 
-The parser recognizes `ORDER BY`, `LIMIT`, and `OFFSET`, but the main execution
-path does not yet apply them consistently to every query shape.
+Every statement is statically type-checked before any row is read. Mixing
+type categories, such as comparing a number with a non-literal string or
+adding a boolean, is 42804, even on an empty table. A character literal next
+to a date or time value is converted (`d = '2024-01-02'`).
 
 ### Joins and subqueries
 
@@ -183,38 +275,111 @@ LEFT JOIN orders o ON u.id = o.user_id
 
 SELECT id
 FROM users
-WHERE id IN (SELECT user_id FROM orders)
+WHERE id NOT IN (SELECT user_id FROM orders WHERE user_id IS NOT NULL)
 
-SELECT name
-FROM users
-WHERE EXISTS (
-    SELECT 1 FROM orders WHERE orders.user_id = users.id
-)
+SELECT name, (SELECT MAX(total) FROM orders o WHERE o.user_id = u.id) AS top
+FROM users u
 
 SELECT *
 FROM (SELECT id, name FROM users) AS selected_users
 ```
 
-AeroDB supports `INNER`, `LEFT`, `RIGHT`, `FULL`, and `CROSS` joins, table
-aliases, multiple joins, `IN` subqueries, correlated `EXISTS`, scalar
-subqueries, and subqueries in `FROM`.
+AeroDB supports:
+- `INNER`, `LEFT`, `RIGHT`, `FULL`, and `CROSS` joins, comma-separated
+  `FROM` lists, table aliases, and multiple joins.
+- `IN`/`NOT IN` subqueries with SQL NULL semantics.
+- Correlated and uncorrelated `EXISTS`.
+- Scalar subqueries: more than one row is 21000, and zero rows give NULL.
+- Subqueries in `FROM`.
+
+Correlated references bind to the innermost scope that has a matching column.
+
+### information_schema
+
+A read-only subset describes the catalog:
+- `information_schema.tables`
+- `columns`
+- `table_constraints`
+- `key_column_usage`
+- `referential_constraints`
+- `check_constraints`
+- `views`
+
+Its rows reflect the current transaction's own DDL. They can be filtered,
+joined, sorted, aggregated, and used in views. Writes or DDL against
+`information_schema` are 0A000. Tables report `table_schema = 'public'`, but
+`public.t` is not accepted as a qualifier (see limitations).
+
+```sql
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'accounts'
+ORDER BY ordinal_position
+```
 
 ### Data types
 
 | Type | Notes |
 | --- | --- |
-| `INTEGER` / `INT` | Signed 32-bit integer |
+| `INTEGER` / `INT` | Signed 32-bit integer column; expressions compute in 64-bit and overflow is 22003 on assignment |
 | `SMALLINT[(width)] [UNSIGNED]` | Signed or unsigned range validation |
 | `MEDIUMINT[(width)] [UNSIGNED]` | Signed or unsigned range validation |
-| `DOUBLE[(precision, scale)] [UNSIGNED]` | Stored as a 64-bit floating-point value |
+| `DECIMAL[(p[, s])]` / `NUMERIC[(p[, s])]` | Exact fixed-point, precision 1–38 (default `(18, 0)`), rounded half away from zero to the scale |
+| `DOUBLE[(precision, scale)] [UNSIGNED]` | 64-bit floating point; inf/NaN results are 22003 |
 | `TEXT` | Variable-length UTF-8 text |
-| `CHAR[(length)]` | Fixed-length, space-padded text |
-| `BOOLEAN` / `BOOL` | `true` or `false` |
-| `DATE` | `YYYY-MM-DD` |
+| `VARCHAR(n)` / `CHARACTER VARYING(n)` | At most `n` characters (1–65535); longer values are 22001 |
+| `CHAR[(n)]` / `CHARACTER[(n)]` | Fixed length, space-padded by characters; compared with PAD SPACE |
+| `BOOLEAN` / `BOOL` | `TRUE`, `FALSE`, or NULL (UNKNOWN) |
+| `DATE` | `YYYY-MM-DD`; `DATE '…'` literal |
 | `DATETIME` | `YYYY-MM-DD HH:MM:SS` |
-| `TIMESTAMP` | `YYYY-MM-DD HH:MM:SS` |
-| `TIME` | `[-]HH:MM:SS`, up to 838 hours |
+| `TIMESTAMP` | `YYYY-MM-DD HH:MM:SS` (no `TIMESTAMP '…'` literal; use a string) |
+| `TIME` | `[-]HH:MM:SS`, up to 838 hours (no `TIME '…'` literal) |
 | `YEAR` | `0000` or `1901` through `2155` |
+
+A stored row must fit in one 4 KiB page, about 4 KB of serialized data.
+Larger rows are rejected with 54000 before anything is written.
+
+### Error codes (SQLSTATE)
+
+Every error is a `DbError`. `DbError::sqlstate()` returns its five-character
+SQLSTATE, with exactly one code per variant:
+
+| SQLSTATE | Condition | `DbError` variants |
+| --- | --- | --- |
+| 0A000 | feature not supported (incl. writes to information_schema) | `FeatureNotSupported` |
+| 21000 | cardinality violation | `CardinalityViolation` |
+| 22001 | string data, right truncation | `StringTooLong` |
+| 22003 | numeric value out of range | `Overflow`, `NumericOverflow` |
+| 22012 | division by zero | `DivisionByZero` |
+| 22018 | invalid character value for cast | `InvalidCast` |
+| 22023 | invalid parameter value | `InvalidValue` |
+| 23502 | not-null violation | `NullViolation` |
+| 23503 | foreign key violation (statement end, RESTRICT, or COMMIT recheck) | `ForeignKeyViolation` |
+| 23505 | unique violation (PRIMARY KEY or UNIQUE) | `DuplicateKey`, `UniqueViolation` |
+| 23514 | check violation | `CheckViolation` |
+| 25P01 | no active SQL transaction | `NoActiveTransaction` |
+| 25P02 | in failed SQL transaction | `InFailedTransaction` |
+| 2BP01 | dependent objects still exist | `DependentObjects` |
+| 40001 | serialization failure (write/write conflict) | `WriteConflict` |
+| 42601 | syntax error | `Syntax`, `ParseError` |
+| 42701 | duplicate column | `DuplicateColumn` |
+| 42702 | ambiguous column | `AmbiguousColumn` |
+| 42703 | undefined column | `ColumnNotFound` |
+| 42704 | undefined object (sequence, index, ...) | `NotFound` |
+| 42710 | duplicate object (constraint name) | `DuplicateConstraint` |
+| 42803 | grouping error | `GroupByMismatch` |
+| 42804 | datatype mismatch | `TypeMismatch` |
+| 42809 | wrong object type | `WrongObjectType` |
+| 42830 | invalid foreign key | `InvalidForeignKey` |
+| 42883 | undefined function | `UndefinedFunction` |
+| 42P01 | undefined table (incl. unknown schema qualifier) | `TableNotFound` |
+| 42P07 | duplicate table | `DuplicateObject` |
+| 54000 | program limit exceeded (row too large for a page) | `RowTooLarge` |
+| 58030 | I/O error | `Io` |
+
+The codes classify errors the way the SQL standard and PostgreSQL do. The
+message text is AeroDB's own. For example, the missing-table message keeps
+the 0.5.1 wording `no such table: t`.
 
 ## Transactions and MVCC
 
@@ -223,7 +388,7 @@ transaction is active:
 
 ```sql
 BEGIN
-INSERT INTO accounts VALUES (3, 'carol@example.com', 50, DEFAULT)
+INSERT INTO accounts (id, email, balance) VALUES (3, 'carol@example.com', 50)
 UPDATE accounts SET balance = 75 WHERE id = 3
 COMMIT
 ```
@@ -236,21 +401,75 @@ UPDATE accounts SET balance = 0 WHERE id = 3
 ROLLBACK
 ```
 
-The current isolation level is snapshot isolation:
+Every statement is atomic. In autocommit mode, a failed statement leaves no
+trace. Inside an explicit transaction, a failed statement puts the transaction
+into the failed state:
+- Every further statement is rejected with 25P02 until `ROLLBACK`.
+- `COMMIT` of a failed transaction rolls it back and returns 25P02.
+
+Syntax errors fail the transaction only through `Engine::execute_sql` and
+`Engine::query`. The CLI reports a parse error without failing the
+transaction.
+
+DDL (`CREATE`/`DROP`/`ALTER`, views) is transactional within one session and
+rolls back with the transaction.
+
+The only isolation level is snapshot isolation. It is **not SERIALIZABLE**:
+snapshot isolation does not prevent write skew, and `SET TRANSACTION` is
+rejected with 0A000.
 
 - A transaction reads from the snapshot captured at `BEGIN`.
 - It sees its own writes.
 - It does not see another transaction's uncommitted work.
 - A transaction keeps a stable view when another transaction commits.
 - Concurrent writes to the same logical key use first-committer-wins conflict
-  resolution.
+  resolution (40001).
+- Primary key, `UNIQUE`, and foreign-key constraints are rechecked at
+  `COMMIT` against concurrently committed work.
 - Rolled-back versions remain physically present but invisible until vacuum
   reclaims them.
+- Savepoints are not supported.
 
 Transaction IDs and final transaction states survive database reopen. WAL
 recovery treats transactions left active by a crash as aborted.
 
 ## Rust API
+
+These are embedded Rust APIs. They are not an implementation of the SQL
+standard's SQL/CLI binding, and AeroDB provides no ODBC or JDBC driver. Errors
+are `DbError` values; `DbError::sqlstate()` returns the SQLSTATE (see
+[Error codes](#error-codes-sqlstate)).
+
+### Typed queries
+
+`Engine::query` and `Database::query` return a `QueryResult`:
+- `columns`: name and SQL type per result column.
+- `rows`: typed `Value`s, with SQL NULL as `Value::Null`.
+
+```rust
+use aerodb::{engine::Engine, error::DbError};
+
+fn main() -> Result<(), DbError> {
+    let mut engine = Engine::open("app.aerodb")?;
+    engine.execute_sql("CREATE TABLE items (id INTEGER PRIMARY KEY, price DECIMAL(8, 2))")?;
+    engine.execute_sql("INSERT INTO items VALUES (1, 9.99), (2, NULL)")?;
+
+    let result = engine.query("SELECT id, price FROM items ORDER BY id")?;
+    for column in &result.columns {
+        println!("{} {}", column.name, column.ty.name());
+    }
+    for row in &result.rows {
+        let cells: Vec<String> = row.iter().map(|v| v.to_string()).collect();
+        println!("{}", cells.join(" | ")); // "1 | 9.99", then "2 | NULL"
+    }
+
+    match engine.query("SELECT missing FROM items") {
+        Err(e) => println!("{} ({})", e, e.sqlstate()), // 42703
+        Ok(_) => unreachable!(),
+    }
+    Ok(())
+}
+```
 
 ### Concurrent, multi-session API
 
@@ -280,10 +499,10 @@ fn main() -> Result<(), DbError> {
     db.commit(tx)?;
 
     let reader = db.begin()?;
-    let rows = db.query_all(&reader, "messages")?;
+    let result = db.query(&reader, "SELECT id, body FROM messages WHERE id = 1")?;
     db.abort(reader)?;
 
-    println!("{} visible row(s)", rows.len());
+    println!("{} visible row(s)", result.rows.len());
     Ok(())
 }
 ```
@@ -295,7 +514,8 @@ The main methods are:
 | `Database::open(path)` | Open or create a shared database |
 | `begin()` | Start a snapshot-isolated transaction |
 | `execute(&tx, statement)` | Run a DDL or DML statement in a transaction |
-| `query_all(&tx, table)` | Read all rows visible to the transaction |
+| `query(&tx, sql)` | Run a SQL query in a transaction and return typed rows |
+| `query_all(&tx, table)` | Read all raw rows of a table visible to the transaction |
 | `commit(tx)` | Commit, including conflict and constraint validation |
 | `abort(tx)` | Logically abort a transaction |
 | `autocommit(statement)` | Run one statement in its own transaction |
@@ -311,17 +531,15 @@ in parallel at the page level.
 flow:
 
 ```rust
-use aerodb::{engine::Engine, sql::parser::parse_statement};
+use aerodb::engine::Engine;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut engine = Engine::new("app.aerodb");
+    let mut engine = Engine::open("app.aerodb")?;
 
-    engine.execute(parse_statement("BEGIN")?)?;
-    engine.execute(parse_statement(
-        "CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT)",
-    )?)?;
-    engine.execute(parse_statement("COMMIT")?)?;
+    engine.execute_sql("BEGIN")?;
+    engine.execute_sql("CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT)")?;
+    engine.execute_sql("COMMIT")?;
 
     let report = engine.vacuum_table("events")?;
     println!("removed {} version(s)", report.versions_removed);
@@ -329,9 +547,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-`Engine::execute` handles automatic transactions and intercepts `BEGIN`,
-`COMMIT`, and `ROLLBACK`. Call `Engine::vacuum_table` directly because there is
-not yet a SQL `VACUUM` statement.
+`Engine::execute_sql` (or `Engine::execute` with a parsed statement):
+- Handles automatic transactions and intercepts `BEGIN`, `COMMIT`, and
+  `ROLLBACK`.
+- Prints query results the way the CLI does. Use `Engine::query` to get them
+  as values instead.
+
+`Engine::new(path)` panics if the file cannot be opened, so prefer
+`Engine::open`. Call `Engine::vacuum_table` directly because there is not yet a
+SQL `VACUUM` statement.
 
 ## Storage architecture
 
@@ -356,8 +580,8 @@ Reserved main-file pages:
 
 | Page | Contents |
 | --- | --- |
-| `0` | Engine metadata and durable transaction counters |
-| `1` | Table catalog |
+| `0` | Engine metadata, storage format version, and durable transaction counters |
+| `1` | Table and view catalog |
 | `2` | Sequence catalog |
 | `3+` | Table and index B-Tree pages |
 
@@ -366,37 +590,81 @@ For the implemented concurrency design and its invariants, see
 
 ## Current limitations
 
-- AeroDB implements a SQL subset, not a complete SQL standard.
-- The CLI uses the fixed `data.aerodb` path and accepts one statement per line.
-- Snapshot isolation is the only isolation level; serializable isolation and
-  `SET TRANSACTION ISOLATION LEVEL` are not implemented.
+AeroDB implements a SQL subset. It is not a complete implementation of any SQL
+standard and is not certified against SQL:2023. The audited feature-by-feature
+status is in [`specs/sql-conformance-0.6.0.md`](specs/sql-conformance-0.6.0.md).
+
+Not implemented. These are rejected with 0A000, or 42883 for unknown
+functions, and never silently ignored:
+- `SAVEPOINT`, `RELEASE`, `ROLLBACK TO`, and `SET TRANSACTION` (isolation
+  level, `READ ONLY`).
+- `WITH` (CTEs), window functions and `WINDOW`, `JSON_VALUE` and other JSON
+  functions, and cursors (`DECLARE`).
+- `TIMESTAMP '…'`, `TIME '…'` and `INTERVAL` literals.
+- `INSERT … SELECT`, `VALUES` as a query, `NATURAL`/`USING` joins,
+  `FETCH FIRST`, parenthesized joins, `IS DISTINCT FROM`, `ANY`/`SOME`/`ALL`,
+  row value constructors, and `SIMILAR TO`.
+- `ON DELETE`/`ON UPDATE SET NULL`/`SET DEFAULT`, `DROP … CASCADE`,
+  `CREATE OR REPLACE VIEW`, DML on views, `ALTER TABLE` other than
+  `ADD COLUMN`, `CREATE UNIQUE INDEX`, and multi-column indexes.
+
+Transactions and DDL:
+- Snapshot isolation is the only isolation level; it is not SERIALIZABLE.
+- DDL is not snapshot-versioned.
+  - Concurrent `Database` transactions see another transaction's DDL
+    immediately, including in `information_schema`.
+  - An older snapshot sees a newly added column as NULL.
+  - `ALTER TABLE ADD COLUMN` does not rewrite rows of concurrent uncommitted
+    transactions; they read NULL, not the DEFAULT.
+  - Concurrent DDL in separate `Database` transactions is not isolated from
+    each other.
 - Shared storage is process-local. Multiple `Database` transactions can run in
   one process, but cross-process coordination is not supported.
 - The pager latches pages individually, but the `Database` facade still
   serializes operations behind one storage mutex, so readers and writers do not
   yet run in parallel.
-- `UPDATE`/`DELETE ... WHERE` evaluate their predicate with a full table scan,
-  even for a primary-key equality.
-- Secondary-index metadata is currently kept in memory and is not rebuilt when
-  the database is reopened; recreate indexes after opening a new process.
-- Secondary indexes currently optimize equality predicates only.
+
+Naming:
+- `public.t` is rejected with 42P01, although `information_schema` reports
+  `table_schema = 'public'`. Schema-qualified column references are 0A000.
+  The only usable schema qualifier is `information_schema`.
+- `DROP TABLE`, `DROP VIEW` and `DROP INDEX` match names exactly
+  (case-sensitive).
+
+Storage and performance:
+- Secondary-index metadata is kept in memory and is not rebuilt when the
+  database is reopened. Recreate indexes after opening a new process.
+- Secondary indexes optimize single-column equality predicates only.
+- A row must fit in one page (about 4 KB serialized); otherwise the write
+  fails with 54000.
+- `UPDATE`/`DELETE … WHERE`, primary-key and `UNIQUE` checks scan the visible
+  rows. Foreign-key checks scan the parent rows (O(n·m)).
+- `ROLLBACK` writes the aborted transaction's pages durably, so it costs
+  fsyncs like a commit.
+- Pages abandoned by aborted transactions are never reused (there is no
+  free-page list).
+- Vacuum is explicit; there is no SQL command or background auto-vacuum.
+
+Other:
 - Standalone sequences are available through SQL creation and the catalog API,
   but there is no SQL `NEXTVAL` expression yet.
-- `ORDER BY`, `LIMIT`, and `OFFSET` are not consistently applied across every
-  execution path.
-- Vacuum is explicit; there is no SQL command or background auto-vacuum.
-- The first table column must be integer-compatible because it supplies the
-  physical row key.
+- The CLI uses the fixed `data.aerodb` path, accepts one statement per line,
+  and prints results as text.
+- The library prints status lines to stdout, such as `Table t created`. This
+  happens even through `Engine::execute_sql`, `Engine::query` and the
+  `Database` API, and is inherited from the CLI.
+
+The full list of known deviations is in the
+[0.6.0 changelog](CHANGELOG.md#060---2026-10-14).
 
 ## Project layout
 
 ```text
 src/
-├── catalog/       Persistent table/sequence metadata and index management
-├── constraints/   Primary key, foreign key, NOT NULL, and default constraints
-├── execution/     Statement execution, joins, grouping, and query output
-├── planner/       Query-planning structures
-├── sql/           AST, tokenizer/parser, expressions, and system functions
+├── catalog/       Persistent table/view/sequence metadata and index management
+├── constraints/   Key (PRIMARY KEY/UNIQUE/FK), CHECK, NOT NULL, and default constraints
+├── execution/     Binder, evaluator, query executor, DDL/DML runtime, information_schema
+├── sql/           Lexer, parser, AST, typed values, DECIMAL, and system functions
 ├── storage/       Pager, pages, rows, B-Trees, and vacuum
 ├── transaction/   MVCC, snapshots, WAL, clog, sessions, and transaction manager
 ├── db.rs          Concurrent multi-session Database facade
@@ -416,8 +684,7 @@ Build and test the project with Cargo:
 
 ```bash
 cargo build
-cargo test
-cargo fmt --check
+cargo test --all-targets
 cargo clippy --all-targets
 ```
 
@@ -430,7 +697,7 @@ When contributing:
 
 1. Add or update tests for the behavior being changed.
 2. Keep existing tests passing.
-3. Run `cargo fmt`.
+3. Run `rustfmt` on the files you change.
 4. Run the full test suite.
 5. Explain user-visible or on-disk behavior changes in the pull request.
 
@@ -442,9 +709,10 @@ Issues and pull requests are welcome at
 - Persist and reload secondary-index metadata
 - Split the `Database` storage mutex so per-page latching yields real
   reader/writer parallelism
-- Make ordering and pagination consistent across all query paths
 - Add SQL-level vacuum and automatic maintenance
-- Expand SQL coverage and improve query planning
+- Expand SQL coverage (see the remaining gaps in
+  [`specs/sql-conformance-0.6.0.md`](specs/sql-conformance-0.6.0.md)) and
+  improve query planning
 - Stabilize and document the on-disk format
 - Add storage-engine and B-Tree implementation documentation
 
