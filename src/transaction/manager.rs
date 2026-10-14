@@ -84,12 +84,12 @@ impl TransactionManager {
     pub fn commit(&mut self, catalog: &mut Catalog) -> DbResult<()> {
         let transaction_id = catalog.transaction_id();
         debug!("Transaction committed: {:?}", transaction_id);
-        if let Some(transaction_id) = transaction_id {
-            if let Err(err) = catalog.recheck_constraints_for_commit(transaction_id) {
-                let rollback = self.rollback(catalog);
-                self.mode = TransactionMode::None;
-                return Err(commit_failure(err, rollback));
-            }
+        if let Some(transaction_id) = transaction_id
+            && let Err(err) = catalog.recheck_constraints_for_commit(transaction_id)
+        {
+            let rollback = self.rollback(catalog);
+            self.mode = TransactionMode::None;
+            return Err(commit_failure(err, rollback));
         }
         catalog.pager.commit_transaction()?;
         if let Some(transaction_id) = transaction_id {

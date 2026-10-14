@@ -1,5 +1,7 @@
 use super::Constraint;
-use super::keys::{Pending, Removal, check_foreign_keys, check_removed_keys, check_restrict, visible_rows};
+use super::keys::{
+    Pending, Removal, check_foreign_keys, check_removed_keys, check_restrict, visible_rows,
+};
 use crate::catalog::{Catalog, TableInfo};
 use crate::error::DbResult;
 use crate::sql::ast::ForeignKey;
@@ -45,6 +47,13 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
             }
         }
         check_restrict(catalog, table, &[(row.clone(), None)], snapshot, &pending)?;
-        check_removed_keys(catalog, table, std::slice::from_ref(row), snapshot, &pending, Removal::Delete)
+        check_removed_keys(
+            catalog,
+            table,
+            std::slice::from_ref(row),
+            snapshot,
+            &pending,
+            Removal::Delete,
+        )
     }
 }

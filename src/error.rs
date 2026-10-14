@@ -165,7 +165,9 @@ impl From<ValueError> for DbError {
     fn from(e: ValueError) -> Self {
         match e {
             ValueError::DivisionByZero => DbError::DivisionByZero,
-            ValueError::NumericOverflow => DbError::NumericOverflow("numeric value out of range".into()),
+            ValueError::NumericOverflow => {
+                DbError::NumericOverflow("numeric value out of range".into())
+            }
             ValueError::InvalidCast(m) => DbError::InvalidCast(m),
             ValueError::StringTooLong(m) => DbError::StringTooLong(m),
             ValueError::TypeMismatch(m) => DbError::TypeMismatch(m),
@@ -259,14 +261,26 @@ mod tests {
             (DbError::AmbiguousColumn(s()), "42702"),
             (DbError::AmbiguousRelation(s()), "42702"),
             (DbError::InvalidForeignKey(s()), "42830"),
-            (DbError::UniqueViolation { constraint: s(), key: s() }, "23505"),
+            (
+                DbError::UniqueViolation {
+                    constraint: s(),
+                    key: s(),
+                },
+                "23505",
+            ),
             (DbError::CheckViolation { constraint: s() }, "23514"),
             (DbError::InFailedTransaction, "25P02"),
             (DbError::DependentObjects(s()), "2BP01"),
             (DbError::DuplicateObject(s()), "42P07"),
             (DbError::DuplicateColumn(s()), "42701"),
             (DbError::WrongObjectType(s()), "42809"),
-            (DbError::DuplicateConstraint { name: s(), table: s() }, "42710"),
+            (
+                DbError::DuplicateConstraint {
+                    name: s(),
+                    table: s(),
+                },
+                "42710",
+            ),
             (DbError::RowTooLarge(s()), "54000"),
             (DbError::NoActiveTransaction(s()), "25P01"),
         ];
@@ -284,10 +298,17 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for (e, code) in &table {
             covered(e);
-            assert!(seen.insert(std::mem::discriminant(e)), "variant listed twice: {e:?}");
+            assert!(
+                seen.insert(std::mem::discriminant(e)),
+                "variant listed twice: {e:?}"
+            );
             assert_eq!(e.sqlstate(), *code, "{e:?}");
             assert_eq!(code.len(), 5);
-            assert!(code.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase()), "{code}");
+            assert!(
+                code.chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase()),
+                "{code}"
+            );
         }
     }
 }

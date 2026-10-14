@@ -832,15 +832,24 @@ mod mvcc_tests {
     fn column_type_parses_decimal_and_varchar() {
         assert_eq!(
             ColumnType::from_str("DECIMAL(10,2)"),
-            Some(ColumnType::Decimal { precision: 10, scale: 2 })
+            Some(ColumnType::Decimal {
+                precision: 10,
+                scale: 2
+            })
         );
         assert_eq!(
             ColumnType::from_str("numeric"),
-            Some(ColumnType::Decimal { precision: 18, scale: 0 })
+            Some(ColumnType::Decimal {
+                precision: 18,
+                scale: 0
+            })
         );
         assert_eq!(
             ColumnType::from_str("DECIMAL(5)"),
-            Some(ColumnType::Decimal { precision: 5, scale: 0 })
+            Some(ColumnType::Decimal {
+                precision: 5,
+                scale: 0
+            })
         );
         assert_eq!(
             ColumnType::from_str("VARCHAR(10)"),
@@ -863,20 +872,43 @@ mod mvcc_tests {
     fn column_type_text_and_codes() {
         assert_eq!(ColumnType::Varchar(9).as_str(), "VARCHAR(9)");
         assert_eq!(
-            ColumnType::Decimal { precision: 10, scale: 2 }.as_str(),
+            ColumnType::Decimal {
+                precision: 10,
+                scale: 2
+            }
+            .as_str(),
             "DECIMAL(10,2)"
         );
         assert_eq!(ColumnType::Varchar(9).to_code(), 13);
-        assert_eq!(ColumnType::Decimal { precision: 1, scale: 0 }.to_code(), 14);
-        assert!(matches!(ColumnType::from_code(13), Some(ColumnType::Varchar(_))));
-        assert!(matches!(ColumnType::from_code(14), Some(ColumnType::Decimal { .. })));
+        assert_eq!(
+            ColumnType::Decimal {
+                precision: 1,
+                scale: 0
+            }
+            .to_code(),
+            14
+        );
+        assert!(matches!(
+            ColumnType::from_code(13),
+            Some(ColumnType::Varchar(_))
+        ));
+        assert!(matches!(
+            ColumnType::from_code(14),
+            Some(ColumnType::Decimal { .. })
+        ));
     }
 
     #[test]
     fn build_row_data_handles_varchar_and_decimal() {
         let cols = vec![
             ("v".to_string(), ColumnType::Varchar(3)),
-            ("d".to_string(), ColumnType::Decimal { precision: 5, scale: 2 }),
+            (
+                "d".to_string(),
+                ColumnType::Decimal {
+                    precision: 5,
+                    scale: 2,
+                },
+            ),
         ];
         let ok = build_row_data(&["abc".into(), "1.005".into()], &cols).unwrap();
         assert_eq!(ok.0[0], ColumnValue::Text("abc".into()));

@@ -1,6 +1,6 @@
 use crate::catalog::{Catalog, Relation, TableInfo, ViewInfo};
-use crate::constraints::keys::{self, Pending, Removal};
 use crate::constraints::default::DefaultConstraint;
+use crate::constraints::keys::{self, Pending, Removal};
 use crate::error::{DbError, DbResult};
 use crate::execution::eval::{Ctx, Env, Scope, eval, eval_predicate};
 use crate::execution::query::{ResultColumn, execute_query};
@@ -81,7 +81,8 @@ fn ensure_rows_fit<'a>(images: impl IntoIterator<Item = &'a RowData>) -> DbResul
 }
 
 fn coerce(v: &Value, ty: &ColumnType, column: &str) -> DbResult<ColumnValue> {
-    v.to_column_value(ty, column).map_err(|e| assignment_error(column, e))
+    v.to_column_value(ty, column)
+        .map_err(|e| assignment_error(column, e))
 }
 
 /// Position of the column `ident` names in `info`, with the identifier rule
@@ -102,7 +103,10 @@ fn resolve_column(info: &TableInfo, ident: &Ident) -> DbResult<usize> {
 }
 
 /// Resolve INSERT/UPDATE target columns; a column may be named only once.
-pub(crate) fn resolve_targets<'a>(info: &TableInfo, idents: impl Iterator<Item = &'a Ident>) -> DbResult<Vec<usize>> {
+pub(crate) fn resolve_targets<'a>(
+    info: &TableInfo,
+    idents: impl Iterator<Item = &'a Ident>,
+) -> DbResult<Vec<usize>> {
     let mut out: Vec<usize> = Vec::new();
     for ident in idents {
         let idx = resolve_column(info, ident)?;
@@ -118,7 +122,11 @@ pub(crate) fn resolve_targets<'a>(info: &TableInfo, idents: impl Iterator<Item =
 }
 
 /// Rows of `info` visible to the current snapshot for which `selection` is TRUE.
-fn matching_rows(catalog: &Catalog, info: &TableInfo, selection: Option<&Expr>) -> DbResult<Vec<Row>> {
+fn matching_rows(
+    catalog: &Catalog,
+    info: &TableInfo,
+    selection: Option<&Expr>,
+) -> DbResult<Vec<Row>> {
     let snapshot = read_snapshot(catalog);
     let tree = BTree::open_root(&catalog.pager, info.root_page)?;
     let mut rows = tree.scan_visible(&snapshot)?;
@@ -182,7 +190,12 @@ fn record_write_intents(catalog: &mut Catalog, table_name: &str, rows: &[Row]) -
 /// alias value (possible in files written by 0.5.1, whose key was the first
 /// column, or after a fallback) — then a fresh row id. Dead versions of the
 /// same alias value share the chain, as in 0.5.1.
-fn alias_key(catalog: &mut Catalog, table_name: &str, alias_idx: usize, alias: i32) -> DbResult<i32> {
+fn alias_key(
+    catalog: &mut Catalog,
+    table_name: &str,
+    alias_idx: usize,
+    alias: i32,
+) -> DbResult<i32> {
     let root = catalog.get_table(table_name)?.root_page;
     let versions = BTree::open_root(&catalog.pager, root)?.versions_of(alias)?;
     let foreign = versions
@@ -196,7 +209,12 @@ fn alias_key(catalog: &mut Catalog, table_name: &str, alias_idx: usize, alias: i
     let current = catalog.transaction_id();
     let occupied = catalog.pager.with_transaction_table(|tx_table| {
         let gone = |tx: u64| matches!(tx_table.get(&tx), Some(TransactionStatus::Aborted));
-        let pending = |tx: u64| matches!(tx_table.get(&tx), Some(TransactionStatus::Active | TransactionStatus::Aborted));
+        let pending = |tx: u64| {
+            matches!(
+                tx_table.get(&tx),
+                Some(TransactionStatus::Active | TransactionStatus::Aborted)
+            )
+        };
         versions.iter().any(|r| {
             Some(r.created_tx) != current
                 && !gone(r.created_tx)
@@ -206,11 +224,21 @@ fn alias_key(catalog: &mut Catalog, table_name: &str, alias_idx: usize, alias: i
                 }
         })
     });
-    if foreign || occupied { catalog.allocate_rowid(table_name) } else { Ok(alias) }
+    if foreign || occupied {
+        catalog.allocate_rowid(table_name)
+    } else {
+        Ok(alias)
+    }
 }
 
 /// Write `data` as a new version with physical key `key` and index it.
-fn write_version(catalog: &mut Catalog, table_name: &str, key: i32, data: RowData, fresh: bool) -> DbResult<()> {
+fn write_version(
+    catalog: &mut Catalog,
+    table_name: &str,
+    key: i32,
+    data: RowData,
+    fresh: bool,
+) -> DbResult<()> {
     let root = catalog.get_table(table_name)?.root_page;
     let mut tree = BTree::open_root(&catalog.pager, root)?;
     if fresh {
@@ -269,8 +297,10 @@ pub fn execute_update(
 ) -> DbResult<usize> {
     let info = table_info(catalog, table_name)?;
     let target_idx = resolve_targets(&info, assignments.iter().map(|(c, _)| c))?;
-    let targets: Vec<(usize, Expr)> =
-        target_idx.into_iter().zip(assignments.into_iter().map(|(_, e)| e)).collect();
+    let targets: Vec<(usize, Expr)> = target_idx
+        .into_iter()
+        .zip(assignments.into_iter().map(|(_, e)| e))
+        .collect();
 
     // (old visible version, new row image)
     let mut ops: Vec<(Row, RowData)> = Vec::new();
@@ -302,7 +332,10 @@ pub fn execute_update(
     // changes are rewritten in the same statement.
     let snapshot = read_snapshot(catalog);
     let plan = keys::plan_update(catalog, &info, ops, &snapshot)?;
-    ensure_rows_fit(plan.iter().flat_map(|(_, ops)| ops.iter().map(|(_, new)| new)))?;
+    ensure_rows_fit(
+        plan.iter()
+            .flat_map(|(_, ops)| ops.iter().map(|(_, new)| new)),
+    )?;
 
     // The statement's overlay: every old version (direct and cascaded) is
     // gone and every new image is present.
@@ -318,8 +351,10 @@ pub fn execute_update(
     // statement does not re-point is a violation, even if another row of the
     // statement re-provides the key.
     for (table, ops) in &plan {
-        let changes: Vec<(RowData, Option<RowData>)> =
-            ops.iter().map(|(old, new)| (old.data.clone(), Some(new.clone()))).collect();
+        let changes: Vec<(RowData, Option<RowData>)> = ops
+            .iter()
+            .map(|(old, new)| (old.data.clone(), Some(new.clone())))
+            .collect();
         keys::check_restrict(catalog, table, &changes, &snapshot, &pending)?;
     }
 
@@ -392,7 +427,11 @@ fn build_insert_row(
             None => Some(&row_vals[idx]),
         };
         let auto = info.auto_increment.get(idx).copied().unwrap_or(false);
-        let seq = if auto { catalog.auto_increment_sequence(&info.name, col_name) } else { String::new() };
+        let seq = if auto {
+            catalog.auto_increment_sequence(&info.name, col_name)
+        } else {
+            String::new()
+        };
         let value = match supplied {
             Some(expr) if !matches!(expr, Expr::Default) => {
                 let v = crate::execution::eval::evaluate_constant(expr)?;
@@ -443,7 +482,12 @@ pub fn execute_insert(
     // final state (existing rows plus all new images), then write.
     let mut images: Vec<RowData> = Vec::with_capacity(rows.len());
     for row_vals in &rows {
-        images.push(build_insert_row(catalog, &info, targets.as_deref(), row_vals)?);
+        images.push(build_insert_row(
+            catalog,
+            &info,
+            targets.as_deref(),
+            row_vals,
+        )?);
     }
     ensure_rows_fit(&images)?;
     let snapshot = read_snapshot(catalog);
@@ -478,7 +522,11 @@ fn ensure_no_dependents(catalog: &Catalog, name: &str, is_view: bool) -> DbResul
             .iter()
             .any(|t| t.name != name && t.fks.iter().any(|fk| fk.parent_table.value == name));
     let view_dependent = catalog.all_views().iter().any(|v| {
-        !(is_view && v.name == name) && v.query.referenced_relations().iter().any(|r| r.matches(name))
+        !(is_view && v.name == name)
+            && v.query
+                .referenced_relations()
+                .iter()
+                .any(|r| r.matches(name))
     });
     if fk_dependent || view_dependent {
         return Err(DbError::DependentObjects(name.to_string()));
@@ -491,7 +539,12 @@ fn ensure_no_dependents(catalog: &Catalog, name: &str, is_view: bool) -> DbResul
 /// schema, and the output names (column list, else the query's) must be
 /// distinct. The stored text is the canonical `Query::to_sql`, re-parsed so
 /// the cached query is exactly what a reopen will see.
-fn create_view(catalog: &mut Catalog, name: Ident, columns: Option<Vec<String>>, query: Query) -> DbResult<()> {
+fn create_view(
+    catalog: &mut Catalog,
+    name: Ident,
+    columns: Option<Vec<String>>,
+    query: Query,
+) -> DbResult<()> {
     // Identifier rule, as for CREATE TABLE.
     if let Some(existing) = catalog.colliding_relation(&name) {
         return Err(DbError::DuplicateObject(existing));
@@ -502,7 +555,12 @@ fn create_view(catalog: &mut Catalog, name: Ident, columns: Option<Vec<String>>,
     let sql = query.to_sql();
     let query = match crate::sql::parser::parse_sql(&sql)? {
         Statement::Query(q) => *q,
-        _ => return Err(DbError::Syntax(format!("view query does not round-trip: {}", sql))),
+        _ => {
+            return Err(DbError::Syntax(format!(
+                "view query does not round-trip: {}",
+                sql
+            )));
+        }
     };
     let result = execute_query(catalog, &query, None)?;
     let names = match columns {
@@ -527,7 +585,12 @@ fn create_view(catalog: &mut Catalog, name: Ident, columns: Option<Vec<String>>,
             )));
         }
     }
-    catalog.create_view(ViewInfo { name: name.clone(), columns: names, sql, query })?;
+    catalog.create_view(ViewInfo {
+        name: name.clone(),
+        columns: names,
+        sql,
+        query,
+    })?;
     println!("View {} created", name);
     Ok(())
 }
@@ -536,7 +599,11 @@ fn create_view(catalog: &mut Catalog, name: Ident, columns: Option<Vec<String>>,
 /// written unquoted they compare case-insensitively, if both were quoted
 /// exactly.
 fn names_collide(a: &str, a_quoted: bool, b: &str, b_quoted: bool) -> bool {
-    if a_quoted && b_quoted { a == b } else { a.eq_ignore_ascii_case(b) }
+    if a_quoted && b_quoted {
+        a == b
+    } else {
+        a.eq_ignore_ascii_case(b)
+    }
 }
 
 /// ALTER TABLE t ADD COLUMN: validate the new column against every visible
@@ -555,7 +622,11 @@ fn alter_add_column(
     let info = catalog.resolve_table(table_name)?.clone();
     // Quotedness of existing columns is not stored: the new name is matched
     // per the identifier rule (unquoted: case-insensitive, quoted: exact).
-    if info.columns.iter().any(|(n, _)| names_collide(n, true, &column.name, column.quoted)) {
+    if info
+        .columns
+        .iter()
+        .any(|(n, _)| names_collide(n, true, &column.name, column.quoted))
+    {
         return Err(DbError::DuplicateColumn(column.name));
     }
     let mut columns = info.columns.clone();
@@ -571,13 +642,24 @@ fn alter_add_column(
         .chain(info.fks.iter().map(|fk| keys::fk_name(&info, fk)))
         .collect();
     for c in &constraints {
-        if let TableConstraint::Unique { name: Some(n), .. } | TableConstraint::Check { name: Some(n), .. } = c
+        if let TableConstraint::Unique { name: Some(n), .. }
+        | TableConstraint::Check { name: Some(n), .. } = c
             && used.contains(n)
         {
-            return Err(DbError::DuplicateConstraint { name: n.clone(), table: info.name.clone() });
+            return Err(DbError::DuplicateConstraint {
+                name: n.clone(),
+                table: info.name.clone(),
+            });
         }
     }
-    let resolved = keys::resolve_table_constraints(catalog, &info.name, &columns, None, Vec::new(), constraints)?;
+    let resolved = keys::resolve_table_constraints(
+        catalog,
+        &info.name,
+        &columns,
+        None,
+        Vec::new(),
+        constraints,
+    )?;
     let mut new_info = info.clone();
     new_info.columns = columns;
     new_info.not_null.push(column.not_null);
@@ -600,7 +682,11 @@ fn alter_add_column(
 
     // The value existing rows get: the default, evaluated once, or NULL.
     let fill = match &column.default_value {
-        Some(expr) => coerce(&DefaultConstraint::evaluate(expr)?, &column.col_type, &column.name)?,
+        Some(expr) => coerce(
+            &DefaultConstraint::evaluate(expr)?,
+            &column.col_type,
+            &column.name,
+        )?,
         None => ColumnValue::Null,
     };
     let rows = matching_rows(catalog, &info, None)?;
@@ -662,9 +748,15 @@ pub fn execute_select_with_indexes(
         crate::execution::bind::bind_predicate(catalog, &scope, pred, "WHERE")?;
     }
 
-    if let Some(Expr::Binary { op: BinaryOp::Eq, left, right }) = &selection {
+    if let Some(Expr::Binary {
+        op: BinaryOp::Eq,
+        left,
+        right,
+    }) = &selection
+    {
         let probe = match (left.as_ref(), right.as_ref()) {
-            (Expr::Column { table, name }, Expr::Literal(v)) | (Expr::Literal(v), Expr::Column { table, name }) => {
+            (Expr::Column { table, name }, Expr::Literal(v))
+            | (Expr::Literal(v), Expr::Column { table, name }) => {
                 // Same identifier rules as the evaluator; a reference that
                 // does not resolve (or is ambiguous) is left to the full scan.
                 match scope.resolve(table.as_ref(), name) {
@@ -675,11 +767,17 @@ pub fn execute_select_with_indexes(
             _ => None,
         };
         if let Some((col_name, lit)) = probe {
-            let col_type = info.columns.iter().find(|(c, _)| *c == col_name).map(|(_, ty)| *ty);
+            let col_type = info
+                .columns
+                .iter()
+                .find(|(c, _)| *c == col_name)
+                .map(|(_, ty)| *ty);
             let index = catalog.find_index(table_name, &col_name).cloned();
             if let (Some(index), Some(col_type)) = (index, col_type) {
                 let lookup = if same_category(&lit, &col_type) {
-                    lit.to_column_value(&col_type, &col_name).ok().filter(|cv| *cv != ColumnValue::Null)
+                    lit.to_column_value(&col_type, &col_name)
+                        .ok()
+                        .filter(|cv| *cv != ColumnValue::Null)
                 } else {
                     None
                 };
@@ -751,12 +849,17 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             let table_name = table_name.value;
             // Same rule as ALTER TABLE ... ADD COLUMN: a declared name twice.
             for (i, c) in columns.iter().enumerate() {
-                if columns[..i].iter().any(|p| names_collide(&p.name, p.quoted, &c.name, c.quoted)) {
+                if columns[..i]
+                    .iter()
+                    .any(|p| names_collide(&p.name, p.quoted, &c.name, c.quoted))
+                {
                     return Err(DbError::DuplicateColumn(c.name.clone()));
                 }
             }
-            let declared: Vec<(String, ColumnType)> =
-                columns.iter().map(|c| (c.name.clone(), c.col_type)).collect();
+            let declared: Vec<(String, ColumnType)> = columns
+                .iter()
+                .map(|c| (c.name.clone(), c.col_type))
+                .collect();
             let resolved = keys::resolve_table_constraints(
                 catalog,
                 &table_name,
@@ -811,7 +914,10 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             column_name,
         } => {
             if let Ok(Relation::View(v)) = catalog.resolve_relation(&table_name) {
-                return Err(DbError::FeatureNotSupported(format!("cannot create index on view \"{}\"", v.name)));
+                return Err(DbError::FeatureNotSupported(format!(
+                    "cannot create index on view \"{}\"",
+                    v.name
+                )));
             }
             let info = catalog.resolve_table(&table_name)?.clone();
             let column = &info.columns[resolve_column(&info, &column_name)?].0;
@@ -844,12 +950,18 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 println!("{}", format_values(&vals));
             }
         }
-        Statement::DropTable { table_name, if_exists } => {
+        Statement::DropTable {
+            table_name,
+            if_exists,
+        } => {
             // Same identifier rule as every other reference.
             let table_name = match catalog.resolve_relation(&table_name) {
                 Ok(Relation::Table(t)) => t.name.clone(),
                 Ok(Relation::View(v)) => {
-                    return Err(DbError::WrongObjectType(format!("{} is not a table", v.name)));
+                    return Err(DbError::WrongObjectType(format!(
+                        "{} is not a table",
+                        v.name
+                    )));
                 }
                 Err(DbError::TableNotFound(_)) if if_exists => return Ok(()),
                 Err(e) => return Err(e),
@@ -859,14 +971,21 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 println!("Table {} dropped", table_name);
             }
         }
-        Statement::CreateView { name, columns, query } => {
+        Statement::CreateView {
+            name,
+            columns,
+            query,
+        } => {
             create_view(catalog, name, columns, *query)?;
         }
         Statement::DropView { name, if_exists } => {
             let name = match catalog.resolve_relation(&name) {
                 Ok(Relation::View(v)) => v.name.clone(),
                 Ok(Relation::Table(t)) => {
-                    return Err(DbError::WrongObjectType(format!("{} is not a view", t.name)));
+                    return Err(DbError::WrongObjectType(format!(
+                        "{} is not a view",
+                        t.name
+                    )));
                 }
                 Err(DbError::TableNotFound(_)) if if_exists => return Ok(()),
                 Err(e) => return Err(e),
@@ -875,7 +994,11 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             catalog.drop_view(&name)?;
             println!("View {} dropped", name);
         }
-        Statement::AlterTableAddColumn { table_name, column, constraints } => {
+        Statement::AlterTableAddColumn {
+            table_name,
+            column,
+            constraints,
+        } => {
             alter_add_column(catalog, &table_name, column, constraints)?;
         }
         Statement::Delete {
@@ -920,9 +1043,19 @@ fn sql_type_to_column_type(ty: &SqlType) -> ColumnType {
     match ty {
         SqlType::Boolean => ColumnType::Boolean,
         SqlType::Integer | SqlType::BigInt => ColumnType::Integer,
-        SqlType::SmallInt => ColumnType::SmallInt { width: 0, unsigned: false },
-        SqlType::Decimal { precision, scale } => ColumnType::Decimal { precision: *precision, scale: *scale },
-        SqlType::Double => ColumnType::Double { precision: 10, scale: 0, unsigned: false },
+        SqlType::SmallInt => ColumnType::SmallInt {
+            width: 0,
+            unsigned: false,
+        },
+        SqlType::Decimal { precision, scale } => ColumnType::Decimal {
+            precision: *precision,
+            scale: *scale,
+        },
+        SqlType::Double => ColumnType::Double {
+            precision: 10,
+            scale: 0,
+            unsigned: false,
+        },
         SqlType::Text | SqlType::Null => ColumnType::Text,
         SqlType::Char(n) => ColumnType::Char(*n),
         SqlType::Varchar(n) => ColumnType::Varchar(*n),
@@ -995,7 +1128,11 @@ pub fn format_result_header(columns: &[ResultColumn]) -> String {
     columns
         .iter()
         .map(|c| {
-            let ty = if c.ty == SqlType::Null { SqlType::Text } else { c.ty };
+            let ty = if c.ty == SqlType::Null {
+                SqlType::Text
+            } else {
+                c.ty
+            };
             format!("{} {}", c.name, ty.name())
         })
         .collect::<Vec<_>>()
@@ -1016,12 +1153,19 @@ mod tests {
         let pager = crate::storage::pager::Pager::new(path.to_str().unwrap()).unwrap();
         let mut catalog = Catalog::open(pager).unwrap();
         let parse = |sql: &str| crate::sql::parser::parse_sql(sql).unwrap();
-        handle_statement(&mut catalog, parse("CREATE TABLE p (id INTEGER, n INTEGER PRIMARY KEY)")).unwrap();
+        handle_statement(
+            &mut catalog,
+            parse("CREATE TABLE p (id INTEGER, n INTEGER PRIMARY KEY)"),
+        )
+        .unwrap();
         let root = catalog.get_table("p").unwrap().root_page;
         // 0.5.1 layout: physical key = first column (id = 1), n = 100.
         BTree::open_root(&catalog.pager, root)
             .unwrap()
-            .insert(1, RowData(vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]))
+            .insert(
+                1,
+                RowData(vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]),
+            )
             .unwrap();
 
         handle_statement(&mut catalog, parse("INSERT INTO p VALUES (2, 1)")).unwrap();
@@ -1031,12 +1175,19 @@ mod tests {
         ));
         let mut rows = Vec::new();
         execute_select_with_indexes(&mut catalog, "p", None, &mut rows).unwrap();
-        let mut seen: Vec<(i32, Vec<ColumnValue>)> = rows.into_iter().map(|r| (r.key, r.data.0)).collect();
+        let mut seen: Vec<(i32, Vec<ColumnValue>)> =
+            rows.into_iter().map(|r| (r.key, r.data.0)).collect();
         seen.sort_by_key(|(k, _)| *k);
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0], (1, vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]));
+        assert_eq!(
+            seen[0],
+            (1, vec![ColumnValue::Integer(1), ColumnValue::Integer(100)])
+        );
         // Key 1 was taken by the legacy row, so (2, 1) got a fresh row id.
-        assert_eq!(seen[1], (2, vec![ColumnValue::Integer(2), ColumnValue::Integer(1)]));
+        assert_eq!(
+            seen[1],
+            (2, vec![ColumnValue::Integer(2), ColumnValue::Integer(1)])
+        );
     }
 
     /// Catalog over a fresh file with the 0.5.1-style table
@@ -1046,11 +1197,18 @@ mod tests {
         let path = dir.path().join("legacy.db");
         let pager = crate::storage::pager::Pager::new(path.to_str().unwrap()).unwrap();
         let mut catalog = Catalog::open(pager).unwrap();
-        run(&mut catalog, "CREATE TABLE p (id INTEGER, n INTEGER PRIMARY KEY)").unwrap();
+        run(
+            &mut catalog,
+            "CREATE TABLE p (id INTEGER, n INTEGER PRIMARY KEY)",
+        )
+        .unwrap();
         let root = catalog.get_table("p").unwrap().root_page;
         BTree::open_root(&catalog.pager, root)
             .unwrap()
-            .insert(1, RowData(vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]))
+            .insert(
+                1,
+                RowData(vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]),
+            )
             .unwrap();
         (dir, catalog)
     }
@@ -1104,7 +1262,11 @@ mod tests {
         run(&mut catalog, "DELETE FROM p WHERE n = 3").unwrap(); // key 3: dead version only
         run(&mut catalog, "INSERT INTO p VALUES (4, 2)").unwrap(); // key 2 taken → fallback
         let versions = p_versions(&catalog);
-        let at3: Vec<&ColumnValue> = versions.iter().filter(|(k, _)| *k == 3).map(|(_, n)| n).collect();
+        let at3: Vec<&ColumnValue> = versions
+            .iter()
+            .filter(|(k, _)| *k == 3)
+            .map(|(_, n)| n)
+            .collect();
         assert_eq!(at3, vec![&ColumnValue::Integer(3)], "{versions:?}");
     }
 
@@ -1117,7 +1279,11 @@ mod tests {
         run(&mut catalog, "DELETE FROM p WHERE n = 1").unwrap(); // key 2: dead n=1
         run(&mut catalog, "INSERT INTO p VALUES (3, 2)").unwrap(); // alias 2 must not reuse key 2
         let versions = p_versions(&catalog);
-        let at2: Vec<&ColumnValue> = versions.iter().filter(|(k, _)| *k == 2).map(|(_, n)| n).collect();
+        let at2: Vec<&ColumnValue> = versions
+            .iter()
+            .filter(|(k, _)| *k == 2)
+            .map(|(_, n)| n)
+            .collect();
         assert_eq!(at2, vec![&ColumnValue::Integer(1)], "{versions:?}");
     }
 
@@ -1130,7 +1296,11 @@ mod tests {
         let path = dir.path().join("intents.db");
         let pager = crate::storage::pager::Pager::new(path.to_str().unwrap()).unwrap();
         let mut catalog = Catalog::open(pager).unwrap();
-        run(&mut catalog, "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)").unwrap();
+        run(
+            &mut catalog,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)",
+        )
+        .unwrap();
         let root0 = catalog.get_table("t").unwrap().root_page;
         let root_is_leaf = |catalog: &Catalog| {
             let root = catalog.get_table("t").unwrap().root_page;
@@ -1142,8 +1312,14 @@ mod tests {
         loop {
             let root = catalog.get_table("t").unwrap().root_page;
             let mut tree = BTree::open_root(&catalog.pager, root).unwrap();
-            tree.insert(n + 1, RowData(vec![ColumnValue::Integer(n + 1), ColumnValue::Text(pad.clone())]))
-                .unwrap();
+            tree.insert(
+                n + 1,
+                RowData(vec![
+                    ColumnValue::Integer(n + 1),
+                    ColumnValue::Text(pad.clone()),
+                ]),
+            )
+            .unwrap();
             assert_eq!(tree.root_page(), root0, "the root page never moves");
             if !root_is_leaf(&catalog) {
                 // Went one too far: start over with n rows.
@@ -1153,23 +1329,43 @@ mod tests {
         }
         assert!(n >= 2, "leaf holds {n} rows");
         run(&mut catalog, "DROP TABLE t").unwrap();
-        run(&mut catalog, "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)").unwrap();
+        run(
+            &mut catalog,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)",
+        )
+        .unwrap();
         for i in 1..=n {
-            run(&mut catalog, &format!("INSERT INTO t VALUES ({i}, '{pad}')")).unwrap();
+            run(
+                &mut catalog,
+                &format!("INSERT INTO t VALUES ({i}, '{pad}')"),
+            )
+            .unwrap();
         }
         let before = catalog.get_table("t").unwrap().root_page;
         assert!(root_is_leaf(&catalog));
 
         let mut tm = crate::transaction::TransactionManager::new();
-        tm.begin(&mut catalog, None, crate::transaction::IsolationLevel::default()).unwrap();
+        tm.begin(
+            &mut catalog,
+            None,
+            crate::transaction::IsolationLevel::default(),
+        )
+        .unwrap();
         run(&mut catalog, "UPDATE t SET s = 'y'").unwrap();
         let after = catalog.get_table("t").unwrap().root_page;
-        assert!(!root_is_leaf(&catalog), "precondition: the UPDATE split the root");
+        assert!(
+            !root_is_leaf(&catalog),
+            "precondition: the UPDATE split the root"
+        );
         assert_eq!(before, after);
         let intents = catalog.pager.transaction_write_set();
         assert_eq!(intents.len(), n as usize);
         for intent in intents {
-            assert_eq!(intent.table_root, after, "intent for key {} recorded against a stale root", intent.key);
+            assert_eq!(
+                intent.table_root, after,
+                "intent for key {} recorded against a stale root",
+                intent.key
+            );
         }
         tm.rollback(&mut catalog).unwrap();
     }
@@ -1198,8 +1394,17 @@ mod tests {
     #[test]
     fn format_result_header_uses_sql_types() {
         let cols = vec![
-            ResultColumn { name: "n".into(), ty: SqlType::Decimal { precision: 10, scale: 2 } },
-            ResultColumn { name: "x".into(), ty: SqlType::Null },
+            ResultColumn {
+                name: "n".into(),
+                ty: SqlType::Decimal {
+                    precision: 10,
+                    scale: 2,
+                },
+            },
+            ResultColumn {
+                name: "x".into(),
+                ty: SqlType::Null,
+            },
         ];
         assert_eq!(format_result_header(&cols), "n DECIMAL(10,2) | x TEXT");
     }

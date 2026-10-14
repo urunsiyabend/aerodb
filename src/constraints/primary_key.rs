@@ -21,6 +21,12 @@ impl<'a> Constraint for PrimaryKeyConstraint<'a> {
     ) -> DbResult<()> {
         let mut view = table.clone();
         view.primary_key = Some(self.columns.to_vec());
-        check_primary_key(catalog, &view, snapshot, std::slice::from_ref(row), &Pending::new())
+        check_primary_key(
+            catalog,
+            &view,
+            snapshot,
+            std::slice::from_ref(row),
+            &Pending::new(),
+        )
     }
 }

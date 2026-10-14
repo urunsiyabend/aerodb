@@ -60,21 +60,29 @@ impl TableInfo {
             .collect();
         let mut claim = |base: String| -> String {
             let name = if used.contains(&base) {
-                (1..).map(|n| format!("{}_{}", base, n)).find(|c| !used.contains(c)).expect("unbounded")
+                (1..)
+                    .map(|n| format!("{}_{}", base, n))
+                    .find(|c| !used.contains(c))
+                    .expect("unbounded")
             } else {
                 base
             };
             used.insert(name.clone());
             name
         };
-        if self.primary_key.as_ref().is_some_and(|pk| !pk.is_empty()) && self.primary_key_name.is_none() {
-            self.primary_key_name = Some(claim(crate::constraints::keys::default_pk_name(&self.name)));
+        if self.primary_key.as_ref().is_some_and(|pk| !pk.is_empty())
+            && self.primary_key_name.is_none()
+        {
+            self.primary_key_name =
+                Some(claim(crate::constraints::keys::default_pk_name(&self.name)));
         }
         let table = self.name.clone();
         for fk in &mut self.fks {
             if fk.name.is_none() {
                 let cols: Vec<String> = fk.columns.iter().map(|c| c.value.clone()).collect();
-                fk.name = Some(claim(crate::constraints::keys::default_fk_name(&table, &cols)));
+                fk.name = Some(claim(crate::constraints::keys::default_fk_name(
+                    &table, &cols,
+                )));
             }
         }
     }
@@ -176,7 +184,10 @@ pub const DEFAULT_SQL_MARKER: &str = "\u{1}sql:";
 pub fn decode_default_expr(stored: &str) -> io::Result<Expr> {
     if let Some(sql) = stored.strip_prefix(DEFAULT_SQL_MARKER) {
         return crate::sql::parser::parse_expression_sql(sql).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("bad stored DEFAULT '{}': {}", sql, e))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("bad stored DEFAULT '{}': {}", sql, e),
+            )
         });
     }
     let upper = stored.to_ascii_uppercase();
@@ -189,7 +200,10 @@ pub fn decode_default_expr(stored: &str) -> io::Result<Expr> {
         _ => None,
     };
     Ok(match func {
-        Some(name) => Expr::Function { name: name.into(), args: Vec::new() },
+        Some(name) => Expr::Function {
+            name: name.into(),
+            args: Vec::new(),
+        },
         None => Expr::Literal(crate::sql::value::Value::Text(stored.to_string())),
     })
 }
@@ -318,7 +332,11 @@ impl Catalog {
 
     /// A page-1 key not used by any table or view row.
     fn next_catalog_key(&self) -> io::Result<i32> {
-        let max = Self::catalog_entries(&self.pager)?.iter().map(|(k, _)| *k).max().unwrap_or(0);
+        let max = Self::catalog_entries(&self.pager)?
+            .iter()
+            .map(|(k, _)| *k)
+            .max()
+            .unwrap_or(0);
         Ok(max + 1)
     }
 
@@ -330,12 +348,21 @@ impl Catalog {
     /// the old row is removed physically. Marking it deleted with an MVCC
     /// stamp could miss a row created earlier in the same transaction (it
     /// is invisible to a transaction-less snapshot) and silently keep it.
-    fn write_catalog_row(&mut self, key: i32, existing: bool, data: Option<RowData>) -> io::Result<()> {
+    fn write_catalog_row(
+        &mut self,
+        key: i32,
+        existing: bool,
+        data: Option<RowData>,
+    ) -> io::Result<()> {
         let mut tree = BTree::open_root(&self.pager, 1)?;
         // Live = what the page-1 scanners see. Files written before 0.6.0
         // may also hold dead (deleted-stamped) versions of a key; they are
         // dropped together with the live one.
-        let live = tree.versions_of(key)?.iter().filter(|r| r.deleted_tx.is_none()).count();
+        let live = tree
+            .versions_of(key)?
+            .iter()
+            .filter(|r| r.deleted_tx.is_none())
+            .count();
         if live != usize::from(existing) {
             return Err(io::Error::other(format!(
                 "internal error: catalog row {key} has {live} live version(s), expected {}",
@@ -356,7 +383,10 @@ impl Catalog {
     /// change (page 1 is reverted on ROLLBACK).
     pub fn replace_table_info(&mut self, info: TableInfo) -> io::Result<()> {
         let key = self.catalog_key(false, &info.name)?.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, format!("No such table: {}", info.name))
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("No such table: {}", info.name),
+            )
         })?;
         self.write_catalog_row(key, true, Some(Self::serialize_catalog_row(&info)))?;
         self.tables.insert(info.name.clone(), info);
@@ -415,7 +445,12 @@ impl Catalog {
     }
 
     fn deserialize_view_row(row: &Row) -> io::Result<ViewInfo> {
-        let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, format!("view catalog row: bad {}", what));
+        let bad = |what: &str| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("view catalog row: bad {}", what),
+            )
+        };
         let values = &row.data.0;
         let text = |i: usize, what: &str| match values.get(i) {
             Some(ColumnValue::Text(s)) => Ok(s.clone()),
@@ -426,7 +461,9 @@ impl Catalog {
             Some(ColumnValue::Integer(n)) if *n >= 0 => *n as usize,
             _ => return Err(bad("column count")),
         };
-        let columns = (0..n).map(|i| text(3 + i, "column name")).collect::<io::Result<Vec<_>>>()?;
+        let columns = (0..n)
+            .map(|i| text(3 + i, "column name"))
+            .collect::<io::Result<Vec<_>>>()?;
         let sql = text(3 + n, "query text")?;
         let query = match crate::sql::parser::parse_sql(&sql) {
             Ok(crate::sql::ast::Statement::Query(q)) => *q,
@@ -438,7 +475,12 @@ impl Catalog {
                 ));
             }
         };
-        Ok(ViewInfo { name, columns, sql, query })
+        Ok(ViewInfo {
+            name,
+            columns,
+            sql,
+            query,
+        })
     }
 
     fn decode_catalog_row(row: &Row) -> io::Result<CatalogEntry> {
@@ -524,7 +566,14 @@ impl Catalog {
                 })
                 .collect();
             drop(tree);
-            check_removed_keys(self, table, &removed, &snapshot, &Pending::new(), Removal::Commit)?;
+            check_removed_keys(
+                self,
+                table,
+                &removed,
+                &snapshot,
+                &Pending::new(),
+                Removal::Commit,
+            )?;
         }
 
         Ok(())
@@ -614,18 +663,29 @@ impl Catalog {
             if let Some(t) = self.tables.get(&ident.value) {
                 return Ok(Relation::Table(t));
             }
-            return self.views.get(&ident.value).map(Relation::View).ok_or_else(not_found);
+            return self
+                .views
+                .get(&ident.value)
+                .map(Relation::View)
+                .ok_or_else(not_found);
         }
         let mut hits = self
             .tables
             .values()
             .filter(|t| ident.matches(&t.name))
             .map(Relation::Table)
-            .chain(self.views.values().filter(|v| ident.matches(&v.name)).map(Relation::View));
+            .chain(
+                self.views
+                    .values()
+                    .filter(|v| ident.matches(&v.name))
+                    .map(Relation::View),
+            );
         match (hits.next(), hits.next()) {
             (Some(r), None) => Ok(r),
             (None, _) => Err(not_found()),
-            (Some(_), Some(_)) => Err(crate::error::DbError::AmbiguousRelation(ident.value.clone())),
+            (Some(_), Some(_)) => Err(crate::error::DbError::AmbiguousRelation(
+                ident.value.clone(),
+            )),
         }
     }
 
@@ -634,7 +694,11 @@ impl Catalog {
     /// collides case-insensitively, a quoted one exactly (existing names are
     /// compared as declared, like columns in ALTER TABLE ... ADD COLUMN).
     pub fn colliding_relation(&self, ident: &Ident) -> Option<String> {
-        self.tables.keys().chain(self.views.keys()).find(|n| ident.matches(n)).cloned()
+        self.tables
+            .keys()
+            .chain(self.views.keys())
+            .find(|n| ident.matches(n))
+            .cloned()
     }
 
     /// The existing index `ident` would collide with (identifier rule, as
@@ -653,13 +717,18 @@ impl Catalog {
     /// matches several.
     pub fn resolve_index(&self, ident: &Ident) -> crate::error::DbResult<Option<String>> {
         if ident.quoted {
-            return Ok(self.indexes.contains_key(&ident.value).then(|| ident.value.clone()));
+            return Ok(self
+                .indexes
+                .contains_key(&ident.value)
+                .then(|| ident.value.clone()));
         }
         let mut hits = self.indexes.keys().filter(|n| ident.matches(n));
         match (hits.next(), hits.next()) {
             (None, _) => Ok(None),
             (Some(n), None) => Ok(Some(n.clone())),
-            (Some(_), Some(_)) => Err(crate::error::DbError::AmbiguousRelation(ident.value.clone())),
+            (Some(_), Some(_)) => Err(crate::error::DbError::AmbiguousRelation(
+                ident.value.clone(),
+            )),
         }
     }
 
@@ -709,7 +778,15 @@ impl Catalog {
         fks: Vec<crate::sql::ast::ForeignKey>,
         primary_key: Option<Vec<String>>,
     ) -> io::Result<()> {
-        self.create_table_with_constraints(name, columns, fks, primary_key, None, Vec::new(), Vec::new())
+        self.create_table_with_constraints(
+            name,
+            columns,
+            fks,
+            primary_key,
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     /// [`Catalog::create_table_with_fks`] plus the PRIMARY KEY constraint name
@@ -903,7 +980,9 @@ impl Catalog {
     /// Returns false when the key was already listed (nothing changed).
     pub(crate) fn index_bucket_add(entry: &mut RowData, text: &str, row_key: i32) -> bool {
         let values = &mut entry.0;
-        let start = values.iter().position(|v| matches!(v, ColumnValue::Text(s) if s == text));
+        let start = values
+            .iter()
+            .position(|v| matches!(v, ColumnValue::Text(s) if s == text));
         match start {
             Some(start) => {
                 let end = values[start + 1..]
@@ -941,7 +1020,11 @@ impl Catalog {
     /// Candidate row keys for `value` in the index tree rooted at
     /// `index_root` (empty for NULL). Candidates may be stale: callers check
     /// base-row visibility and the predicate.
-    pub(crate) fn index_candidates(&self, index_root: u32, value: &ColumnValue) -> io::Result<Vec<i32>> {
+    pub(crate) fn index_candidates(
+        &self,
+        index_root: u32,
+        value: &ColumnValue,
+    ) -> io::Result<Vec<i32>> {
         let Some(text) = Self::index_key_text(value) else {
             return Ok(Vec::new());
         };
@@ -1070,7 +1153,11 @@ impl Catalog {
             return name;
         }
         let legacy = Self::legacy_auto_increment_sequence_name(table, column);
-        if self.sequences.contains_key(&legacy) { legacy } else { name }
+        if self.sequences.contains_key(&legacy) {
+            legacy
+        } else {
+            name
+        }
     }
 
     /// Drop the AUTO_INCREMENT sequences of `table` (called by DROP TABLE). A
@@ -1104,7 +1191,9 @@ impl Catalog {
     /// not MVCC-versioned (ROLLBACK reverts it), like the table catalog.
     fn remove_sequence_row(tree: &mut BTree, key: i32) -> io::Result<()> {
         if tree.remove_all_versions(key)? == 0 {
-            return Err(io::Error::other(format!("internal error: sequence row {key} not found")));
+            return Err(io::Error::other(format!(
+                "internal error: sequence row {key} not found"
+            )));
         }
         Ok(())
     }
@@ -1468,10 +1557,14 @@ impl Catalog {
         }
         // Constraint-name section: PRIMARY KEY name ('' = none), then one
         // name per foreign key, in the order of the FOREIGN KEY section.
-        vals.push(ColumnValue::Text(info.primary_key_name.clone().unwrap_or_default()));
+        vals.push(ColumnValue::Text(
+            info.primary_key_name.clone().unwrap_or_default(),
+        ));
         vals.push(ColumnValue::Integer(info.fks.len() as i32));
         for fk in &info.fks {
-            vals.push(ColumnValue::Text(crate::constraints::keys::fk_name(info, fk)));
+            vals.push(ColumnValue::Text(crate::constraints::keys::fk_name(
+                info, fk,
+            )));
         }
         RowData(vals)
     }
@@ -1707,7 +1800,12 @@ impl Catalog {
                 idx += 1;
             }
         }
-        let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, format!("catalog row: bad {}", what));
+        let bad = |what: &str| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("catalog row: bad {}", what),
+            )
+        };
         let text_at = |i: usize, what: &str| match values.get(i) {
             Some(ColumnValue::Text(s)) => Ok(s.clone()),
             _ => Err(bad(what)),
@@ -1730,7 +1828,10 @@ impl Catalog {
                     cols.push(text_at(idx, "unique column")?);
                     idx += 1;
                 }
-                uniques.push(UniqueConstraint { name: uname, columns: cols });
+                uniques.push(UniqueConstraint {
+                    name: uname,
+                    columns: cols,
+                });
             }
         }
         let mut checks = Vec::new();
@@ -1742,7 +1843,10 @@ impl Catalog {
                 let sql = text_at(idx + 1, "check expression")?;
                 idx += 2;
                 let expr = crate::sql::parser::parse_expression_sql(&sql).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, format!("bad stored CHECK '{}': {}", sql, e))
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("bad stored CHECK '{}': {}", sql, e),
+                    )
                 })?;
                 checks.push(CheckConstraint { name: cname, expr });
             }
@@ -1773,7 +1877,11 @@ impl Catalog {
             default_values: defaults,
             auto_increment: auto_inc,
             fks,
-            primary_key: if pk_cols.is_empty() { None } else { Some(pk_cols) },
+            primary_key: if pk_cols.is_empty() {
+                None
+            } else {
+                Some(pk_cols)
+            },
             primary_key_name,
             uniques,
             checks,
@@ -1825,11 +1933,22 @@ mod tests {
     fn decodes_marked_and_legacy_defaults() {
         let marked = format!("{}{}", DEFAULT_SQL_MARKER, "(1 + 2)");
         assert_eq!(decode_default_expr(&marked).unwrap().to_sql(), "(1 + 2)");
-        for legacy in ["CURRENT_TIMESTAMP", "current_timestamp()", "GETDATE()", "GETUTCDATE()"] {
-            assert!(matches!(decode_default_expr(legacy).unwrap(), Expr::Function { .. }), "{legacy}");
+        for legacy in [
+            "CURRENT_TIMESTAMP",
+            "current_timestamp()",
+            "GETDATE()",
+            "GETUTCDATE()",
+        ] {
+            assert!(
+                matches!(decode_default_expr(legacy).unwrap(), Expr::Function { .. }),
+                "{legacy}"
+            );
         }
         // 0.5.1 stored literal text unquoted; it stays a text literal coerced on insert.
-        assert_eq!(decode_default_expr("18").unwrap(), Expr::Literal(Value::Text("18".into())));
+        assert_eq!(
+            decode_default_expr("18").unwrap(),
+            Expr::Literal(Value::Text("18".into()))
+        );
         assert!(decode_default_expr(&format!("{}{}", DEFAULT_SQL_MARKER, "1 +")).is_err());
     }
 
@@ -1848,8 +1967,14 @@ mod tests {
         let (_dir, mut catalog) = catalog_with_table();
         catalog.rowid_counters.insert("n".into(), i32::MAX as i64);
         assert_eq!(catalog.allocate_rowid("n").unwrap(), i32::MAX);
-        assert!(matches!(catalog.allocate_rowid("n"), Err(crate::error::DbError::NumericOverflow(_))));
-        assert!(matches!(catalog.allocate_rowid("n"), Err(crate::error::DbError::NumericOverflow(_))));
+        assert!(matches!(
+            catalog.allocate_rowid("n"),
+            Err(crate::error::DbError::NumericOverflow(_))
+        ));
+        assert!(matches!(
+            catalog.allocate_rowid("n"),
+            Err(crate::error::DbError::NumericOverflow(_))
+        ));
     }
 
     #[test]
@@ -1859,8 +1984,10 @@ mod tests {
         // Versions written behind the counter's back (e.g. raw tree writes).
         let root = catalog.get_table("n").unwrap().root_page;
         let mut tree = BTree::open_root(&catalog.pager, root).unwrap();
-        tree.insert(2, RowData(vec![ColumnValue::Text("a".into())])).unwrap();
-        tree.insert(3, RowData(vec![ColumnValue::Text("b".into())])).unwrap();
+        tree.insert(2, RowData(vec![ColumnValue::Text("a".into())]))
+            .unwrap();
+        tree.insert(3, RowData(vec![ColumnValue::Text("b".into())]))
+            .unwrap();
         tree.delete(3).unwrap();
         drop(tree);
         assert_eq!(catalog.allocate_rowid("n").unwrap(), 4);
@@ -1880,7 +2007,10 @@ mod tests {
         TableInfo {
             name: "t".into(),
             root_page: 7,
-            columns: vec![("a".into(), ColumnType::Integer), ("b".into(), ColumnType::Text)],
+            columns: vec![
+                ("a".into(), ColumnType::Integer),
+                ("b".into(), ColumnType::Text),
+            ],
             not_null: vec![true, false],
             default_values: vec![None, None],
             auto_increment: vec![false, false],
@@ -1894,10 +2024,14 @@ mod tests {
             }],
             primary_key: Some(vec!["a".into()]),
             primary_key_name: Some("t_pk".into()),
-            uniques: vec![UniqueConstraint { name: "t_a_b_key".into(), columns: vec!["a".into(), "b".into()] }],
+            uniques: vec![UniqueConstraint {
+                name: "t_a_b_key".into(),
+                columns: vec!["a".into(), "b".into()],
+            }],
             checks: vec![CheckConstraint {
                 name: "t_a_check".into(),
-                expr: crate::sql::parser::parse_expression_sql("\"a\" > 0 AND \"b\" <> 'x'").unwrap(),
+                expr: crate::sql::parser::parse_expression_sql("\"a\" > 0 AND \"b\" <> 'x'")
+                    .unwrap(),
             }],
         }
     }
@@ -1913,7 +2047,10 @@ mod tests {
         info.fks.push(second);
         info.uniques[0].name = "t_pkey".into();
         info.checks[0].name = "t_a_fkey".into();
-        info.checks.push(CheckConstraint { name: "t_pkey_1".into(), expr: info.checks[0].expr.clone() });
+        info.checks.push(CheckConstraint {
+            name: "t_pkey_1".into(),
+            expr: info.checks[0].expr.clone(),
+        });
         info.fill_default_constraint_names();
         assert_eq!(info.primary_key_name.as_deref(), Some("t_pkey_2"));
         assert_eq!(info.fks[0].name.as_deref(), Some("t_a_fkey_1"));
@@ -1925,7 +2062,10 @@ mod tests {
         again.fks.push(again.fks[0].clone());
         again.uniques[0].name = "t_pkey".into();
         again.checks[0].name = "t_a_fkey".into();
-        again.checks.push(CheckConstraint { name: "t_pkey_1".into(), expr: again.checks[0].expr.clone() });
+        again.checks.push(CheckConstraint {
+            name: "t_pkey_1".into(),
+            expr: again.checks[0].expr.clone(),
+        });
         again.fill_default_constraint_names();
         assert_eq!(again.fks, info.fks);
         assert_eq!(again.primary_key_name, info.primary_key_name);
@@ -2003,7 +2143,12 @@ mod tests {
             crate::sql::ast::Statement::Query(q) => *q,
             _ => unreachable!(),
         };
-        let view = ViewInfo { name: "v".into(), columns: vec!["Id".into()], sql: query.to_sql(), query };
+        let view = ViewInfo {
+            name: "v".into(),
+            columns: vec!["Id".into()],
+            sql: query.to_sql(),
+            query,
+        };
         let row = Row::new(3, Catalog::serialize_view_row(&view));
         assert_eq!(row.data.0[0], ColumnValue::Text(VIEW_ROW_TAG.into()));
         match Catalog::decode_catalog_row(&row).unwrap() {
@@ -2017,7 +2162,10 @@ mod tests {
         }
         // A table row still decodes as a table.
         let table = Row::new(1, Catalog::serialize_catalog_row(&constrained_table()));
-        assert!(matches!(Catalog::decode_catalog_row(&table).unwrap(), CatalogEntry::Table(_)));
+        assert!(matches!(
+            Catalog::decode_catalog_row(&table).unwrap(),
+            CatalogEntry::Table(_)
+        ));
     }
 
     /// Two distinct TEXT values with the same index hash (searched, not
@@ -2027,8 +2175,11 @@ mod tests {
         (0..)
             .find_map(|i| {
                 let s = format!("k{i}");
-                seen.insert(Catalog::hash_value(&ColumnValue::Text(s.clone())), s.clone())
-                    .map(|prev| (prev, s))
+                seen.insert(
+                    Catalog::hash_value(&ColumnValue::Text(s.clone())),
+                    s.clone(),
+                )
+                .map(|prev| (prev, s))
             })
             .unwrap()
     }
@@ -2040,7 +2191,10 @@ mod tests {
         assert!(Catalog::index_bucket_add(&mut entry, &b, 2));
         assert!(Catalog::index_bucket_add(&mut entry, &a, 3));
         assert!(Catalog::index_bucket_add(&mut entry, &b, 4));
-        assert!(!Catalog::index_bucket_add(&mut entry, &a, 1), "duplicate key not re-added");
+        assert!(
+            !Catalog::index_bucket_add(&mut entry, &a, 1),
+            "duplicate key not re-added"
+        );
         assert_eq!(
             entry.0,
             vec![
@@ -2088,17 +2242,27 @@ mod tests {
         assert_eq!(keys(ColumnValue::Double(1.7)), vec![8]);
         assert!(keys(ColumnValue::Double(1.6)).is_empty());
         // -0 and 0 are one value (equal under `=`).
-        assert_eq!(Catalog::index_key_text(&ColumnValue::Double(-0.0)), Some("0".into()));
+        assert_eq!(
+            Catalog::index_key_text(&ColumnValue::Double(-0.0)),
+            Some("0".into())
+        );
     }
 
     #[test]
     fn legacy_null_default_decodes_to_sql_null() {
         // 0.5.1 persisted `DEFAULT NULL` as the bare text NULL (any case).
         for legacy in ["NULL", "null", "Null"] {
-            assert_eq!(decode_default_expr(legacy).unwrap(), Expr::Literal(Value::Null), "{legacy}");
+            assert_eq!(
+                decode_default_expr(legacy).unwrap(),
+                Expr::Literal(Value::Null),
+                "{legacy}"
+            );
         }
         // Quoted text 'NULL' in a marked default stays a string.
         let marked = format!("{}{}", DEFAULT_SQL_MARKER, "'NULL'");
-        assert_eq!(decode_default_expr(&marked).unwrap(), Expr::Literal(Value::Text("NULL".into())));
+        assert_eq!(
+            decode_default_expr(&marked).unwrap(),
+            Expr::Literal(Value::Text("NULL".into()))
+        );
     }
 }

@@ -398,7 +398,7 @@ impl Binder<'_> {
                     .iter()
                     .any(|i| !matches!(i, SelectItem::Expr { .. }));
                 let scope = if has_wildcard {
-                    Some(self.from_scope(sel, outer)?)
+                    Some(self.select_scope(sel, outer)?)
                 } else {
                     None
                 };
@@ -490,7 +490,7 @@ impl Binder<'_> {
     }
 
     /// The scope of a SELECT's FROM items and joins (ON predicates bound).
-    fn from_scope(&self, sel: &mut Select, outer: &[Scope]) -> DbResult<Scope> {
+    fn select_scope(&self, sel: &mut Select, outer: &[Scope]) -> DbResult<Scope> {
         let mut scope = Scope::new();
         for tref in &mut sel.from {
             let part = self.table_ref(tref, outer)?;
@@ -512,7 +512,7 @@ impl Binder<'_> {
         order_by: &mut [OrderByItem],
         outer: &[Scope],
     ) -> DbResult<Vec<OutColumn>> {
-        let scope = self.from_scope(sel, outer)?;
+        let scope = self.select_scope(sel, outer)?;
         if let Some(w) = &mut sel.selection {
             require_boolean(&self.expr(w, &scope, outer)?, "WHERE")?;
         }
