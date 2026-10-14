@@ -19,7 +19,7 @@ const DATABASE_FILE: &str = "data.aerodb";
 
 fn main() -> io::Result<()> {
     env_logger::init();
-    info!("AeroDB v0.5(Transaction with WAL). Type .exit to quit.");
+    info!("AeroDB v0.6.0 (SQL core, MVCC with WAL). Type .exit to quit.");
 
     let mut catalog = Catalog::open(Pager::new(DATABASE_FILE)?)?;
     let mut transaction_manager = aerodb::transaction::TransactionManager::new();
