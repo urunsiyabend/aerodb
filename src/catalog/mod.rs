@@ -1,4 +1,4 @@
-use crate::sql::ast::Expr;
+use crate::sql::ast::{Expr, Ident};
 use crate::storage::btree::BTree;
 use crate::storage::page::PAGE_SIZE;
 use crate::storage::pager::Pager;
@@ -47,6 +47,8 @@ pub struct Catalog {
     /// (CREATE INDEX / DROP TABLE side effects) can be undone. Index metadata is
     /// not persisted on disk, so page-level rollback alone cannot restore it.
     pre_tx_indexes: Option<HashMap<String, IndexInfo>>,
+    /// Next physical row key per table (see [`Catalog::allocate_rowid`]).
+    rowid_counters: HashMap<String, i64>,
 }
 
 /// Prefix marking a persisted DEFAULT stored as SQL expression text
@@ -157,6 +159,7 @@ impl Catalog {
             sequences,
             pager,
             pre_tx_indexes: None,
+            rowid_counters: HashMap::new(),
         })
     }
 
@@ -277,133 +280,119 @@ impl Catalog {
         }
     }
 
+    /// Deferred re-validation at COMMIT against everything committed so far
+    /// plus the transaction's own writes. Uses the same logical key checks as
+    /// statement execution ([`crate::constraints::keys`]), with no pending
+    /// overlay: PRIMARY KEY uniqueness and FOREIGN KEY existence for rows the
+    /// transaction created, and the referential check for row versions it
+    /// deleted or replaced (no referential action can run at commit, so any
+    /// orphaned reference is a violation).
     pub(crate) fn recheck_constraints_for_commit(
         &mut self,
         transaction_id: TransactionId,
     ) -> crate::error::DbResult<()> {
+        use crate::constraints::keys::{
+            Pending, Removal, check_foreign_keys, check_primary_key, check_removed_keys,
+        };
         let snapshot =
             Snapshot::new_for_transaction(transaction_id, TransactionId::MAX, Vec::new());
-        let tables = self.all_tables();
+        let mut tables = self.all_tables();
+        tables.sort_by(|a, b| a.name.cmp(&b.name));
 
         for table in &tables {
-            if let Some(pk_cols) = &table.primary_key {
-                let mut tree = BTree::open_root(&self.pager, table.root_page)?;
-                let rows = tree.scan_visible(&snapshot)?;
-                for (idx, row) in rows.iter().enumerate() {
-                    if row.created_tx != transaction_id {
-                        continue;
-                    }
-                    if rows.iter().skip(idx + 1).any(|other| {
-                        pk_cols.iter().all(|col| {
-                            table
-                                .columns
-                                .iter()
-                                .position(|(name, _)| name == col)
-                                .map(|pos| row.data.0[pos] == other.data.0[pos])
-                                .unwrap_or(false)
-                        })
-                    }) {
-                        return Err(crate::error::DbError::DuplicateKey(row.key));
-                    }
+            let tree = BTree::open_root(&self.pager, table.root_page)?;
+            let created: Vec<Row> = tree
+                .scan_visible(&snapshot)?
+                .into_iter()
+                .filter(|row| row.created_tx == transaction_id)
+                .collect();
+            drop(tree);
+            if !created.is_empty() {
+                // Compare each created row with every *other* visible row.
+                let mut own = Pending::new();
+                for row in &created {
+                    own.remove(&table.name, row);
+                }
+                let images: Vec<RowData> = created.iter().map(|r| r.data.clone()).collect();
+                check_primary_key(self, table, &snapshot, &images, &own)?;
+                for image in &images {
+                    check_foreign_keys(self, table, image, &snapshot, &Pending::new())?;
                 }
             }
 
             let mut tree = BTree::open_root(&self.pager, table.root_page)?;
-            let versions = tree.all_versions()?;
-            drop(tree);
-
-            for row in versions
-                .iter()
-                .filter(|row| row.created_tx == transaction_id && row.deleted_tx.is_none())
-            {
-                self.recheck_foreign_keys_for_row(table, &row.data, &snapshot)?;
-            }
-
-            for row in versions
-                .iter()
+            let removed: Vec<RowData> = tree
+                .all_versions()?
+                .into_iter()
                 .filter(|row| row.deleted_tx == Some(transaction_id))
-            {
-                self.recheck_referential_delete_for_row(table, &row.data, &snapshot)?;
-            }
+                .map(|row| row.data)
+                .collect();
+            drop(tree);
+            check_removed_keys(self, table, &removed, &snapshot, &Pending::new(), Removal::Commit)?;
         }
 
         Ok(())
     }
 
-    fn recheck_foreign_keys_for_row(
-        &mut self,
-        table: &TableInfo,
-        row: &RowData,
-        snapshot: &Snapshot,
-    ) -> crate::error::DbResult<()> {
-        for fk in &table.fks {
-            if fk.columns.is_empty() || fk.parent_columns.is_empty() {
-                continue;
-            }
-            let child_idx = table
-                .columns
-                .iter()
-                .position(|(name, _)| name == &fk.columns[0])
-                .ok_or_else(|| crate::error::DbError::ColumnNotFound(fk.columns[0].clone()))?;
-            let ColumnValue::Integer(child_val) = row.0[child_idx] else {
-                return Err(crate::error::DbError::InvalidValue(
-                    "FK column must be INTEGER".into(),
-                ));
-            };
-            let parent = self.get_table(&fk.parent_table)?.clone();
-            let mut parent_tree = BTree::open_root(&self.pager, parent.root_page)?;
-            if parent_tree.find_visible(child_val, snapshot)?.is_none() {
-                return Err(crate::error::DbError::ForeignKeyViolation(format!(
-                    "{} {}",
-                    fk.parent_table, child_val
-                )));
-            }
+    /// The column whose value is a table's physical row key (a "rowid
+    /// alias"): the sole PRIMARY KEY column when it is INTEGER, SMALLINT or
+    /// MEDIUMINT. Other tables get keys from [`Catalog::allocate_rowid`].
+    pub fn rowid_alias_column(table: &TableInfo) -> Option<usize> {
+        let pk = table.primary_key.as_ref()?;
+        if pk.len() != 1 {
+            return None;
         }
-        Ok(())
+        let idx = table.columns.iter().position(|(c, _)| *c == pk[0])?;
+        match table.columns[idx].1 {
+            ColumnType::Integer | ColumnType::SmallInt { .. } | ColumnType::MediumInt { .. } => {
+                Some(idx)
+            }
+            _ => None,
+        }
     }
 
-    fn recheck_referential_delete_for_row(
-        &mut self,
-        table: &TableInfo,
-        row: &RowData,
-        snapshot: &Snapshot,
-    ) -> crate::error::DbResult<()> {
-        for child in self.all_tables() {
-            for fk in &child.fks {
-                if fk.parent_table != table.name
-                    || fk.columns.is_empty()
-                    || fk.parent_columns.is_empty()
-                {
-                    continue;
-                }
-                if fk.on_delete == Some(crate::sql::ast::Action::Cascade) {
-                    continue;
-                }
-                let parent_idx = table
-                    .columns
-                    .iter()
-                    .position(|(name, _)| name == &fk.parent_columns[0])
-                    .unwrap();
-                let ColumnValue::Integer(parent_val) = row.0[parent_idx] else {
-                    continue;
-                };
-                let child_idx = child
-                    .columns
-                    .iter()
-                    .position(|(name, _)| name == &fk.columns[0])
-                    .unwrap();
-                let mut child_tree = BTree::open_root(&self.pager, child.root_page)?;
-                for child_row in child_tree.scan_visible(snapshot)? {
-                    if child_row.data.0[child_idx] == ColumnValue::Integer(parent_val) {
-                        return Err(crate::error::DbError::ForeignKeyViolation(format!(
-                            "Cannot delete {}: referenced by {}.{}",
-                            table.name, child.name, fk.columns[0]
-                        )));
-                    }
-                }
+    /// A fresh physical row key for `table_name`: strictly greater than every
+    /// key present in any version of the table (visible or not) and than any
+    /// key handed out before. The counter is cached in memory and initialised
+    /// lazily from the table's versions, so it survives reopen without being
+    /// persisted; it is never rewound (a rolled-back allocation leaves a gap).
+    pub fn allocate_rowid(&mut self, table_name: &str) -> crate::error::DbResult<i32> {
+        let next: i64 = match self.rowid_counters.get(table_name) {
+            Some(next) => *next,
+            None => {
+                let root = self.get_table(table_name)?.root_page;
+                let mut tree = BTree::open_root(&self.pager, root)?;
+                let max = tree.all_versions()?.iter().map(|r| r.key).max();
+                max.map_or(1, |m| m as i64 + 1)
             }
+        };
+        let key = i32::try_from(next).map_err(|_| {
+            crate::error::DbError::NumericOverflow(format!(
+                "row ids of table \"{}\" are exhausted",
+                table_name
+            ))
+        })?;
+        self.rowid_counters.insert(table_name.to_string(), next + 1);
+        Ok(key)
+    }
+
+    /// Look up a table named by an SQL identifier: unquoted names match
+    /// case-insensitively, quoted names exactly (the rule column references
+    /// use). More than one case-insensitive match is ambiguous.
+    pub fn resolve_table(&self, ident: &Ident) -> crate::error::DbResult<&TableInfo> {
+        let not_found = || crate::error::DbError::TableNotFound(ident.value.clone());
+        if ident.quoted {
+            return self.tables.get(&ident.value).ok_or_else(not_found);
         }
-        Ok(())
+        let mut hits = self.tables.values().filter(|t| ident.matches(&t.name));
+        match (hits.next(), hits.next()) {
+            (Some(t), None) => Ok(t),
+            (None, _) => Err(not_found()),
+            (Some(_), Some(_)) => Err(crate::error::DbError::Syntax(format!(
+                "table name \"{}\" is ambiguous",
+                ident.value
+            ))),
+        }
     }
 
     pub fn transaction_active(&self) -> bool {
@@ -458,6 +447,10 @@ impl Catalog {
                 format!("Table {} already exists", name),
             ));
         }
+
+        // A new table starts a fresh row-id sequence (a dropped or rolled-back
+        // table of the same name may have left a counter behind).
+        self.rowid_counters.remove(name);
 
         // Allocate a new leaf page for this table’s data
         let new_root = self.pager.allocate_page()?;
@@ -726,7 +719,13 @@ impl Catalog {
         Ok(())
     }
 
-    pub fn insert_into_indexes(&mut self, table_name: &str, row_data: &RowData) -> io::Result<()> {
+    /// Add index candidates for the row with physical key `row_key`.
+    pub fn insert_into_indexes(
+        &mut self,
+        table_name: &str,
+        row_key: i32,
+        row_data: &RowData,
+    ) -> io::Result<()> {
         let indices: Vec<IndexInfo> = self.indexes.values().cloned().collect();
         for idx in indices {
             if idx.table_name == table_name {
@@ -737,11 +736,7 @@ impl Catalog {
                     .unwrap();
                 if let Some(val) = row_data.0.get(col_pos).cloned() {
                     let mut tree = BTree::open_root(&self.pager, idx.root_page)?;
-                    let key = match row_data.0[0] {
-                        ColumnValue::Integer(i) => i,
-                        _ => continue,
-                    };
-                    let new_root = Catalog::insert_index_value(&mut tree, val, key)?;
+                    let new_root = Catalog::insert_index_value(&mut tree, val, row_key)?;
                     if let Some(idx_info) = self.indexes.get_mut(&idx.name) {
                         idx_info.root_page = new_root;
                     }
@@ -945,6 +940,7 @@ impl Catalog {
                 self.pager.flush_page(1)?;
             }
             self.tables.remove(name);
+            self.rowid_counters.remove(name);
             Ok(true)
         } else {
             Ok(false)
@@ -1016,12 +1012,12 @@ impl Catalog {
         for fk in fks {
             vals.push(ColumnValue::Integer(fk.columns.len() as i32));
             for c in &fk.columns {
-                vals.push(ColumnValue::Text(c.clone()));
+                vals.push(ColumnValue::Text(c.value.clone()));
             }
-            vals.push(ColumnValue::Text(fk.parent_table.clone()));
+            vals.push(ColumnValue::Text(fk.parent_table.value.clone()));
             vals.push(ColumnValue::Integer(fk.parent_columns.len() as i32));
             for pc in &fk.parent_columns {
-                vals.push(ColumnValue::Text(pc.clone()));
+                vals.push(ColumnValue::Text(pc.value.clone()));
             }
             let to_code = |a: &Option<crate::sql::ast::Action>| match a {
                 Some(crate::sql::ast::Action::Cascade) => 1,
@@ -1218,7 +1214,7 @@ impl Catalog {
             let mut cols = Vec::new();
             for _ in 0..num_cols {
                 if let Some(ColumnValue::Text(c)) = values.get(idx) {
-                    cols.push(c.clone());
+                    cols.push(Ident::quoted(c.clone()));
                     idx += 1;
                 } else {
                     return Err(io::Error::new(io::ErrorKind::Other, "fk col name"));
@@ -1237,7 +1233,7 @@ impl Catalog {
             let mut parent_cols = Vec::new();
             for _ in 0..num_pcols {
                 if let Some(ColumnValue::Text(pc)) = values.get(idx) {
-                    parent_cols.push(pc.clone());
+                    parent_cols.push(Ident::quoted(pc.clone()));
                     idx += 1;
                 } else {
                     return Err(io::Error::new(io::ErrorKind::Other, "fk pcol name"));
@@ -1260,7 +1256,7 @@ impl Catalog {
             idx += 1;
             fks.push(crate::sql::ast::ForeignKey {
                 columns: cols,
-                parent_table,
+                parent_table: Ident::quoted(parent_table),
                 parent_columns: parent_cols,
                 on_delete,
                 on_update,

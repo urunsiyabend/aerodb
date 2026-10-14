@@ -73,14 +73,17 @@ impl TransactionManager {
     }
 
     /// Commit the live transaction: recheck deferred constraints, flush its
-    /// pages durably, then drop it from the active set.
-    pub fn commit(&mut self, catalog: &mut Catalog) -> io::Result<()> {
+    /// pages durably, then drop it from the active set. A constraint failing
+    /// the recheck rolls the transaction back and is returned as-is.
+    pub fn commit(&mut self, catalog: &mut Catalog) -> DbResult<()> {
         let transaction_id = catalog.transaction_id();
         debug!("Transaction committed: {:?}", transaction_id);
         if let Some(transaction_id) = transaction_id {
-            catalog
-                .recheck_constraints_for_commit(transaction_id)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            if let Err(err) = catalog.recheck_constraints_for_commit(transaction_id) {
+                self.rollback(catalog)?;
+                self.mode = TransactionMode::None;
+                return Err(err);
+            }
         }
         catalog.pager.commit_transaction()?;
         if let Some(transaction_id) = transaction_id {
@@ -245,7 +248,7 @@ impl TransactionManager {
         &mut self,
         catalog: &mut Catalog,
         stmt: &Statement,
-    ) -> io::Result<bool> {
+    ) -> DbResult<bool> {
         match stmt {
             Statement::BeginTransaction { name } => {
                 if self.mode.is_implicit() && catalog.transaction_active() {

@@ -36,7 +36,7 @@ fn default_function_current_timestamp() {
 fn foreign_key_cascade_delete_via_runtime() {
     let filename = "integration_fk.db";
     let mut catalog = setup_catalog(filename);
-    handle_statement(&mut catalog, parse_statement("CREATE TABLE p (id INTEGER)").unwrap()).unwrap();
+    handle_statement(&mut catalog, parse_statement("CREATE TABLE p (id INTEGER PRIMARY KEY)").unwrap()).unwrap();
     handle_statement(&mut catalog, parse_statement("CREATE TABLE c (id INTEGER, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) ON DELETE CASCADE)").unwrap()).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO p VALUES (1)").unwrap()).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO c VALUES (1, 1)").unwrap()).unwrap();

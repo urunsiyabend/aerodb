@@ -284,7 +284,7 @@ pub enum SelectItem {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TableRef {
-    Named { name: String, alias: Option<String> },
+    Named { name: Ident, alias: Option<String> },
     Subquery { query: Box<Query>, alias: String },
 }
 
@@ -320,9 +320,11 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForeignKey {
-    pub columns: Vec<String>,
-    pub parent_table: String,
-    pub parent_columns: Vec<String>,
+    /// Referencing columns. After CREATE TABLE validation (and when loaded
+    /// from the catalog) these are the declared column names, quoted.
+    pub columns: Vec<Ident>,
+    pub parent_table: Ident,
+    pub parent_columns: Vec<Ident>,
     pub on_delete: Option<Action>,
     pub on_update: Option<Action>,
 }
@@ -350,13 +352,13 @@ pub enum Statement {
         table_name: String,
         columns: Vec<ColumnDef>,
         fks: Vec<ForeignKey>,
-        primary_key: Option<Vec<String>>,
+        primary_key: Option<Vec<Ident>>,
         if_not_exists: bool,
     },
     CreateIndex {
         index_name: String,
-        table_name: String,
-        column_name: String,
+        table_name: Ident,
+        column_name: Ident,
     },
     DropIndex {
         name: String,
@@ -366,18 +368,18 @@ pub enum Statement {
         if_exists: bool,
     },
     Insert {
-        table_name: String,
-        columns: Option<Vec<String>>,
+        table_name: Ident,
+        columns: Option<Vec<Ident>>,
         rows: Vec<Vec<Expr>>,
     },
     Query(Box<Query>),
     Delete {
-        table_name: String,
+        table_name: Ident,
         selection: Option<Expr>,
     },
     Update {
-        table_name: String,
-        assignments: Vec<(String, Expr)>,
+        table_name: Ident,
+        assignments: Vec<(Ident, Expr)>,
         selection: Option<Expr>,
     },
     CreateSequence(CreateSequence),
@@ -674,8 +676,8 @@ impl Expr {
 
 fn table_ref_sql(t: &TableRef) -> String {
     match t {
-        TableRef::Named { name, alias: Some(a) } => format!("{} AS {}", quote_ident(name), quote_ident(a)),
-        TableRef::Named { name, alias: None } => quote_ident(name),
+        TableRef::Named { name, alias: Some(a) } => format!("{} AS {}", ident_sql(name), quote_ident(a)),
+        TableRef::Named { name, alias: None } => ident_sql(name),
         TableRef::Subquery { query, alias } => format!("({}) AS {}", query.to_sql(), quote_ident(alias)),
     }
 }

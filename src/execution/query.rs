@@ -118,11 +118,8 @@ pub fn row_key(row: &[Value]) -> Vec<KeyPart> {
 fn load_table_ref(catalog: &Catalog, tref: &TableRef, outer: Option<&Env>) -> DbResult<(Scope, Vec<Vec<Value>>)> {
     match tref {
         TableRef::Named { name, alias } => {
-            let info = catalog
-                .get_table(name)
-                .map_err(|_| DbError::TableNotFound(name.clone()))?
-                .clone();
-            let qualifier = alias.clone().unwrap_or_else(|| name.clone());
+            let info = catalog.resolve_table(name)?.clone();
+            let qualifier = alias.clone().unwrap_or_else(|| info.name.clone());
             let mut scope = Scope::new();
             for (col, ty) in &info.columns {
                 scope.push(Some(qualifier.clone()), col.clone(), SqlType::from_column_type(ty));
@@ -620,8 +617,8 @@ fn static_source_scope(catalog: &Catalog, sel: &Select) -> DbResult<Scope> {
     for tref in sel.from.iter().chain(sel.joins.iter().map(|j| &j.table)) {
         match tref {
             TableRef::Named { name, alias } => {
-                let info = catalog.get_table(name).map_err(|_| DbError::TableNotFound(name.clone()))?;
-                let qualifier = alias.clone().unwrap_or_else(|| name.clone());
+                let info = catalog.resolve_table(name)?;
+                let qualifier = alias.clone().unwrap_or_else(|| info.name.clone());
                 for (col, _) in &info.columns {
                     scope.push(Some(qualifier.clone()), col.clone(), SqlType::Null);
                 }

@@ -519,8 +519,9 @@ impl RowData {
 }
 
 /// Build a `RowData` from raw string values according to the declared column
-/// types. Returns an error if any value cannot be converted or the counts do
-/// not match.
+/// types (0.5.1 helper: the text `NULL`, any case, is SQL NULL). Conversion
+/// is the shared assignment path, [`crate::sql::value::Value::to_column_value`]
+/// (CHAR/VARCHAR lengths in characters, DECIMAL rounded half away from zero).
 pub fn build_row_data(
     values: &[String],
     columns: &[(String, ColumnType)],
@@ -534,151 +535,12 @@ pub fn build_row_data(
     }
     let mut cols = Vec::with_capacity(columns.len());
     for (v, (name, ty)) in values.iter().zip(columns.iter()) {
-        if v.to_ascii_uppercase() == "NULL" {
+        if v.eq_ignore_ascii_case("NULL") {
             cols.push(ColumnValue::Null);
             continue;
         }
-        match ty {
-            ColumnType::Integer => match v.parse::<i32>() {
-                Ok(i) => cols.push(ColumnValue::Integer(i)),
-                Err(_) => {
-                    return Err(format!(
-                        "Value '{}' for column '{}' is not a valid INTEGER",
-                        v, name
-                    ));
-                }
-            },
-            ColumnType::Text => cols.push(ColumnValue::Text(v.clone())),
-            ColumnType::Boolean => match v.to_ascii_lowercase().as_str() {
-                "true" => cols.push(ColumnValue::Boolean(true)),
-                "false" => cols.push(ColumnValue::Boolean(false)),
-                _ => {
-                    return Err(format!(
-                        "Value '{}' for column '{}' is not a valid BOOLEAN",
-                        v, name
-                    ));
-                }
-            },
-            ColumnType::Varchar(n) => {
-                if v.chars().count() > *n {
-                    return Err(format!(
-                        "Value '{}' for column '{}' exceeds length {}",
-                        v, name, n
-                    ));
-                }
-                cols.push(ColumnValue::Text(v.clone()));
-            }
-            ColumnType::Decimal { precision, scale } => {
-                let d = crate::sql::decimal::Decimal::parse(v)
-                    .and_then(|d| d.rescale(*precision, *scale))
-                    .map_err(|_| {
-                        format!(
-                            "Value '{}' for column '{}' is not a valid DECIMAL({},{})",
-                            v, name, precision, scale
-                        )
-                    })?;
-                cols.push(ColumnValue::Decimal(d));
-            }
-            ColumnType::Char(len) => {
-                if v.len() > *len {
-                    return Err(format!(
-                        "Value '{}' for column '{}' exceeds length {}",
-                        v, name, len
-                    ));
-                }
-                let mut s = v.clone();
-                if s.len() < *len {
-                    s.push_str(&" ".repeat(*len - s.len()));
-                }
-                cols.push(ColumnValue::Char(s));
-            }
-            ColumnType::SmallInt { unsigned, .. } => {
-                let val = v.parse::<i32>().map_err(|_| {
-                    format!(
-                        "Value '{}' for column '{}' is not a valid SMALLINT",
-                        v, name
-                    )
-                })?;
-                if *unsigned {
-                    if !(0..=65535).contains(&val) {
-                        return Err(format!("Value '{}' for column '{}' out of range", v, name));
-                    }
-                } else if !(-32768..=32767).contains(&val) {
-                    return Err(format!("Value '{}' for column '{}' out of range", v, name));
-                }
-                cols.push(ColumnValue::Integer(val));
-            }
-            ColumnType::MediumInt { unsigned, .. } => {
-                let val = v.parse::<i32>().map_err(|_| {
-                    format!(
-                        "Value '{}' for column '{}' is not a valid MEDIUMINT",
-                        v, name
-                    )
-                })?;
-                if *unsigned {
-                    if !(0..=16_777_215).contains(&val) {
-                        return Err(format!("Value '{}' for column '{}' out of range", v, name));
-                    }
-                } else if !(-8_388_608..=8_388_607).contains(&val) {
-                    return Err(format!("Value '{}' for column '{}' out of range", v, name));
-                }
-                cols.push(ColumnValue::Integer(val));
-            }
-            ColumnType::Double { unsigned, .. } => {
-                let val = v.parse::<f64>().map_err(|_| {
-                    format!("Value '{}' for column '{}' is not a valid DOUBLE", v, name)
-                })?;
-                if *unsigned && val < 0.0 {
-                    return Err(format!("Value '{}' for column '{}' out of range", v, name));
-                }
-                cols.push(ColumnValue::Double(val));
-            }
-            ColumnType::Date => match parse_date(v) {
-                Some(d) => cols.push(ColumnValue::Date(d)),
-                None => {
-                    return Err(format!(
-                        "Value '{}' for column '{}' is not a valid DATE",
-                        v, name
-                    ));
-                }
-            },
-            ColumnType::DateTime => match parse_datetime(v) {
-                Some(ts) => cols.push(ColumnValue::DateTime(ts)),
-                None => {
-                    return Err(format!(
-                        "Value '{}' for column '{}' is not a valid DATETIME",
-                        v, name
-                    ));
-                }
-            },
-            ColumnType::Timestamp => match parse_datetime(v) {
-                Some(ts) => cols.push(ColumnValue::Timestamp(ts)),
-                None => {
-                    return Err(format!(
-                        "Value '{}' for column '{}' is not a valid TIMESTAMP",
-                        v, name
-                    ));
-                }
-            },
-            ColumnType::Time => match parse_time(v) {
-                Some(t) => cols.push(ColumnValue::Time(t)),
-                None => {
-                    return Err(format!(
-                        "Value '{}' for column '{}' is not a valid TIME",
-                        v, name
-                    ));
-                }
-            },
-            ColumnType::Year => match parse_year(v) {
-                Some(y) => cols.push(ColumnValue::Year(y)),
-                None => {
-                    return Err(format!(
-                        "Value '{}' for column '{}' is not a valid YEAR",
-                        v, name
-                    ));
-                }
-            },
-        }
+        let value = crate::sql::value::Value::Text(v.clone());
+        cols.push(value.to_column_value(ty, name).map_err(|e| e.to_string())?);
     }
     Ok(RowData(cols))
 }

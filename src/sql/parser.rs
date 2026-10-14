@@ -106,11 +106,14 @@ fn check_top_level(stmt: &Statement) -> DbResult<()> {
 }
 
 /// INSERT column lists and UPDATE SET lists may name each column only once.
-fn reject_duplicate_targets<'a>(names: impl Iterator<Item = &'a str>) -> DbResult<()> {
-    let mut seen: Vec<&str> = Vec::new();
+/// Two targets are the same column when either could denote the other's
+/// spelling under the identifier rule (unquoted: case-insensitive, quoted:
+/// exact); the executor re-checks after resolving against the table.
+fn reject_duplicate_targets<'a>(names: impl Iterator<Item = &'a Ident>) -> DbResult<()> {
+    let mut seen: Vec<&Ident> = Vec::new();
     for n in names {
-        if seen.contains(&n) {
-            return Err(DbError::Syntax(format!("column \"{}\" specified more than once", n)));
+        if seen.iter().any(|s| s.matches(&n.value) || n.matches(&s.value)) {
+            return Err(DbError::Syntax(format!("column \"{}\" specified more than once", n.value)));
         }
         seen.push(n);
     }
@@ -282,11 +285,11 @@ impl Parser {
         }
     }
 
-    fn parse_ident_list(&mut self) -> DbResult<Vec<String>> {
+    fn parse_ident_list(&mut self) -> DbResult<Vec<Ident>> {
         self.expect_symbol("(")?;
-        let mut out = vec![self.parse_ident()?];
+        let mut out = vec![self.parse_ident_ref()?];
         while self.eat_symbol(",") {
-            out.push(self.parse_ident()?);
+            out.push(self.parse_ident_ref()?);
         }
         self.expect_symbol(")")?;
         Ok(out)
@@ -388,13 +391,13 @@ impl Parser {
     fn parse_insert(&mut self) -> DbResult<Statement> {
         self.expect_kw("INSERT")?;
         self.expect_kw("INTO")?;
-        let table_name = self.parse_ident()?;
+        let table_name = self.parse_ident_ref()?;
         let columns = if self.is_symbol("(") {
             if self.is_kw_at(1, "SELECT") {
                 return Err(unsupported("INSERT ... SELECT"));
             }
             let cols = self.parse_ident_list()?;
-            reject_duplicate_targets(cols.iter().map(String::as_str))?;
+            reject_duplicate_targets(cols.iter())?;
             Some(cols)
         } else {
             None
@@ -429,11 +432,11 @@ impl Parser {
 
     fn parse_update(&mut self) -> DbResult<Statement> {
         self.expect_kw("UPDATE")?;
-        let table_name = self.parse_ident()?;
+        let table_name = self.parse_ident_ref()?;
         self.expect_kw("SET")?;
         let mut assignments = Vec::new();
         loop {
-            let col = self.parse_ident()?;
+            let col = self.parse_ident_ref()?;
             self.expect_symbol("=")?;
             let value = if self.is_kw("DEFAULT")
                 && (self.peek_at(1).is_symbol(",") || self.peek_at(1).is_keyword("WHERE") || self.peek_at(1).is_symbol(";") || matches!(self.peek_at(1).kind, TokenKind::Eof))
@@ -448,7 +451,7 @@ impl Parser {
                 break;
             }
         }
-        reject_duplicate_targets(assignments.iter().map(|(c, _)| c.as_str()))?;
+        reject_duplicate_targets(assignments.iter().map(|(c, _)| c))?;
         let selection = if self.eat_kw("WHERE") { Some(self.parse_expr()?) } else { None };
         Ok(Statement::Update { table_name, assignments, selection })
     }
@@ -456,7 +459,7 @@ impl Parser {
     fn parse_delete(&mut self) -> DbResult<Statement> {
         self.expect_kw("DELETE")?;
         self.expect_kw("FROM")?;
-        let table_name = self.parse_ident()?;
+        let table_name = self.parse_ident_ref()?;
         let selection = if self.eat_kw("WHERE") { Some(self.parse_expr()?) } else { None };
         Ok(Statement::Delete { table_name, selection })
     }
@@ -513,9 +516,9 @@ impl Parser {
         if self.eat_kw("INDEX") {
             let index_name = self.parse_ident()?;
             self.expect_kw("ON")?;
-            let table_name = self.parse_ident()?;
+            let table_name = self.parse_ident_ref()?;
             self.expect_symbol("(")?;
-            let column_name = self.parse_ident()?;
+            let column_name = self.parse_ident_ref()?;
             if self.is_symbol(",") {
                 return Err(unsupported("multi-column indexes"));
             }
@@ -540,7 +543,7 @@ impl Parser {
         self.expect_symbol("(")?;
         let mut columns: Vec<ColumnDef> = Vec::new();
         let mut fks = Vec::new();
-        let mut primary_key: Option<Vec<String>> = None;
+        let mut primary_key: Option<Vec<Ident>> = None;
         loop {
             if self.is_kw("PRIMARY") {
                 self.advance();
@@ -571,7 +574,9 @@ impl Parser {
         if columns.is_empty() {
             return Err(DbError::Syntax("at least one column required".into()));
         }
-        let inline_pk: Vec<String> = columns.iter().filter(|c| c.primary_key).map(|c| c.name.clone()).collect();
+        // An inline PRIMARY KEY names the declared column itself: match it exactly.
+        let inline_pk: Vec<Ident> =
+            columns.iter().filter(|c| c.primary_key).map(|c| Ident::quoted(c.name.clone())).collect();
         if !inline_pk.is_empty() {
             if primary_key.is_some() {
                 return Err(DbError::Syntax("multiple primary keys defined".into()));
@@ -584,7 +589,7 @@ impl Parser {
     fn parse_foreign_key(&mut self) -> DbResult<ForeignKey> {
         let columns = self.parse_ident_list()?;
         self.expect_kw("REFERENCES")?;
-        let parent_table = self.parse_ident()?;
+        let parent_table = self.parse_ident_ref()?;
         let parent_columns = self.parse_ident_list()?;
         let mut on_delete = None;
         let mut on_update = None;
@@ -911,7 +916,7 @@ impl Parser {
                 .ok_or_else(|| DbError::Syntax("subquery in FROM must have an alias".into()))?;
             return Ok(TableRef::Subquery { query: Box::new(query), alias });
         }
-        let name = self.parse_ident()?;
+        let name = self.parse_ident_ref()?;
         if self.is_symbol(".") {
             return Err(unsupported("schema-qualified table names"));
         }

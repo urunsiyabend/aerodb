@@ -10,7 +10,7 @@ pub enum DbError {
     #[error("column '{0}' not found")]
     ColumnNotFound(String),
     #[error("duplicate primary key {0}")]
-    DuplicateKey(i32),
+    DuplicateKey(String),
     #[error("null value in column '{0}' violates not-null constraint")]
     NullViolation(String),
     #[error("value out of range")]
@@ -49,6 +49,8 @@ pub enum DbError {
     CardinalityViolation(String),
     #[error("column reference '{0}' is ambiguous")]
     AmbiguousColumn(String),
+    #[error("invalid foreign key: {0}")]
+    InvalidForeignKey(String),
 }
 
 impl DbError {
@@ -77,6 +79,7 @@ impl DbError {
             DbError::TypeMismatch(_) => "42804",
             DbError::CardinalityViolation(_) => "21000",
             DbError::AmbiguousColumn(_) => "42702",
+            DbError::InvalidForeignKey(_) => "42830",
         }
     }
 }

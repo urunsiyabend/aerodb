@@ -15,7 +15,7 @@ fn foreign_key_basic() {
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: Some(vec!["id".into()]), if_not_exists: false,
     };
     aerodb::execution::handle_statement(&mut catalog, create_users).unwrap();
 
@@ -61,7 +61,7 @@ fn foreign_key_on_delete_cascade() {
         columns: vec![
             aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false}
         ],
-        fks: Vec::new(), primary_key: None, if_not_exists: false,
+        fks: Vec::new(), primary_key: Some(vec!["id".into()]), if_not_exists: false,
     };
     aerodb::execution::handle_statement(&mut catalog, create_users).unwrap();
 

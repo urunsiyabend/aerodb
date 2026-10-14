@@ -47,5 +47,5 @@ fn char_column_validate_length() {
             rows: vec![vec![Expr::Literal(Value::Int(2)), Expr::Literal(Value::Text("SASASDADSA".into()))]],
         },
     );
-    assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));
+    assert!(matches!(res, Err(aerodb::error::DbError::StringTooLong(_))), "{res:?}");
 }

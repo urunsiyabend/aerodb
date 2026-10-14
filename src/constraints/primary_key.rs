@@ -1,10 +1,12 @@
 use super::Constraint;
+use super::keys::{Pending, check_primary_key};
 use crate::catalog::{Catalog, TableInfo};
-use crate::error::{DbError, DbResult};
-use crate::storage::btree::BTree;
-use crate::storage::row::{ColumnValue, RowData};
+use crate::error::DbResult;
+use crate::storage::row::RowData;
 use crate::transaction::Snapshot;
 
+/// PRIMARY KEY on `columns` (declared names): NOT NULL and logically unique
+/// among the visible rows. See [`super::keys::check_primary_key`].
 pub struct PrimaryKeyConstraint<'a> {
     pub columns: &'a [String],
 }
@@ -17,33 +19,8 @@ impl<'a> Constraint for PrimaryKeyConstraint<'a> {
         row: &mut RowData,
         snapshot: &Snapshot,
     ) -> DbResult<()> {
-        // ensure not null
-        for col in self.columns {
-            if let Some(idx) = table.columns.iter().position(|(c, _)| c == col) {
-                if matches!(row.0[idx], ColumnValue::Null) {
-                    return Err(DbError::NullViolation(col.clone()));
-                }
-            }
-        }
-        // check uniqueness
-        let mut btree = BTree::open_root(&mut catalog.pager, table.root_page)?;
-        for existing in btree.scan_visible(snapshot)? {
-            let mut equal = true;
-            for col in self.columns {
-                if let Some(idx) = table.columns.iter().position(|(c, _)| c == col) {
-                    if existing.data.0[idx] != row.0[idx] {
-                        equal = false;
-                        break;
-                    }
-                }
-            }
-            if equal {
-                if let Some(ColumnValue::Integer(i)) = row.0.get(0) {
-                    return Err(DbError::DuplicateKey(*i));
-                }
-                return Err(DbError::DuplicateKey(0));
-            }
-        }
-        Ok(())
+        let mut view = table.clone();
+        view.primary_key = Some(self.columns.to_vec());
+        check_primary_key(catalog, &view, snapshot, std::slice::from_ref(row), &Pending::new())
     }
 }

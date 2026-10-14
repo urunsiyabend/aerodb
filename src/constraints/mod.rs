@@ -1,5 +1,6 @@
 pub mod default;
 pub mod foreign_key;
+pub mod keys;
 pub mod not_null;
 pub mod primary_key;
 

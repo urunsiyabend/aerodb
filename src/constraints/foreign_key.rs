@@ -1,16 +1,19 @@
 use super::Constraint;
+use super::keys::{Pending, Removal, check_foreign_keys, check_removed_keys, visible_rows};
 use crate::catalog::{Catalog, TableInfo};
-use crate::error::{DbError, DbResult};
+use crate::error::DbResult;
 use crate::sql::ast::ForeignKey;
-use crate::storage::btree::BTree;
-use crate::storage::row::{ColumnValue, RowData};
+use crate::storage::row::RowData;
 use crate::transaction::Snapshot;
 
+/// FOREIGN KEY constraints `fks` of a child table (MATCH SIMPLE, logical
+/// comparison on all columns). See [`super::keys`].
 pub struct ForeignKeyConstraint<'a> {
     pub fks: &'a [ForeignKey],
 }
 
 impl<'a> Constraint for ForeignKeyConstraint<'a> {
+    /// The row image `row` of `table` must reference existing parent keys.
     fn validate_insert(
         &self,
         catalog: &mut Catalog,
@@ -18,31 +21,16 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
         row: &mut RowData,
         snapshot: &Snapshot,
     ) -> DbResult<()> {
-        for fk in self.fks {
-            if fk.columns.is_empty() || fk.parent_columns.is_empty() {
-                continue;
-            }
-            let col_idx = table
-                .columns
-                .iter()
-                .position(|(c, _)| c == &fk.columns[0])
-                .ok_or_else(|| DbError::ColumnNotFound(fk.columns[0].clone()))?;
-            let child_val = match row.0[col_idx] {
-                ColumnValue::Integer(i) => i,
-                _ => return Err(DbError::InvalidValue("FK column must be INTEGER".into())),
-            };
-            let parent_root = catalog.get_table(&fk.parent_table)?.root_page;
-            let mut parent_btree = BTree::open_root(&mut catalog.pager, parent_root)?;
-            if parent_btree.find_visible(child_val, snapshot)?.is_none() {
-                return Err(DbError::ForeignKeyViolation(format!(
-                    "{} {}",
-                    fk.parent_table, child_val
-                )));
-            }
-        }
-        Ok(())
+        let mut view = table.clone();
+        view.fks = self.fks.to_vec();
+        let mut pending = Pending::new();
+        pending.add(&table.name, row.clone());
+        check_foreign_keys(catalog, &view, row, snapshot, &pending)
     }
 
+    /// Deleting the visible row(s) of `table` equal to `row` must not orphan
+    /// a NO ACTION / RESTRICT reference. Pure check: ON DELETE CASCADE
+    /// references are allowed here and carried out by the DELETE executor.
     fn validate_delete(
         &self,
         catalog: &mut Catalog,
@@ -50,64 +38,12 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
         row: &RowData,
         snapshot: &Snapshot,
     ) -> DbResult<()> {
-        let columns = &table.columns;
-        let child_tables: Vec<_> = catalog.all_tables();
-        for child in &child_tables {
-            for fk in &child.fks {
-                if fk.parent_table == table.name {
-                    let parent_idx = columns
-                        .iter()
-                        .position(|(c, _)| c == &fk.parent_columns[0])
-                        .unwrap();
-                    let parent_val = match row.0[parent_idx] {
-                        ColumnValue::Integer(i) => i,
-                        _ => continue,
-                    };
-                    let child_idx = child
-                        .columns
-                        .iter()
-                        .position(|(c, _)| c == &fk.columns[0])
-                        .unwrap();
-                    let mut matches: Vec<(i32, RowData)> = Vec::new();
-                    {
-                        let mut scan_tree = BTree::open_root(&mut catalog.pager, child.root_page)?;
-                        for crow in scan_tree.scan_visible(snapshot)? {
-                            if let ColumnValue::Integer(v) = crow.data.0[child_idx] {
-                                if v == parent_val {
-                                    matches.push((crow.key, crow.data.clone()));
-                                }
-                            }
-                        }
-                    }
-                    if !matches.is_empty() {
-                        if fk.on_delete == Some(crate::sql::ast::Action::Cascade) {
-                            let tx_id = snapshot
-                                .current_tx_id
-                                .unwrap_or(crate::storage::row::COMMITTED_BOOTSTRAP_TX);
-                            let mut del_tree =
-                                BTree::open_root(&mut catalog.pager, child.root_page)?;
-                            for (k, _) in &matches {
-                                del_tree.mark_deleted_visible(*k, snapshot, tx_id)?;
-                            }
-                            let new_root_c = del_tree.root_page();
-                            drop(del_tree);
-                            for (k, data) in &matches {
-                                catalog.remove_from_indexes(&child.name, data, *k)?;
-                            }
-                            if new_root_c != child.root_page {
-                                catalog.get_table_mut(&child.name)?.root_page = new_root_c;
-                                catalog.update_catalog_root(&child.name, new_root_c)?;
-                            }
-                        } else {
-                            return Err(DbError::ForeignKeyViolation(format!(
-                                "Cannot delete {}: referenced by {}.{}",
-                                table.name, child.name, fk.columns[0]
-                            )));
-                        }
-                    }
-                }
+        let mut pending = Pending::new();
+        for r in visible_rows(catalog, table, snapshot, &Pending::new())? {
+            if r.data == *row {
+                pending.remove(&table.name, &r);
             }
         }
-        Ok(())
+        check_removed_keys(catalog, table, std::slice::from_ref(row), snapshot, &pending, Removal::Delete)
     }
 }

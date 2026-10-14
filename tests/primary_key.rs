@@ -33,7 +33,7 @@ fn primary_key_duplicate_error() {
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1,'Alice')").unwrap()).unwrap();
     let res = handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1,'Bob')").unwrap());
-    assert!(matches!(res, Err(aerodb::error::DbError::DuplicateKey(1))));
+    assert!(matches!(res, Err(aerodb::error::DbError::DuplicateKey(ref k)) if k == "1"), "{res:?}");
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn primary_key_composite() {
     }
     handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1,1)").unwrap()).unwrap();
     let dup = handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1,1)").unwrap());
-    assert!(matches!(dup, Err(aerodb::error::DbError::DuplicateKey(1))));
+    assert!(matches!(dup, Err(aerodb::error::DbError::DuplicateKey(ref k)) if k == "(1, 1)"), "{dup:?}");
     let null_err = handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1,NULL)").unwrap());
     assert!(matches!(null_err, Err(aerodb::error::DbError::NullViolation(_))));
 }

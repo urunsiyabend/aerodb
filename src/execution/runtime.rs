@@ -1,12 +1,10 @@
 use crate::catalog::{Catalog, TableInfo};
-use crate::constraints::{
-    Constraint, default::DefaultConstraint, foreign_key::ForeignKeyConstraint,
-    not_null::NotNullConstraint, primary_key::PrimaryKeyConstraint,
-};
+use crate::constraints::keys::{self, Pending, Removal};
+use crate::constraints::{Constraint, default::DefaultConstraint, not_null::NotNullConstraint};
 use crate::error::{DbError, DbResult};
 use crate::execution::eval::{Ctx, Env, Scope, eval, eval_predicate};
 use crate::execution::query::{ResultColumn, execute_query};
-use crate::sql::ast::{BinaryOp, Expr, Statement};
+use crate::sql::ast::{BinaryOp, Expr, Ident, Statement};
 use crate::sql::value::{SqlType, Value, ValueError};
 use crate::storage::btree::BTree;
 use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, ColumnType, ColumnValue, Row, RowData};
@@ -60,21 +58,53 @@ fn row_values(row: &RowData) -> Vec<Value> {
     row.0.iter().map(Value::from_column_value).collect()
 }
 
-/// Assignment (INSERT/UPDATE) coercion failure. Kept as `InvalidValue`, the
-/// 0.5.1 error kind for rejected column values.
+/// Assignment (INSERT/UPDATE) coercion failure, classified like evaluator
+/// errors: too long → `StringTooLong` (22001), out of range →
+/// `NumericOverflow` (22003), unparseable → `InvalidCast` (22018).
 fn assignment_error(column: &str, e: ValueError) -> DbError {
     match e {
         ValueError::NumericOverflow => {
-            DbError::InvalidValue(format!("value for column '{}' is out of range", column))
+            DbError::NumericOverflow(format!("value for column '{}' is out of range", column))
         }
-        ValueError::DivisionByZero => DbError::DivisionByZero,
-        ValueError::TypeMismatch(m) => DbError::TypeMismatch(m),
-        ValueError::InvalidCast(m) | ValueError::StringTooLong(m) => DbError::InvalidValue(m),
+        other => DbError::from(other),
     }
 }
 
 fn coerce(v: &Value, ty: &ColumnType, column: &str) -> DbResult<ColumnValue> {
     v.to_column_value(ty, column).map_err(|e| assignment_error(column, e))
+}
+
+/// Position of the column `ident` names in `info`, with the identifier rule
+/// of column references (unquoted: case-insensitive, quoted: exact).
+fn resolve_column(info: &TableInfo, ident: &Ident) -> DbResult<usize> {
+    let hits: Vec<usize> = info
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, (n, _))| ident.matches(n))
+        .map(|(i, _)| i)
+        .collect();
+    match hits.as_slice() {
+        [i] => Ok(*i),
+        [] => Err(DbError::ColumnNotFound(ident.value.clone())),
+        _ => Err(DbError::AmbiguousColumn(ident.value.clone())),
+    }
+}
+
+/// Resolve INSERT/UPDATE target columns; a column may be named only once.
+fn resolve_targets<'a>(info: &TableInfo, idents: impl Iterator<Item = &'a Ident>) -> DbResult<Vec<usize>> {
+    let mut out: Vec<usize> = Vec::new();
+    for ident in idents {
+        let idx = resolve_column(info, ident)?;
+        if out.contains(&idx) {
+            return Err(DbError::Syntax(format!(
+                "column \"{}\" specified more than once",
+                info.columns[idx].0
+            )));
+        }
+        out.push(idx);
+    }
+    Ok(out)
 }
 
 /// Rows of `info` visible to the current snapshot for which `selection` is TRUE.
@@ -97,54 +127,86 @@ fn matching_rows(catalog: &Catalog, info: &TableInfo, selection: Option<&Expr>) 
     Ok(out)
 }
 
+/// Record a table's new B-tree root (in memory and in the catalog page).
+fn set_root(catalog: &mut Catalog, table_name: &str, old_root: u32, new_root: u32) -> DbResult<()> {
+    if new_root != old_root {
+        catalog.get_table_mut(table_name)?.root_page = new_root;
+        catalog.update_catalog_root(table_name, new_root)?;
+    }
+    Ok(())
+}
+
+/// Mark the visible versions `rows` of `table_name` deleted by the current
+/// transaction (after first-committer-wins conflict checks on all of them)
+/// and record their write intents so commit can re-validate.
+fn delete_versions(catalog: &mut Catalog, table_name: &str, rows: &[Row]) -> DbResult<()> {
+    let snapshot = read_snapshot(catalog);
+    let tx_id = current_tx_id(catalog);
+    let root = catalog.get_table(table_name)?.root_page;
+    let mut tree = BTree::open_root(&catalog.pager, root)?;
+    for r in rows {
+        ensure_no_write_conflict(&mut tree, r.key, r.created_tx, &snapshot)?;
+    }
+    for r in rows {
+        tree.mark_deleted_visible(r.key, &snapshot, tx_id)?;
+    }
+    let new_root = tree.root_page();
+    drop(tree);
+    set_root(catalog, table_name, root, new_root)?;
+    for r in rows {
+        catalog.pager.record_write_intent(new_root, r.key, r.created_tx);
+    }
+    // Index entries intentionally remain until vacuum: indexed lookups
+    // re-check base-table visibility with find_visible().
+    Ok(())
+}
+
+/// Physical key for a new row version of a table with a rowid alias whose
+/// alias value is `alias`: the value itself, unless another visible row
+/// already occupies that physical key (possible in files written by 0.5.1,
+/// whose key was the first column) — then a fresh row id.
+fn alias_key(catalog: &mut Catalog, table_name: &str, alias: i32) -> DbResult<i32> {
+    let root = catalog.get_table(table_name)?.root_page;
+    let occupied = BTree::open_root(&catalog.pager, root)?.find(alias)?.is_some();
+    if occupied { catalog.allocate_rowid(table_name) } else { Ok(alias) }
+}
+
+/// Write `data` as a new version with physical key `key` and index it.
+fn write_version(catalog: &mut Catalog, table_name: &str, key: i32, data: RowData, fresh: bool) -> DbResult<()> {
+    let root = catalog.get_table(table_name)?.root_page;
+    let mut tree = BTree::open_root(&catalog.pager, root)?;
+    if fresh {
+        tree.insert(key, data.clone())?;
+    } else {
+        let mut row = Row::new(key, data.clone());
+        row.created_tx = current_tx_id(catalog);
+        row.deleted_tx = None;
+        tree.insert_version(row)?;
+    }
+    let new_root = tree.root_page();
+    drop(tree);
+    set_root(catalog, table_name, root, new_root)?;
+    catalog.insert_into_indexes(table_name, key, &data)?;
+    Ok(())
+}
+
 pub fn execute_delete(
     catalog: &mut Catalog,
     table_name: &str,
     selection: Option<Expr>,
 ) -> DbResult<usize> {
-    let table_info = table_info(catalog, table_name)?;
-    let root_page = table_info.root_page;
-    let rows_to_delete = matching_rows(catalog, &table_info, selection.as_ref())?;
-    if rows_to_delete.is_empty() {
+    let info = table_info(catalog, table_name)?;
+    let rows = matching_rows(catalog, &info, selection.as_ref())?;
+    if rows.is_empty() {
         return Ok(0);
     }
-
-    let fk_cons = ForeignKeyConstraint { fks: &table_info.fks };
-    for row in &rows_to_delete {
-        fk_cons.validate_delete(catalog, &table_info, &row.data, &read_snapshot(catalog))?;
-    }
-
-    let count = rows_to_delete.len();
+    let count = rows.len();
     let snapshot = read_snapshot(catalog);
-    let tx_id = current_tx_id(catalog);
-    let mut table_btree = BTree::open_root(&catalog.pager, root_page)?;
-    for r in &rows_to_delete {
-        ensure_no_write_conflict(&mut table_btree, r.key, r.created_tx, &snapshot)?;
-        table_btree.mark_deleted_visible(r.key, &snapshot, tx_id)?;
+    // Referential actions: ON DELETE CASCADE closure, NO ACTION/RESTRICT check.
+    let batches = keys::plan_delete(catalog, &info, rows, &snapshot)?;
+    for (table, batch) in &batches {
+        delete_versions(catalog, &table.name, batch)?;
     }
-    let new_root = table_btree.root_page();
-    drop(table_btree);
-    if new_root != root_page {
-        if let Ok(t) = catalog.get_table_mut(table_name) {
-            t.root_page = new_root;
-        }
-        catalog.update_catalog_root(table_name, new_root)?;
-    }
-
-    // Record write intents so commit can re-validate first-committer-wins.
-    let final_root = catalog
-        .get_table(table_name)
-        .map(|t| t.root_page)
-        .unwrap_or(new_root);
-    for r in &rows_to_delete {
-        catalog
-            .pager
-            .record_write_intent(final_root, r.key, r.created_tx);
-    }
-
-    // Index entries intentionally remain in place until a future vacuum pass.
-    // Indexed lookups re-check base-table visibility with find_visible(), so
-    // deleted base rows are filtered after the candidate key is read.
     Ok(count)
 }
 
@@ -159,59 +221,33 @@ fn column_default(info: &TableInfo, idx: usize) -> DbResult<Option<Value>> {
 pub fn execute_update(
     catalog: &mut Catalog,
     table_name: &str,
-    assignments: Vec<(String, Expr)>,
+    assignments: Vec<(Ident, Expr)>,
     selection: Option<Expr>,
 ) -> DbResult<usize> {
-    let table_info = table_info(catalog, table_name)?;
-    let root_page = table_info.root_page;
-    let columns = table_info.columns.clone();
+    let info = table_info(catalog, table_name)?;
+    let target_idx = resolve_targets(&info, assignments.iter().map(|(c, _)| c))?;
+    let targets: Vec<(usize, Expr)> =
+        target_idx.into_iter().zip(assignments.into_iter().map(|(_, e)| e)).collect();
 
-    let mut targets: Vec<(usize, Expr)> = Vec::new();
-    for (col, expr) in assignments {
-        let idx = columns
-            .iter()
-            .position(|(c, _)| *c == col)
-            .ok_or_else(|| DbError::ColumnNotFound(col.clone()))?;
-        if targets.iter().any(|(i, _)| *i == idx) {
-            return Err(DbError::InvalidValue(format!("multiple assignments to column '{}'", col)));
-        }
-        targets.push((idx, expr));
-    }
-
-    struct UpdateOp {
-        old_key: i32,
-        old_created_tx: u64,
-        new_key: i32,
-        new_data: RowData,
-    }
-
-    let mut ops = Vec::new();
+    // (old visible version, new row image)
+    let mut ops: Vec<(Row, RowData)> = Vec::new();
     {
-        let rows_to_update = matching_rows(catalog, &table_info, selection.as_ref())?;
-        let scope = table_scope(&table_info);
+        let rows = matching_rows(catalog, &info, selection.as_ref())?;
+        let scope = table_scope(&info);
         let cx = Ctx::with_catalog(catalog);
-        for row in rows_to_update {
+        for row in rows {
             let old = row_values(&row.data);
             let env = Env::new(&scope, &old, None);
             let mut new_data = row.data.clone();
             for (idx, expr) in &targets {
-                let (name, ty) = &columns[*idx];
+                let (name, ty) = &info.columns[*idx];
                 let v = match expr {
-                    Expr::Default => column_default(&table_info, *idx)?.unwrap_or(Value::Null),
+                    Expr::Default => column_default(&info, *idx)?.unwrap_or(Value::Null),
                     e => eval(e, &env, &cx)?,
                 };
                 new_data.0[*idx] = coerce(&v, ty, name)?;
             }
-            let new_key = match new_data.0[0] {
-                ColumnValue::Integer(i) => i,
-                _ => row.key,
-            };
-            ops.push(UpdateOp {
-                old_key: row.key,
-                old_created_tx: row.created_tx,
-                new_key,
-                new_data,
-            });
+            ops.push((row, new_data));
         }
     }
     if ops.is_empty() {
@@ -219,127 +255,70 @@ pub fn execute_update(
     }
     let count = ops.len();
 
-    for op in &mut ops {
-        let nn = NotNullConstraint;
-        nn.validate_insert(catalog, &table_info, &mut op.new_data, &read_snapshot(catalog))?;
-
-        let fk_cons = ForeignKeyConstraint { fks: &table_info.fks };
-        fk_cons.validate_insert(catalog, &table_info, &mut op.new_data, &read_snapshot(catalog))?;
-    }
-
-    if let Some(ref pk_cols) = table_info.primary_key {
-        let snapshot = read_snapshot(catalog);
-        let mut existing_rows = {
-            let scan_tree = BTree::open_root(&catalog.pager, root_page)?;
-            scan_tree.scan_visible(&snapshot)?
-        };
-
-        let pk_equal = |a: &RowData, b: &RowData| {
-            pk_cols.iter().all(|col| {
-                table_info
-                    .columns
-                    .iter()
-                    .position(|(c, _)| c == col)
-                    .map(|pos| a.0[pos] == b.0[pos])
-                    .unwrap_or(false)
-            })
-        };
-        for (idx, op) in ops.iter().enumerate() {
-            existing_rows.retain(|existing| {
-                !(existing.key == op.old_key && existing.created_tx == op.old_created_tx)
-            });
-            for existing in &existing_rows {
-                if pk_equal(&existing.data, &op.new_data) {
-                    return Err(DbError::DuplicateKey(op.new_key));
-                }
-            }
-            for other in ops.iter().skip(idx + 1) {
-                if pk_equal(&other.new_data, &op.new_data) {
-                    return Err(DbError::DuplicateKey(op.new_key));
-                }
-            }
-        }
-    }
-
+    // Constraint checks against the statement's final state: the old versions
+    // are gone and every new image is present.
     let snapshot = read_snapshot(catalog);
-    let tx_id = current_tx_id(catalog);
-    let mut table_btree = BTree::open_root(&catalog.pager, root_page)?;
-    for op in &ops {
-        ensure_no_write_conflict(&mut table_btree, op.old_key, op.old_created_tx, &snapshot)?;
-        table_btree.mark_deleted_visible(op.old_key, &snapshot, tx_id)?;
-        let mut new_row = Row::new(op.new_key, op.new_data.clone());
-        new_row.created_tx = tx_id;
-        new_row.deleted_tx = None;
-        table_btree.insert_version(new_row)?;
+    let mut pending = Pending::new();
+    for (old, new) in &ops {
+        pending.remove(table_name, old);
+        pending.add(table_name, new.clone());
     }
-    let new_root = table_btree.root_page();
-    drop(table_btree);
-    if new_root != root_page {
-        if let Ok(t) = catalog.get_table_mut(table_name) {
-            t.root_page = new_root;
-        }
-        catalog.update_catalog_root(table_name, new_root)?;
+    for (_, new) in &mut ops {
+        NotNullConstraint.validate_insert(catalog, &info, new, &snapshot)?;
+        keys::check_foreign_keys(catalog, &info, new, &snapshot, &pending)?;
     }
+    let images: Vec<RowData> = ops.iter().map(|(_, new)| new.clone()).collect();
+    keys::check_primary_key(catalog, &info, &snapshot, &images, &pending)?;
+    let olds: Vec<RowData> = ops.iter().map(|(old, _)| old.data.clone()).collect();
+    keys::check_removed_keys(catalog, &info, &olds, &snapshot, &pending, Removal::Update)?;
 
-    // Record write intents so commit can re-validate first-committer-wins.
-    let final_root = catalog
-        .get_table(table_name)
-        .map(|t| t.root_page)
-        .unwrap_or(new_root);
-    for op in &ops {
-        catalog
-            .pager
-            .record_write_intent(final_root, op.old_key, op.old_created_tx);
-    }
-
-    for op in ops {
-        // The old indexed value is left as a stale candidate for the logical
-        // row key. The base-table old version was marked invisible above;
-        // indexed lookup correctness is enforced by find_visible() plus the
-        // original predicate check. Add the new value as another candidate.
-        catalog.insert_into_indexes(table_name, &op.new_data)?;
+    // Apply: retire every old version first, so a new image may take a
+    // physical key another updated row is vacating (`SET id = id + 1`).
+    let old_rows: Vec<Row> = ops.iter().map(|(old, _)| old.clone()).collect();
+    delete_versions(catalog, table_name, &old_rows)?;
+    let alias = Catalog::rowid_alias_column(&info);
+    for (old, new) in ops {
+        let key = match alias {
+            Some(i) if new.0[i] != old.data.0[i] => match new.0[i] {
+                ColumnValue::Integer(v) => alias_key(catalog, table_name, v)?,
+                _ => return Err(DbError::NullViolation(info.columns[i].0.clone())),
+            },
+            _ => old.key,
+        };
+        write_version(catalog, table_name, key, new, false)?;
     }
     Ok(count)
 }
 
-/// Build the stored row for one VALUES tuple.
+/// Build the stored row for one VALUES tuple; `targets` are the resolved
+/// positions of an explicit column list.
 fn build_insert_row(
     catalog: &mut Catalog,
     info: &TableInfo,
-    columns: Option<&[String]>,
+    targets: Option<&[usize]>,
     row_vals: &[Expr],
 ) -> DbResult<RowData> {
     let meta = &info.columns;
-    match columns {
-        Some(cols) => {
-            if row_vals.len() != cols.len() {
-                return Err(DbError::InvalidValue(format!(
-                    "INSERT column/value count mismatch: expected {} columns, got {} values",
-                    cols.len(),
-                    row_vals.len()
-                )));
-            }
-            for c in cols {
-                if !meta.iter().any(|(n, _)| n == c) {
-                    return Err(DbError::ColumnNotFound(c.clone()));
-                }
-            }
-        }
-        None => {
-            if row_vals.len() != meta.len() {
-                return Err(DbError::InvalidValue(format!(
-                    "INSERT has wrong number of values: expected {}, got {}",
-                    meta.len(),
-                    row_vals.len()
-                )));
-            }
-        }
+    let expected = targets.map_or(meta.len(), <[usize]>::len);
+    if row_vals.len() != expected {
+        return Err(DbError::InvalidValue(match targets {
+            Some(_) => format!(
+                "INSERT column/value count mismatch: expected {} columns, got {} values",
+                expected,
+                row_vals.len()
+            ),
+            None => format!(
+                "INSERT has wrong number of values: expected {}, got {}",
+                expected,
+                row_vals.len()
+            ),
+        }));
     }
 
     let mut out = Vec::with_capacity(meta.len());
     for (idx, (col_name, col_type)) in meta.iter().enumerate() {
-        let supplied = match columns {
-            Some(cols) => cols.iter().position(|c| c == col_name).map(|pos| &row_vals[pos]),
+        let supplied = match targets {
+            Some(t) => t.iter().position(|&c| c == idx).map(|pos| &row_vals[pos]),
             None => Some(&row_vals[idx]),
         };
         let auto = info.auto_increment.get(idx).copied().unwrap_or(false);
@@ -382,41 +361,35 @@ fn build_insert_row(
 pub fn execute_insert(
     catalog: &mut Catalog,
     table_name: &str,
-    columns: Option<Vec<String>>,
+    columns: Option<Vec<Ident>>,
     rows: Vec<Vec<Expr>>,
 ) -> DbResult<usize> {
-    let table_info = table_info(catalog, table_name)?;
-    let root_page = table_info.root_page;
-    let fks = table_info.fks.clone();
+    let info = table_info(catalog, table_name)?;
+    let targets = match &columns {
+        Some(cols) => Some(resolve_targets(&info, cols.iter())?),
+        None => None,
+    };
+    let alias = Catalog::rowid_alias_column(&info);
 
     let mut inserted = 0usize;
     for row_vals in rows {
-        let mut row_data = build_insert_row(catalog, &table_info, columns.as_deref(), &row_vals)?;
+        let mut row_data = build_insert_row(catalog, &info, targets.as_deref(), &row_vals)?;
+        // Rows written earlier by this statement are own writes, visible here.
+        let snapshot = read_snapshot(catalog);
+        NotNullConstraint.validate_insert(catalog, &info, &mut row_data, &snapshot)?;
+        let mut pending = Pending::new();
+        pending.add(table_name, row_data.clone());
+        keys::check_foreign_keys(catalog, &info, &row_data, &snapshot, &pending)?;
+        keys::check_primary_key(catalog, &info, &snapshot, std::slice::from_ref(&row_data), &Pending::new())?;
 
-        let nn = NotNullConstraint;
-        nn.validate_insert(catalog, &table_info, &mut row_data, &read_snapshot(catalog))?;
-
-        let fk_cons = ForeignKeyConstraint { fks: &fks };
-        fk_cons.validate_insert(catalog, &table_info, &mut row_data, &read_snapshot(catalog))?;
-        if let Some(ref pk_cols) = table_info.primary_key {
-            let pk_cons = PrimaryKeyConstraint { columns: pk_cols };
-            pk_cons.validate_insert(catalog, &table_info, &mut row_data, &read_snapshot(catalog))?;
-        }
-        let key = match row_data.0.first() {
-            Some(ColumnValue::Integer(i)) => *i,
-            _ => {
-                return Err(DbError::InvalidValue("First column must be an INTEGER key".into()));
-            }
+        let key = match alias {
+            Some(i) => match row_data.0[i] {
+                ColumnValue::Integer(v) => alias_key(catalog, table_name, v)?,
+                _ => return Err(DbError::NullViolation(info.columns[i].0.clone())),
+            },
+            None => catalog.allocate_rowid(table_name)?,
         };
-        let current_root = catalog.get_table(table_name).map(|t| t.root_page).unwrap_or(root_page);
-        let mut table_btree = BTree::open_root(&catalog.pager, current_root)?;
-        table_btree.insert(key, row_data.clone())?;
-        let new_root = table_btree.root_page();
-        drop(table_btree);
-        if new_root != current_root {
-            catalog.get_table_mut(table_name)?.root_page = new_root;
-        }
-        catalog.insert_into_indexes(table_name, &row_data)?;
+        write_version(catalog, table_name, key, row_data, true)?;
         inserted += 1;
     }
     Ok(inserted)
@@ -532,6 +505,14 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     "Only one AUTO_INCREMENT column allowed per table".into(),
                 ));
             }
+            if if_not_exists && catalog.get_table(&table_name).is_ok() {
+                println!("Table {} already exists", table_name);
+                return Ok(());
+            }
+            let declared: Vec<(String, ColumnType)> =
+                columns.iter().map(|c| (c.name.clone(), c.col_type)).collect();
+            let (primary_key, fks) =
+                keys::resolve_table_constraints(catalog, &table_name, &declared, primary_key, fks)?;
             let cols: Vec<_> = columns
                 .into_iter()
                 .map(|c| {
@@ -567,7 +548,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             table_name,
             column_name,
         } => {
-            catalog.create_index(&index_name, &table_name, &column_name)?;
+            let info = catalog.resolve_table(&table_name)?.clone();
+            let column = &info.columns[resolve_column(&info, &column_name)?].0;
+            catalog.create_index(&index_name, &info.name, column)?;
             println!("Index {} created", index_name);
         }
         Statement::DropIndex { name } => {
@@ -582,7 +565,8 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             columns: col_list,
             rows,
         } => {
-            execute_insert(catalog, &table_name, col_list, rows)?;
+            let name = catalog.resolve_table(&table_name)?.name.clone();
+            execute_insert(catalog, &name, col_list, rows)?;
         }
         Statement::Query(query) => {
             let result = execute_query(catalog, &query, None)?;
@@ -601,7 +585,8 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             table_name,
             selection,
         } => {
-            let count = execute_delete(catalog, &table_name, selection)?;
+            let name = catalog.resolve_table(&table_name)?.name.clone();
+            let count = execute_delete(catalog, &name, selection)?;
             println!("{} row(s) deleted", count);
         }
         Statement::Update {
@@ -609,7 +594,8 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             assignments,
             selection,
         } => {
-            let count = execute_update(catalog, &table_name, assignments, selection)?;
+            let name = catalog.resolve_table(&table_name)?.name.clone();
+            let count = execute_update(catalog, &name, assignments, selection)?;
             println!("{} row(s) updated", count);
         }
         Statement::CreateSequence(seq) => {
@@ -719,6 +705,39 @@ pub fn format_result_header(columns: &[ResultColumn]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 0.5.1 file keyed `p(id INTEGER, n INTEGER PRIMARY KEY)` by its first
+    /// column. The rowid alias is now `n`; a new row whose alias value equals
+    /// an occupied physical key gets a fresh row id instead of colliding.
+    #[test]
+    fn alias_key_falls_back_when_legacy_key_is_occupied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let pager = crate::storage::pager::Pager::new(path.to_str().unwrap()).unwrap();
+        let mut catalog = Catalog::open(pager).unwrap();
+        let parse = |sql: &str| crate::sql::parser::parse_sql(sql).unwrap();
+        handle_statement(&mut catalog, parse("CREATE TABLE p (id INTEGER, n INTEGER PRIMARY KEY)")).unwrap();
+        let root = catalog.get_table("p").unwrap().root_page;
+        // 0.5.1 layout: physical key = first column (id = 1), n = 100.
+        BTree::open_root(&catalog.pager, root)
+            .unwrap()
+            .insert(1, RowData(vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]))
+            .unwrap();
+
+        handle_statement(&mut catalog, parse("INSERT INTO p VALUES (2, 1)")).unwrap();
+        assert!(matches!(
+            handle_statement(&mut catalog, parse("INSERT INTO p VALUES (3, 100)")),
+            Err(DbError::DuplicateKey(_))
+        ));
+        let mut rows = Vec::new();
+        execute_select_with_indexes(&mut catalog, "p", None, &mut rows).unwrap();
+        let mut seen: Vec<(i32, Vec<ColumnValue>)> = rows.into_iter().map(|r| (r.key, r.data.0)).collect();
+        seen.sort_by_key(|(k, _)| *k);
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], (1, vec![ColumnValue::Integer(1), ColumnValue::Integer(100)]));
+        // Key 1 was taken by the legacy row, so (2, 1) got a fresh row id.
+        assert_eq!(seen[1], (2, vec![ColumnValue::Integer(2), ColumnValue::Integer(1)]));
+    }
 
     #[test]
     fn format_row_simple() {
