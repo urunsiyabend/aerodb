@@ -1,0 +1,1641 @@
+{
+  "metadata": {
+    "version": "0.6.0",
+    "audit_date": "2026-10-14",
+    "code_head": "7c61351df17b58658318ccd5a4fb861dfc9eae3d",
+    "baseline_head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+    "git_snapshot_before_artifact_commit": "b16f6a7cba90642071749577a6154a71eac67d85",
+    "source_document": "specs/sql-conformance-0.6.0.md",
+    "source_document_sha256": "b0518d8932b66843b7c4ae27c0b665d03bf7edb2014071924ded35292f88e6c3",
+    "matrix_row_count": 68,
+    "core_rows": 58,
+    "optional_rows": 10,
+    "feature_statuses": {
+      "implemented": 57,
+      "unsupported": 10,
+      "partial": 1
+    },
+    "probe_summary": {
+      "head": "ec6679f0d254c7935ea50fccf31fa5c05aed6663",
+      "code_head": "7c61351df17b58658318ccd5a4fb861dfc9eae3d",
+      "version": "0.6.0",
+      "case_count": 92,
+      "sql_statement_count": 309,
+      "statuses": {
+        "implemented": 83,
+        "unsupported": 8,
+        "unverified": 1
+      },
+      "reasons": {
+        "result_matches": 67,
+        "expected_error_enforced": 15,
+        "syntax_rejected": 7,
+        "setup_parse_error": 1,
+        "empty_statement_api": 1,
+        "invalid_syntax_rejected": 1
+      },
+      "step_statuses": {
+        "OK": 282,
+        "EXEC_ERROR": 16,
+        "PARSE_ERROR": 11
+      },
+      "unsupported_cases": [
+        "timestamp_literal",
+        "savepoint",
+        "serializable",
+        "readonly",
+        "cte",
+        "window",
+        "json_value",
+        "cursor"
+      ],
+      "unverified_cases": [
+        "comment"
+      ],
+      "bug_cases": [],
+      "partial_cases": [],
+      "command": "python3 audit/run_probes.py /home/urunsiyabend/development/aerodb-sql-0.6.0 /home/urunsiyabend/development/aerodb-sql-0.6.0/audit/results",
+      "results_file": "audit/results-0.6.0.json (byte-identical copy of audit/results/results.json, sha256 671a4bc3347b29f8caf9ca8045157f380cc0875d8e8c7b1f1bd06eb0420b665e)",
+      "baseline_0_5_1_statuses": {
+        "implemented": 34,
+        "bug": 28,
+        "unsupported": 28,
+        "partial": 1,
+        "unverified": 1
+      },
+      "notes": [
+        "The runner's embedded summary in results-0.6.0.json says \"version\": \"0.5.1\". That is a hard-coded string in the immutable 0.5.1 harness (audit/run_probes.py), not the build version; the audited build is Cargo package version 0.6.0.",
+        "head is the commit the audit ran at (after the final-review fix wave). Source code (src/, tests/) last changed in code_head 7c61351df17b58658318ccd5a4fb861dfc9eae3d; ec6679f only changes documentation. The commit that adds this file and results-0.6.0.json changes nothing else, so the branch HEAD is one commit after head.",
+        "Re-run of the audit after the final-review fix wave (index buckets, identifier rule for object names, CLI line handler, AUTO_INCREMENT sequences, CASE typing). Statuses are identical to both earlier runs: the run at 80258e7 (Task 8) and the fix-wave run at ec6679f.",
+        "The audit harness, cases and oracle patterns (audit/run_probes.py, audit/sql_audit.rs, audit/cases.json) are the unmodified 0.5.1 files.",
+        "comment is unverified because the harness feeds a comment-only line to parse_statement as one statement (42601 'empty statement') and has no empty-statement API; parse_script on the same text returns [] (tests/sql_parser.rs::comment_only_script_is_empty).",
+        "Not a SQL:2023 certification and no overall conformance percentage. See specs/sql-conformance-0.6.0.md."
+      ]
+    },
+    "note": "Overlapping selected feature/subfeature rows, not a standards denominator. Feature support differs from proxy probe success. Immutable baseline case oracles unchanged."
+  },
+  "features": [
+    {
+      "code": "E011-03",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "decimal"
+      ],
+      "probe_evidence": "`decimal` (result_matches)",
+      "test_evidence": "`tests/sql_identity_types.rs` (decimal_rounding_on_insert_and_update, decimal_overflow_is_22003, decimal_expression_assignment_is_exact, decimal_survives_reopen); `tests/sql_semantics.rs` (exact_numeric_arithmetic, decimal_sum_and_avg_are_exact); `src/sql/decimal.rs` unit",
+      "evidence_paths": [
+        "tests/sql_identity_types.rs",
+        "tests/sql_semantics.rs",
+        "src/sql/decimal.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E011-04",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "arithmetic",
+        "divide_zero"
+      ],
+      "probe_evidence": "`arithmetic` (result_matches), `divide_zero` (expected_error_enforced)",
+      "test_evidence": "`tests/sql_semantics.rs` (divide_zero, null_arithmetic, exact_numeric_arithmetic, integer_sum_overflow_is_an_error); `src/sql/value.rs` unit (int_division_truncates_toward_zero, division_by_zero_in_every_kind, int_overflow_is_detected, double_overflow_is_an_error)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "src/sql/value.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E021-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "char_padding"
+      ],
+      "probe_evidence": "`char_padding` (result_matches)",
+      "test_evidence": "`tests/sql_identity_types.rs` (char_multibyte_is_padded_by_characters, text_fk_matches_char_pad_space); `tests/char_type.rs`",
+      "evidence_paths": [
+        "tests/sql_identity_types.rs",
+        "tests/char_type.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E021-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "varchar"
+      ],
+      "probe_evidence": "`varchar` (result_matches)",
+      "test_evidence": "`tests/sql_identity_types.rs` (varchar_length_counts_characters); `tests/sql_ddl.rs` (decimal_and_varchar_types_survive_reopen)",
+      "evidence_paths": [
+        "tests/sql_identity_types.rs",
+        "tests/sql_ddl.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E051",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "bad_sql_tail"
+      ],
+      "probe_evidence": "`bad_sql_tail` (invalid_syntax_rejected)",
+      "test_evidence": "`tests/sql_parser.rs` (bad_sql_tail, rejects_tail_in_subquery, rejects_tail_after_create_table, rejects_tail_after_semicolon)",
+      "evidence_paths": [
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E051-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "distinct"
+      ],
+      "probe_evidence": "`distinct` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (distinct, distinct_order_by_must_use_select_list); `tests/sql_parser.rs` (select_distinct_is_not_a_column)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E051-06",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "having"
+      ],
+      "probe_evidence": "`having` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (having, group_by_violation); `tests/having.rs`",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/having.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "select_filter"
+      ],
+      "probe_evidence": "`select_filter` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (null_comparisons_are_unknown); `tests/operators.rs`",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/operators.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "between"
+      ],
+      "probe_evidence": "`between` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (between_with_null)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-03",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "in_list"
+      ],
+      "probe_evidence": "`in_list` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (in_list, in_list_with_null_member)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-04",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "like"
+      ],
+      "probe_evidence": "`like` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (like, like_underscore_and_escape); `src/execution/eval.rs` unit (like_patterns)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "src/execution/eval.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-06",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "null_predicate"
+      ],
+      "probe_evidence": "`null_predicate` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (null_predicate)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-08",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "exists_uncorrelated"
+      ],
+      "probe_evidence": "`exists_uncorrelated` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (correlated_exists); `tests/nested_queries.rs`",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/nested_queries.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-11",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "in_subquery",
+        "in_subquery_null"
+      ],
+      "probe_evidence": "`in_subquery`, `in_subquery_null` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (in_subquery, in_subquery_null, not_in_subquery_containing_null_keeps_no_rows, null_in_empty_subquery_is_false)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-13",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "correlated_exists"
+      ],
+      "probe_evidence": "`correlated_exists` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (correlated_exists, correlated_reference_binds_in_innermost_matching_scope, correlated_scalar_subquery_in_projection)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E061-14",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "three_value_or",
+        "three_value_and"
+      ],
+      "probe_evidence": "`three_value_or`, `three_value_and` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (truth_tables, not_excludes_unknown_rows); `src/execution/eval.rs` unit (three_valued_logic)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "src/execution/eval.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E071-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "union",
+        "union_second_branch",
+        "union_duplicate_elimination"
+      ],
+      "probe_evidence": "`union`, `union_second_branch`, `union_duplicate_elimination` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (union, union_second_branch, union_duplicate_elimination, union_arity_mismatch, set_operation_order_by_applies_to_whole_query); `tests/sql_parser.rs` (union_parses_to_setop)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E071-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "union_all"
+      ],
+      "probe_evidence": "`union_all` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (union_all)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E071-03",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "except"
+      ],
+      "probe_evidence": "`except` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (except, except_all_and_intersect_all_use_multiplicities)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E091",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "aggregate_empty",
+        "all_null_aggregate"
+      ],
+      "probe_evidence": "`aggregate_empty`, `all_null_aggregate` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (aggregate_empty, all_null_aggregate); `tests/aggregate.rs`",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/aggregate.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E091-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "aggregate_avg"
+      ],
+      "probe_evidence": "`aggregate_avg` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (aggregate_avg, decimal_sum_and_avg_are_exact)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E091-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "aggregate_count"
+      ],
+      "probe_evidence": "`aggregate_count` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (aggregate_count)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E091-05",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "aggregate_sum"
+      ],
+      "probe_evidence": "`aggregate_sum` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (aggregate_sum, integer_sum_overflow_is_an_error)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E091-07",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "aggregate_distinct"
+      ],
+      "probe_evidence": "`aggregate_distinct` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (aggregate_distinct, sum_and_avg_distinct)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E101-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "multi_insert_atomic"
+      ],
+      "probe_evidence": "`multi_insert_atomic` (result_matches)",
+      "test_evidence": "`tests/sql_constraints.rs` (autocommit_multi_insert_is_still_atomic, check_multi_row_insert_with_one_bad_row_inserts_nothing); `tests/insert.rs`",
+      "evidence_paths": [
+        "tests/sql_constraints.rs",
+        "tests/insert.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E101-03",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "partial",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "update_expression",
+        "update"
+      ],
+      "probe_evidence": "`update_expression`, `update` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (update_expression, update_null); `tests/sql_constraints.rs` (update_creating_unique_duplicate_is_rejected, update_swapping_unique_values_succeeds)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/sql_constraints.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E101-04",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "partial",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "delete",
+        "delete_all"
+      ],
+      "probe_evidence": "`delete`, `delete_all` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (delete_all)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E121-01",
+      "core": true,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "unsupported",
+      "case_ids": [
+        "cursor"
+      ],
+      "probe_evidence": "`cursor` (syntax_rejected, 0A000)",
+      "test_evidence": "`tests/sql_parser.rs` (cursor_is_unsupported)",
+      "evidence_paths": [
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E121-02",
+      "core": true,
+      "status": "unsupported",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "**unsupported** (cursor alt-özelliği; SQL cursor yok). Yalnız ilişkili top-level ORDER BY *proxy* kanıtı geçti — feature desteği değildir",
+      "case_ids": [
+        "order_nonselected"
+      ],
+      "probe_evidence": "`order_nonselected` (result_matches; proxy: cursor değil, top-level sorgu)",
+      "test_evidence": "Proxy (top-level ORDER BY, cursor değil): `tests/sql_semantics.rs` (order_nonselected, order_by_on_join_with_aggregate). Cursor reddi: `tests/sql_parser.rs` (cursor_is_unsupported)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": true,
+      "note": "SQL cursors unsupported; passing evidence is related top-level ORDER BY only"
+    },
+    {
+      "code": "E121-03",
+      "core": true,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "**unsupported** (cursor alt-özelliği; SQL cursor yok). Yalnız ilişkili top-level ORDER BY *proxy* kanıtı geçti — feature desteği değildir",
+      "case_ids": [
+        "order_expr"
+      ],
+      "probe_evidence": "`order_expr` (result_matches; proxy: cursor değil, top-level sorgu)",
+      "test_evidence": "Proxy (top-level ORDER BY, cursor değil): `tests/sql_semantics.rs` (order_expr, order_by_alias, order_by_ordinal, order_by_name_ignores_derived_output_names). Cursor reddi: `tests/sql_parser.rs` (cursor_is_unsupported)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": true,
+      "note": "SQL cursors unsupported; passing evidence is related top-level ORDER BY only"
+    },
+    {
+      "code": "E131",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "null_eq",
+        "null_neq",
+        "null_arithmetic",
+        "update_null"
+      ],
+      "probe_evidence": "`null_eq`, `null_neq`, `null_arithmetic`, `update_null` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (null_eq, null_neq, null_arithmetic, update_null, null_comparisons_are_unknown); `src/sql/value.rs` unit (null_propagates_through_arithmetic)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "src/sql/value.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E141-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "not_null"
+      ],
+      "probe_evidence": "`not_null` (expected_error_enforced)",
+      "test_evidence": "`tests/not_null.rs`, `tests/nullability.rs`; `tests/sql_ddl.rs` (add_not_null_without_default_on_nonempty_table_fails, add_not_null_with_default)",
+      "evidence_paths": [
+        "tests/not_null.rs",
+        "tests/nullability.rs",
+        "tests/sql_ddl.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E141-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "unique"
+      ],
+      "probe_evidence": "`unique` (expected_error_enforced)",
+      "test_evidence": "`tests/sql_constraints.rs` (unique_audit_probe, nullable_unique_allows_two_nulls, composite_unique_with_partial_null_allowed_twice, unique_duplicate_within_multi_row_insert_has_no_effect, database_concurrent_unique_commit_sees_latest_state)",
+      "evidence_paths": [
+        "tests/sql_constraints.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E141-03",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "pk_duplicate",
+        "composite_pk",
+        "pk_text",
+        "composite_pk_distinct"
+      ],
+      "probe_evidence": "`pk_duplicate`, `composite_pk` (expected_error_enforced), `pk_text`, `composite_pk_distinct` (result_matches)",
+      "test_evidence": "`tests/sql_identity_types.rs` (pk_text, composite_pk_distinct, non_first_column_primary_key, rowid_allocation_survives_reopen, commit_recheck_rejects_concurrent_duplicate_text_key); `tests/storage_format.rs` (legacy_nonfirst_integer_primary_key_keeps_identity); `tests/primary_key.rs`",
+      "evidence_paths": [
+        "tests/sql_identity_types.rs",
+        "tests/storage_format.rs",
+        "tests/primary_key.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E141-04",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "fk_insert",
+        "fk_delete_no_action",
+        "fk_update_no_action",
+        "fk_nullable",
+        "fk_composite_invalid",
+        "fk_nonphysical_parent_key"
+      ],
+      "probe_evidence": "`fk_insert`, `fk_delete_no_action`, `fk_update_no_action`, `fk_composite_invalid` (expected_error_enforced), `fk_nullable`, `fk_nonphysical_parent_key` (result_matches)",
+      "test_evidence": "`tests/sql_identity_types.rs` (fk_composite_invalid, fk_nullable, fk_nonphysical_parent_key, fk_must_reference_primary_key, fk_arity_mismatch, fk_type_mismatch, self_referencing_fk, commit_recheck_rejects_child_of_concurrently_deleted_parent); `tests/sql_constraints.rs` (on_update_restrict_rejects_key_swap, on_update_no_action_accepts_key_swap, on_delete_restrict_*, database_stale_fk_references_are_rejected_at_commit); `tests/sql_metadata.rs` (commit_time_foreign_key_violation_is_23503); `tests/foreign_keys.rs`",
+      "evidence_paths": [
+        "tests/sql_identity_types.rs",
+        "tests/sql_constraints.rs",
+        "tests/sql_metadata.rs",
+        "tests/foreign_keys.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E141-06",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "check"
+      ],
+      "probe_evidence": "`check` (expected_error_enforced)",
+      "test_evidence": "`tests/sql_constraints.rs` (check_audit_probe, check_null_is_unknown_and_passes, table_check_across_two_columns, check_with_subquery_or_aggregate_is_0a000, unique_and_check_survive_reopen); `tests/sql_binding.rs` (check_expression_must_be_boolean)",
+      "evidence_paths": [
+        "tests/sql_constraints.rs",
+        "tests/sql_binding.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E141-07",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "default"
+      ],
+      "probe_evidence": "`default` (result_matches)",
+      "test_evidence": "`tests/default_values.rs`; `tests/sql_semantics.rs` (default_expression_survives_reopen); `tests/sql_binding.rs` (default_expressions_are_bound)",
+      "evidence_paths": [
+        "tests/default_values.rs",
+        "tests/sql_semantics.rs",
+        "tests/sql_binding.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E141-08",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "pk_null"
+      ],
+      "probe_evidence": "`pk_null` (expected_error_enforced)",
+      "test_evidence": "`tests/primary_key.rs`; `tests/sql_identity_types.rs`",
+      "evidence_paths": [
+        "tests/primary_key.rs",
+        "tests/sql_identity_types.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E151-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "commit"
+      ],
+      "probe_evidence": "`commit` (result_matches)",
+      "test_evidence": "`tests/mvcc_rollback.rs`; `tests/sql_constraints.rs` (failed_statement_aborts_explicit_tx, database_failed_statement_aborts_transaction)",
+      "evidence_paths": [
+        "tests/mvcc_rollback.rs",
+        "tests/sql_constraints.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E151-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "rollback"
+      ],
+      "probe_evidence": "`rollback` (result_matches)",
+      "test_evidence": "`tests/mvcc_rollback.rs`, `tests/mvcc_rollback_reopen.rs`; `tests/sql_constraints.rs` (rollback_after_failure_then_new_begin_works)",
+      "evidence_paths": [
+        "tests/mvcc_rollback.rs",
+        "tests/mvcc_rollback_reopen.rs",
+        "tests/sql_constraints.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E152-01",
+      "core": true,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "unsupported",
+      "case_ids": [
+        "serializable"
+      ],
+      "probe_evidence": "`serializable` (syntax_rejected, 0A000)",
+      "test_evidence": "`tests/sql_parser.rs` (set_transaction_is_unsupported)",
+      "evidence_paths": [
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E152-02",
+      "core": true,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "unsupported",
+      "case_ids": [
+        "readonly"
+      ],
+      "probe_evidence": "`readonly` (syntax_rejected, 0A000)",
+      "test_evidence": "`tests/sql_parser.rs` (set_transaction_is_unsupported)",
+      "evidence_paths": [
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "E161",
+      "core": true,
+      "status": "partial",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented (`inline_comment`) / unverified (`comment`)",
+      "case_ids": [
+        "comment",
+        "inline_comment"
+      ],
+      "probe_evidence": "`inline_comment` (result_matches), `comment` (empty_statement_api)",
+      "test_evidence": "`tests/sql_parser.rs` (inline_comment, block_comment, comment_only_script_is_empty); `src/sql/lexer.rs` unit (comments_are_skipped)",
+      "evidence_paths": [
+        "tests/sql_parser.rs",
+        "src/sql/lexer.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": "Script comments supported; comment-only statement API probe unverified"
+    },
+    {
+      "code": "E171",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented — yalnız Rust API, statik inceleme (probe yok, sayılara dahil değil)",
+      "case_ids": [],
+      "probe_evidence": "—",
+      "test_evidence": "`src/error.rs` unit (every_variant_has_its_sqlstate, table_not_found_message_says_no_such_table); `tests/sql_metadata.rs` (engine_errors_carry_their_sqlstate: 23 deyim)",
+      "evidence_paths": [
+        "src/error.rs",
+        "tests/sql_metadata.rs"
+      ],
+      "source_ids": [
+        1
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F021-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented (alt küme)",
+      "case_ids": [
+        "information_schema"
+      ],
+      "probe_evidence": "`information_schema` (result_matches)",
+      "test_evidence": "`tests/sql_metadata.rs` (14 test: tables, columns, table_constraints, key_column_usage, referential_constraints, check_constraints, views, salt-okunurluk, reopen)",
+      "evidence_paths": [
+        "tests/sql_metadata.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F031-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "partial",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "pk_text",
+        "select_filter"
+      ],
+      "probe_evidence": "`pk_text`, `select_filter` (result_matches)",
+      "test_evidence": "`tests/sql_identity_types.rs` (pk_text, table_without_primary_key_accepts_duplicate_rows); `tests/sql_ddl.rs` (create_table_duplicate_column_follows_identifier_rule)",
+      "evidence_paths": [
+        "tests/sql_identity_types.rs",
+        "tests/sql_ddl.rs"
+      ],
+      "source_ids": [
+        1
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F031-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "view"
+      ],
+      "probe_evidence": "`view` (result_matches)",
+      "test_evidence": "`tests/sql_ddl.rs` (view_audit_probe, view_with_column_list, view_over_view, reopen_keeps_view, dml_on_view_is_unsupported, view_star_keeps_definition_time_columns)",
+      "evidence_paths": [
+        "tests/sql_ddl.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F031-04",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "alter_add"
+      ],
+      "probe_evidence": "`alter_add` (result_matches)",
+      "test_evidence": "`tests/sql_ddl.rs` (alter_add, add_column_with_default, add_column_check_validated_against_existing_rows, alter_in_transaction_rollback_restores_shape_and_data, reopen_after_alter_keeps_column_and_values)",
+      "evidence_paths": [
+        "tests/sql_ddl.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F031-13",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "drop_table",
+        "drop_restrict_dependency"
+      ],
+      "probe_evidence": "`drop_table`, `drop_restrict_dependency` (expected_error_enforced)",
+      "test_evidence": "`tests/sql_ddl.rs` (drop_restrict_dependency, drop_child_then_parent_works, drop_cascade_is_unsupported, drop_table_referenced_by_view_is_rejected, drop_wrong_object_type); `src/error.rs` unit (table_not_found_message_says_no_such_table)",
+      "evidence_paths": [
+        "tests/sql_ddl.rs",
+        "src/error.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F041-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "inner_join"
+      ],
+      "probe_evidence": "`inner_join` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (inner_join, ambiguous_column_in_join); `tests/multi_join.rs`",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/multi_join.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F041-03",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "left_join"
+      ],
+      "probe_evidence": "`left_join` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (left_join)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F041-04",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "right_join"
+      ],
+      "probe_evidence": "`right_join` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (right_join)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F051-01",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "partial",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "date_storage",
+        "date_literal",
+        "bad_date"
+      ],
+      "probe_evidence": "`date_storage`, `date_literal` (result_matches), `bad_date` (expected_error_enforced)",
+      "test_evidence": "`tests/sql_binding.rs` (character_literal_next_to_a_date_is_converted_at_bind_time); `src/sql/value.rs` unit (cast_to_temporal, compare_text_literal_with_temporal)",
+      "evidence_paths": [
+        "tests/sql_binding.rs",
+        "src/sql/value.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F051-03",
+      "core": true,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "unsupported",
+      "case_ids": [
+        "timestamp_literal"
+      ],
+      "probe_evidence": "`timestamp_literal` (syntax_rejected, 0A000)",
+      "test_evidence": "`TIMESTAMP '…'` / `TIME '…'` literal'leri bilinçli olarak reddedilir",
+      "evidence_paths": [],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F191",
+      "core": false,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "fk_delete_cascade"
+      ],
+      "probe_evidence": "`fk_delete_cascade` (result_matches)",
+      "test_evidence": "`tests/sql_identity_types.rs` (on_delete_cascade_with_composite_key, on_delete_cascade_self_referencing_cycle); `tests/foreign_keys.rs`",
+      "evidence_paths": [
+        "tests/sql_identity_types.rs",
+        "tests/foreign_keys.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F201",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "cast"
+      ],
+      "probe_evidence": "`cast` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (cast); `src/sql/value.rs` unit (cast_text_to_integer, cast_numeric_to_integer_rounds_half_away, cast_to_decimal_and_text, cast_to_char_and_varchar)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "src/sql/value.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F261-02",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "case"
+      ],
+      "probe_evidence": "`case` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (case); `src/execution/eval.rs` unit (functions_and_case); `tests/sql_final_review.rs` (case_results_take_the_unified_type)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "src/execution/eval.rs",
+        "tests/sql_final_review.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F261-04",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "coalesce"
+      ],
+      "probe_evidence": "`coalesce` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (coalesce); `tests/sql_binding.rs`",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/sql_binding.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F302",
+      "core": false,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "intersect"
+      ],
+      "probe_evidence": "`intersect` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (intersect, except_all_and_intersect_all_use_multiplicities); `tests/sql_parser.rs` (intersect_binds_tighter)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F406",
+      "core": false,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "full_join"
+      ],
+      "probe_evidence": "`full_join` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (full_join)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F471",
+      "core": true,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "scalar_one",
+        "scalar_empty",
+        "scalar_cardinality"
+      ],
+      "probe_evidence": "`scalar_one`, `scalar_empty` (result_matches), `scalar_cardinality` (expected_error_enforced)",
+      "test_evidence": "`tests/sql_semantics.rs` (scalar_one, scalar_empty, scalar_cardinality, correlated_scalar_subquery_in_projection)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F701",
+      "core": false,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "fk_update_cascade"
+      ],
+      "probe_evidence": "`fk_update_cascade` (result_matches)",
+      "test_evidence": "`tests/sql_constraints.rs` (fk_update_cascade, composite_on_update_cascade, on_update_cascade_chain_grandparent_parent_child, cascade_into_child_whose_check_rejects_fails_the_whole_update)",
+      "evidence_paths": [
+        "tests/sql_constraints.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "F850",
+      "core": false,
+      "status": "implemented",
+      "baseline_status": "bug",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented (top-level ORDER BY kapsamı)",
+      "case_ids": [
+        "order_desc",
+        "order_nulls"
+      ],
+      "probe_evidence": "`order_desc`, `order_nulls` (result_matches); ilişkili top-level vakalar `order_nonselected`, `order_expr` de geçer (E121 satırlarına resmî eşlemeleri değişmedi)",
+      "test_evidence": "`tests/sql_semantics.rs` (order_desc, order_nulls, order_by_multiple_keys, limit_and_offset_apply_after_order, order_nonselected, order_expr, order_by_alias, order_by_ordinal)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "T031",
+      "core": false,
+      "status": "implemented",
+      "baseline_status": "implemented",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "implemented",
+      "case_ids": [
+        "boolean_type"
+      ],
+      "probe_evidence": "`boolean_type` (result_matches)",
+      "test_evidence": "`tests/sql_semantics.rs` (truth_tables); `src/execution/eval.rs` unit (three_valued_logic)",
+      "evidence_paths": [
+        "tests/sql_semantics.rs",
+        "src/execution/eval.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "T121",
+      "core": false,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "unsupported",
+      "case_ids": [
+        "cte"
+      ],
+      "probe_evidence": "`cte` (syntax_rejected, 0A000)",
+      "test_evidence": "`tests/sql_parser.rs` (cte_is_unsupported)",
+      "evidence_paths": [
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "T271",
+      "core": false,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "unsupported",
+      "case_ids": [
+        "savepoint"
+      ],
+      "probe_evidence": "`savepoint` (setup_parse_error, 0A000)",
+      "test_evidence": "`tests/sql_parser.rs` (savepoint_is_unsupported)",
+      "evidence_paths": [
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "T611",
+      "core": false,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "unsupported",
+      "case_ids": [
+        "window"
+      ],
+      "probe_evidence": "`window` (syntax_rejected, 0A000)",
+      "test_evidence": "`tests/sql_parser.rs` (window_is_unsupported)",
+      "evidence_paths": [
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    },
+    {
+      "code": "T821",
+      "core": false,
+      "status": "unsupported",
+      "baseline_status": "unsupported",
+      "scope": "listed representative behavior only; no whole-feature certification",
+      "observed_status_text": "unsupported",
+      "case_ids": [
+        "json_value"
+      ],
+      "probe_evidence": "`json_value` (syntax_rejected, 42883)",
+      "test_evidence": "`tests/sql_parser.rs` (rejects_unknown_function)",
+      "evidence_paths": [
+        "tests/sql_parser.rs"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "proxy_evidence_only": false,
+      "note": ""
+    }
+  ]
+}

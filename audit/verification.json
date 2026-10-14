@@ -1,0 +1,35 @@
+{
+  "final_harness_command": "python3 audit/run_probes.py \"$PWD\" /home/urunsiyabend/.hermes/cache/scratch/aerodb-sql-audit/recheck",
+  "rerun_exit_code": 0,
+  "exact_results_equal": true,
+  "case_ids_unique": true,
+  "counts_recomputed": true,
+  "matrix_code_pointer_ranges_valid": true,
+  "tracked_source_diff_empty": true,
+  "head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+  "summary": {
+    "head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+    "version": "0.5.1",
+    "case_count": 92,
+    "sql_statement_count": 309,
+    "statuses": {
+      "implemented": 34,
+      "bug": 28,
+      "unsupported": 28,
+      "unverified": 1,
+      "partial": 1
+    },
+    "reasons": {
+      "result_matches": 25,
+      "expected_error_missing": 5,
+      "wrong_result": 18,
+      "syntax_rejected": 16,
+      "runtime_feature_absent": 3,
+      "setup_parse_error": 9,
+      "expected_error_enforced": 9,
+      "valid_statement_rejected": 5,
+      "empty_statement_api": 1,
+      "setup_exec_error": 1
+    }
+  }
+}

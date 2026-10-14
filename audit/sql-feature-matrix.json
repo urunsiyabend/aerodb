@@ -1,0 +1,1321 @@
+{
+  "metadata": {
+    "audit_date": "2026-10-14",
+    "head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+    "version": "0.5.1",
+    "rustc": "1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "1.99.0 (5f94df478 2026-08-27)",
+    "probe_summary": {
+      "head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+      "version": "0.5.1",
+      "case_count": 92,
+      "sql_statement_count": 309,
+      "statuses": {
+        "implemented": 34,
+        "bug": 28,
+        "unsupported": 28,
+        "unverified": 1,
+        "partial": 1
+      },
+      "reasons": {
+        "result_matches": 25,
+        "expected_error_missing": 5,
+        "wrong_result": 18,
+        "syntax_rejected": 16,
+        "runtime_feature_absent": 3,
+        "setup_parse_error": 9,
+        "expected_error_enforced": 9,
+        "valid_statement_rejected": 5,
+        "empty_statement_api": 1,
+        "setup_exec_error": 1
+      }
+    },
+    "statement_attempts_by_status": {
+      "OK": 255,
+      "PARSE_ERROR": 26,
+      "EXEC_ERROR": 28
+    },
+    "baseline": {
+      "command": "cargo test --all-targets",
+      "head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+      "exit_code": 0,
+      "result_blocks": 40,
+      "test_executions_passed": 227,
+      "failed": 0,
+      "ignored": 0,
+      "integration_binaries": 37,
+      "note": "Library and binary repeat some unit tests; test executions are not unique test functions.",
+      "log_path": "/home/urunsiyabend/.hermes/cache/scratch/aerodb-sql-audit/baseline.log"
+    },
+    "matrix_row_count": 68,
+    "core_rows": 58,
+    "optional_rows": 10
+  },
+  "features": [
+    {
+      "code": "E011-03",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "decimal"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-225",
+        "src/storage/row.rs:6-29"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E011-04",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "arithmetic",
+        "divide_zero"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-225",
+        "src/storage/row.rs:6-29"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E021-01",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "char_padding"
+      ],
+      "code_pointers": [
+        "src/storage/row.rs:6-133"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E021-02",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "varchar"
+      ],
+      "code_pointers": [
+        "src/storage/row.rs:6-133"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E051",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "bad_sql_tail"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E051-01",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "distinct"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E051-06",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "having"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:846-1025"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-01",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "select_filter"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-02",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "between"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-03",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "in_list"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-04",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "like"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-06",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "null_predicate"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-08",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "exists_uncorrelated"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-11",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "in_subquery",
+        "in_subquery_null"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-13",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "correlated_exists"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E061-14",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "three_value_or",
+        "three_value_and"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E071-01",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "union",
+        "union_second_branch",
+        "union_duplicate_elimination"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:1121"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E071-02",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "union_all"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:1121"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E071-03",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "except"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:1121"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E091",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "aggregate_empty",
+        "all_null_aggregate"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:846-1025"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E091-01",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "aggregate_avg"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:846-1025"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E091-02",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "aggregate_count"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:846-1025"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E091-05",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "aggregate_sum"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:846-1025"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E091-07",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "aggregate_distinct"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:846-1025"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E101-01",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "multi_insert_atomic"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E101-03",
+      "core": true,
+      "status": "partial",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "update_expression",
+        "update"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E101-04",
+      "core": true,
+      "status": "partial",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "delete",
+        "delete_all"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E121-01",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "cursor"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E121-02",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "order_nonselected"
+      ],
+      "code_pointers": [
+        "src/sql/parser.rs:1053-1121",
+        "src/execution/runtime.rs:1159-1292"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": "Top-level sorting analogue; E121-02/-03 are cursor subfeatures, cursor API remains unsupported."
+    },
+    {
+      "code": "E121-03",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "order_expr"
+      ],
+      "code_pointers": [
+        "src/sql/parser.rs:1053-1121",
+        "src/execution/runtime.rs:1159-1292"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": "Top-level sorting analogue; E121-02/-03 are cursor subfeatures, cursor API remains unsupported."
+    },
+    {
+      "code": "E131",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "null_eq",
+        "null_neq",
+        "null_arithmetic",
+        "update_null"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:193-287",
+        "src/execution/runtime.rs:1749-1908"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E141-01",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "not_null"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E141-02",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "unique"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E141-03",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "pk_duplicate",
+        "composite_pk",
+        "pk_text",
+        "composite_pk_distinct"
+      ],
+      "code_pointers": [
+        "src/constraints/primary_key.rs:12-47",
+        "src/execution/runtime.rs:557-595"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E141-04",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "fk_insert",
+        "fk_delete_no_action",
+        "fk_update_no_action",
+        "fk_nullable",
+        "fk_composite_invalid",
+        "fk_nonphysical_parent_key"
+      ],
+      "code_pointers": [
+        "src/constraints/foreign_key.rs:20-43",
+        "src/constraints/foreign_key.rs:46-111",
+        "src/catalog/mod.rs:305-378"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E141-06",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "check"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E141-07",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "default"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E141-08",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "pk_null"
+      ],
+      "code_pointers": [
+        "src/constraints/primary_key.rs:12-47",
+        "src/execution/runtime.rs:557-595"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E151-01",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "commit"
+      ],
+      "code_pointers": [
+        "src/transaction/state.rs:26-38",
+        "src/transaction/manager.rs:226-291",
+        "src/db.rs:76-127"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E151-02",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "rollback"
+      ],
+      "code_pointers": [
+        "src/transaction/state.rs:26-38",
+        "src/transaction/manager.rs:226-291",
+        "src/db.rs:76-127"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E152-01",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "serializable"
+      ],
+      "code_pointers": [
+        "src/transaction/state.rs:26-38",
+        "src/transaction/manager.rs:226-291",
+        "src/db.rs:76-127"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E152-02",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "readonly"
+      ],
+      "code_pointers": [
+        "src/transaction/state.rs:26-38",
+        "src/transaction/manager.rs:226-291",
+        "src/db.rs:76-127"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E161",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "comment",
+        "inline_comment"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "E171",
+      "core": true,
+      "status": "unsupported",
+      "scope": "public Rust error API inspection, not a SQL statement probe or driver assessment",
+      "case_ids": [],
+      "code_pointers": [
+        "src/error.rs:4-32"
+      ],
+      "source_ids": [
+        1
+      ],
+      "note": "DbError exposes variants/messages; no SQLSTATE field or mapping in inspected public error module."
+    },
+    {
+      "code": "F021-02",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "information_schema"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F031-01",
+      "core": true,
+      "status": "partial",
+      "scope": "CREATE TABLE fixtures plus pk_text insert limitation; not a full DDL certification",
+      "case_ids": [
+        "pk_text",
+        "select_filter"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:135-141",
+        "src/execution/runtime.rs:1090-1128"
+      ],
+      "source_ids": [
+        1
+      ],
+      "note": "Creation works; persisted rows require first-column INTEGER storage key."
+    },
+    {
+      "code": "F031-02",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "view"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F031-04",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "alter_add"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F031-13",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "drop_table",
+        "drop_restrict_dependency"
+      ],
+      "code_pointers": [
+        "src/sql/parser.rs:1123-1140",
+        "src/catalog/mod.rs:871-912"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F041-01",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "inner_join"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:700-845",
+        "src/execution/runtime.rs:1276-1291"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F041-03",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "left_join"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:700-845",
+        "src/execution/runtime.rs:1276-1291"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F041-04",
+      "core": true,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "right_join"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:700-845",
+        "src/execution/runtime.rs:1276-1291"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F051-01",
+      "core": true,
+      "status": "partial",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "date_storage",
+        "date_literal",
+        "bad_date"
+      ],
+      "code_pointers": [
+        "src/storage/row.rs:6-133"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F051-03",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "timestamp_literal"
+      ],
+      "code_pointers": [
+        "src/storage/row.rs:6-133"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F191",
+      "core": false,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "fk_delete_cascade"
+      ],
+      "code_pointers": [
+        "src/constraints/foreign_key.rs:20-43",
+        "src/constraints/foreign_key.rs:46-111",
+        "src/catalog/mod.rs:305-378"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F201",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "cast"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F261-02",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "case"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F261-04",
+      "core": true,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "coalesce"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F302",
+      "core": false,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "intersect"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:1121"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F406",
+      "core": false,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "full_join"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:700-845",
+        "src/execution/runtime.rs:1276-1291"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F471",
+      "core": true,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "scalar_one",
+        "scalar_empty",
+        "scalar_cardinality"
+      ],
+      "code_pointers": [
+        "src/execution/runtime.rs:1810-1824",
+        "src/execution/runtime.rs:1883-1896"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F701",
+      "core": false,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "fk_update_cascade"
+      ],
+      "code_pointers": [
+        "src/constraints/foreign_key.rs:20-43",
+        "src/constraints/foreign_key.rs:46-111",
+        "src/catalog/mod.rs:305-378"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "F850",
+      "core": false,
+      "status": "bug",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "order_desc",
+        "order_nulls"
+      ],
+      "code_pointers": [
+        "src/sql/parser.rs:1053-1121",
+        "src/execution/runtime.rs:1159-1292"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "T031",
+      "core": false,
+      "status": "implemented",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "boolean_type"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "T121",
+      "core": false,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "cte"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "T271",
+      "core": false,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "savepoint"
+      ],
+      "code_pointers": [
+        "src/transaction/state.rs:26-38",
+        "src/transaction/manager.rs:226-291",
+        "src/db.rs:76-127"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "T611",
+      "core": false,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "window"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    },
+    {
+      "code": "T821",
+      "core": false,
+      "status": "unsupported",
+      "scope": "representative probes, not entire feature certification",
+      "case_ids": [
+        "json_value"
+      ],
+      "code_pointers": [
+        "src/sql/ast.rs:5-29",
+        "src/sql/ast.rs:134-184",
+        "src/sql/parser.rs:543-1201"
+      ],
+      "source_ids": [
+        1,
+        2
+      ],
+      "note": ""
+    }
+  ]
+}

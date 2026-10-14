@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": 1,
+      "url": "https://www.postgresql.org/docs/18/features-sql-standard.html",
+      "title": "",
+      "accessed": "2026-10-14"
+    },
+    {
+      "id": 2,
+      "url": "https://www.postgresql.org/docs/18/unsupported-features-sql-standard.html",
+      "title": "",
+      "accessed": "2026-10-14"
+    },
+    {
+      "id": 3,
+      "url": "https://www.postgresql.org/docs/18/features.html",
+      "title": "",
+      "accessed": "2026-10-14",
+      "quotes": [
+        {
+          "text": "The 2023 version is referred to as ISO/IEC 9075:2023, or simply as SQL:2023.",
+          "added": "2026-10-14"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "url": "https://www.postgresql.org/docs/18/functions-aggregate.html",
+      "title": "",
+      "accessed": "2026-10-14"
+    },
+    {
+      "id": 5,
+      "url": "https://www.postgresql.org/docs/18/sql-expressions.html",
+      "title": "",
+      "accessed": "2026-10-14"
+    },
+    {
+      "id": 6,
+      "url": "https://www.postgresql.org/docs/18/functions-comparison.html",
+      "title": "",
+      "accessed": "2026-10-14"
+    },
+    {
+      "id": 7,
+      "url": "https://www.postgresql.org/docs/18/ddl-constraints.html",
+      "title": "",
+      "accessed": "2026-10-14"
+    },
+    {
+      "id": 8,
+      "url": "https://www.postgresql.org/docs/18/queries-union.html",
+      "title": "",
+      "accessed": "2026-10-14"
+    }
+  ]
+}

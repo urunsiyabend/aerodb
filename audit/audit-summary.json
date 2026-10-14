@@ -1,0 +1,52 @@
+{
+  "audit_date": "2026-10-14",
+  "head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+  "version": "0.5.1",
+  "rustc": "1.99.0 (b940084d7 2026-09-28)",
+  "cargo": "1.99.0 (5f94df478 2026-08-27)",
+  "probe_summary": {
+    "head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+    "version": "0.5.1",
+    "case_count": 92,
+    "sql_statement_count": 309,
+    "statuses": {
+      "implemented": 34,
+      "bug": 28,
+      "unsupported": 28,
+      "unverified": 1,
+      "partial": 1
+    },
+    "reasons": {
+      "result_matches": 25,
+      "expected_error_missing": 5,
+      "wrong_result": 18,
+      "syntax_rejected": 16,
+      "runtime_feature_absent": 3,
+      "setup_parse_error": 9,
+      "expected_error_enforced": 9,
+      "valid_statement_rejected": 5,
+      "empty_statement_api": 1,
+      "setup_exec_error": 1
+    }
+  },
+  "statement_attempts_by_status": {
+    "OK": 255,
+    "PARSE_ERROR": 26,
+    "EXEC_ERROR": 28
+  },
+  "baseline": {
+    "command": "cargo test --all-targets",
+    "head": "675fdcd7f7f2eeb3f6f86bcd043af2b5fa94168e",
+    "exit_code": 0,
+    "result_blocks": 40,
+    "test_executions_passed": 227,
+    "failed": 0,
+    "ignored": 0,
+    "integration_binaries": 37,
+    "note": "Library and binary repeat some unit tests; test executions are not unique test functions.",
+    "log_path": "/home/urunsiyabend/.hermes/cache/scratch/aerodb-sql-audit/baseline.log"
+  },
+  "matrix_row_count": 68,
+  "core_rows": 58,
+  "optional_rows": 10
+}

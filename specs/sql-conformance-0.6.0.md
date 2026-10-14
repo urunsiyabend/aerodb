@@ -101,6 +101,15 @@ Feature ID'leri ve Core/Optional işaretleri 0.5.1 tablosundakilerle aynıdır; 
 
 `E171`, bir SQL probe'u değil, statik bir API incelemesidir; audit durum sayılarına dahil değildir.
 
+### Vaka durumu ile feature satırı durumu ayrıdır (proxy kanıt)
+
+Yukarıdaki "Audit durum sayıları" **vaka** (probe) bazındadır ve değişmez oracle'larla hesaplanır. Feature matrisindeki "0.6.0 gözlenen durum" ise **resmî feature/subfeature** bazındadır ve bir vakanın geçmesi, o vakaya eşlenen feature'ın desteklendiği anlamına gelmeyebilir:
+
+- `E121-02` ve `E121-03` resmî olarak **cursor** alt-özellikleridir (`E121` = basic cursor support; `-02` ORDER BY'daki kolonların select listesinde olmak zorunda olmaması, `-03` ORDER BY'da değer ifadeleri — cursor bağlamında). 0.5.1 audit'i de bunu açıkça belirtmişti. AeroDB'de SQL cursor yoktur (`DECLARE … CURSOR` 0A000; `E121-01`).
+- Bu satırlara eşlenen `order_nonselected` ve `order_expr` vakaları top-level `SELECT … ORDER BY` sorgularıdır ve 0.6.0'da doğru sonuç verir (`result_matches`; vaka sayıları değişmedi). Bunlar yalnız **ilişkili, cursor olmayan proxy kanıttır**. Bu yüzden `E121-02` / `E121-03` satırları **unsupported** kalır; genel "sertifika değildir" notu cursor feature'ı için `implemented` etiketini haklı çıkarmaz.
+- Top-level sıralamanın olumlu kapsamı `F850` satırında (ve ilgili testlerde) raporlanır: DESC, NULLS FIRST/LAST, çoklu anahtar, ifade, ordinal, alias ve seçilmeyen kolonla sıralama.
+- Makine matrisi `audit/sql-feature-matrix-0.6.0.json` aynı ayrımı tutar: her satırda `status` (feature kapsamı) ile `case_results` (vaka sonuçları) ayrı alanlardır; proxy vakalar `proxy_note` ile işaretlidir.
+
 ## Feature matrisi
 
 **Sütunlar:**
@@ -139,8 +148,8 @@ Tüm `tests/sql_*.rs` dosyaları 0.6.0'da eklendi; `tests/storage_format.rs` ve 
 | E101-03 | Core | partial | implemented | `update_expression`, `update` (result_matches) | `tests/sql_semantics.rs` (update_expression, update_null); `tests/sql_constraints.rs` (update_creating_unique_duplicate_is_rejected, update_swapping_unique_values_succeeds) |
 | E101-04 | Core | partial | implemented | `delete`, `delete_all` (result_matches) | `tests/sql_semantics.rs` (delete_all) |
 | E121-01 | Core | unsupported | unsupported | `cursor` (syntax_rejected, 0A000) | `tests/sql_parser.rs` (cursor_is_unsupported) |
-| E121-02 | Core | bug | implemented | `order_nonselected` (result_matches) | `tests/sql_semantics.rs` (order_nonselected, order_by_on_join_with_aggregate) |
-| E121-03 | Core | unsupported | implemented | `order_expr` (result_matches) | `tests/sql_semantics.rs` (order_expr, order_by_alias, order_by_ordinal, order_by_name_ignores_derived_output_names) |
+| E121-02 | Core | bug | **unsupported** (cursor alt-özelliği; SQL cursor yok). Yalnız ilişkili top-level ORDER BY *proxy* kanıtı geçti — feature desteği değildir | `order_nonselected` (result_matches; proxy: cursor değil, top-level sorgu) | Proxy (top-level ORDER BY, cursor değil): `tests/sql_semantics.rs` (order_nonselected, order_by_on_join_with_aggregate). Cursor reddi: `tests/sql_parser.rs` (cursor_is_unsupported) |
+| E121-03 | Core | unsupported | **unsupported** (cursor alt-özelliği; SQL cursor yok). Yalnız ilişkili top-level ORDER BY *proxy* kanıtı geçti — feature desteği değildir | `order_expr` (result_matches; proxy: cursor değil, top-level sorgu) | Proxy (top-level ORDER BY, cursor değil): `tests/sql_semantics.rs` (order_expr, order_by_alias, order_by_ordinal, order_by_name_ignores_derived_output_names). Cursor reddi: `tests/sql_parser.rs` (cursor_is_unsupported) |
 | E131 | Core | bug | implemented | `null_eq`, `null_neq`, `null_arithmetic`, `update_null` (result_matches) | `tests/sql_semantics.rs` (null_eq, null_neq, null_arithmetic, update_null, null_comparisons_are_unknown); `src/sql/value.rs` unit (null_propagates_through_arithmetic) |
 | E141-01 | Core | implemented | implemented | `not_null` (expected_error_enforced) | `tests/not_null.rs`, `tests/nullability.rs`; `tests/sql_ddl.rs` (add_not_null_without_default_on_nonempty_table_fails, add_not_null_with_default) |
 | E141-02 | Core | unsupported | implemented | `unique` (expected_error_enforced) | `tests/sql_constraints.rs` (unique_audit_probe, nullable_unique_allows_two_nulls, composite_unique_with_partial_null_allowed_twice, unique_duplicate_within_multi_row_insert_has_no_effect, database_concurrent_unique_commit_sees_latest_state) |
@@ -173,7 +182,7 @@ Tüm `tests/sql_*.rs` dosyaları 0.6.0'da eklendi; `tests/storage_format.rs` ve 
 | F406 | Optional | implemented | implemented | `full_join` (result_matches) | `tests/sql_semantics.rs` (full_join) |
 | F471 | Core | bug | implemented | `scalar_one`, `scalar_empty` (result_matches), `scalar_cardinality` (expected_error_enforced) | `tests/sql_semantics.rs` (scalar_one, scalar_empty, scalar_cardinality, correlated_scalar_subquery_in_projection) |
 | F701 | Optional | bug | implemented | `fk_update_cascade` (result_matches) | `tests/sql_constraints.rs` (fk_update_cascade, composite_on_update_cascade, on_update_cascade_chain_grandparent_parent_child, cascade_into_child_whose_check_rejects_fails_the_whole_update) |
-| F850 | Optional | bug | implemented | `order_desc`, `order_nulls` (result_matches) | `tests/sql_semantics.rs` (order_desc, order_nulls, order_by_multiple_keys, limit_and_offset_apply_after_order) |
+| F850 | Optional | bug | implemented (top-level ORDER BY kapsamı) | `order_desc`, `order_nulls` (result_matches); ilişkili top-level vakalar `order_nonselected`, `order_expr` de geçer (E121 satırlarına resmî eşlemeleri değişmedi) | `tests/sql_semantics.rs` (order_desc, order_nulls, order_by_multiple_keys, limit_and_offset_apply_after_order, order_nonselected, order_expr, order_by_alias, order_by_ordinal) |
 | T031 | Optional | implemented | implemented | `boolean_type` (result_matches) | `tests/sql_semantics.rs` (truth_tables); `src/execution/eval.rs` unit (three_valued_logic) |
 | T121 | Optional | unsupported | unsupported | `cte` (syntax_rejected, 0A000) | `tests/sql_parser.rs` (cte_is_unsupported) |
 | T271 | Optional | unsupported | unsupported | `savepoint` (setup_parse_error, 0A000) | `tests/sql_parser.rs` (savepoint_is_unsupported) |
