@@ -41,9 +41,9 @@ fn not_null_constraint_fails_on_null() {
 
 #[test]
 fn default_constraint_evaluates_literal() {
-    use aerodb::sql::ast::Expr;
-    let val = DefaultConstraint::evaluate(&Expr::Literal("42".into())).unwrap();
-    assert_eq!(val, "42");
+    use aerodb::sql::{ast::Expr, value::Value};
+    let val = DefaultConstraint::evaluate(&Expr::Literal(Value::Int(42))).unwrap();
+    assert_eq!(val, Value::Int(42));
 }
 
 #[test]

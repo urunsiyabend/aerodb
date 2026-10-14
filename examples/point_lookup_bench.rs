@@ -8,7 +8,7 @@
 use aerodb::{
     engine::Engine,
     execution::runtime::execute_select_with_indexes,
-    sql::{ast::Expr, parser::parse_statement},
+    sql::parser::{parse_expression_sql, parse_statement},
 };
 use std::{env, fs, time::Instant};
 
@@ -53,10 +53,7 @@ fn main() {
     for i in 0..lookups {
         let id = (i * 7919) % rows;
         let mut out = Vec::new();
-        let selection = Expr::Equals {
-            left: "v".into(),
-            right: (id * 7).to_string(),
-        };
+        let selection = parse_expression_sql(&format!("v = {}", id * 7)).unwrap();
         execute_select_with_indexes(&mut engine.catalog, "t", Some(selection), &mut out).unwrap();
         found += out.len();
     }

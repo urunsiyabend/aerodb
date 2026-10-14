@@ -1,4 +1,4 @@
-use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::Statement}, execution::runtime::{select_projection_indices, row_to_strings, format_header, Projection}, storage::row::ColumnType};
+use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::Statement}, execution::runtime::{execute_select_statement, format_header}, storage::row::ColumnType};
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -21,25 +21,10 @@ fn select_single_column() {
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'bob')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT name FROM users").unwrap();
-    if let Statement::Select { columns, from, .. } = stmt {
-        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };
-        let info = catalog.get_table(table).unwrap();
-        let (idxs, meta) = select_projection_indices(&info.columns, &columns).unwrap();
-        assert_eq!(format_header(&meta), "name TEXT");
-        let mut rows = Vec::new();
-        aerodb::execution::execute_select_with_indexes(&mut catalog, table, None, &mut rows).unwrap();
-        let vals = row_to_strings(&rows[0]);
-        let proj: Vec<_> = idxs
-            .iter()
-            .map(|p| match p {
-                aerodb::execution::runtime::Projection::Index(i) => vals[*i].clone(),
-                aerodb::execution::runtime::Projection::Literal(s) => s.clone(),
-                aerodb::execution::runtime::Projection::Subquery(_) => String::new(),
-                aerodb::execution::runtime::Projection::Expr(_) => String::new(),
-            })
-            .collect();
-        assert_eq!(proj, vec!["bob"]);
-    } else { panic!("expected select"); }
+    let mut out = Vec::new();
+    let meta = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
+    assert_eq!(format_header(&meta), "name TEXT");
+    assert_eq!(out[0], vec!["bob"]);
 }
 
 #[test]
@@ -56,24 +41,8 @@ fn select_two_columns() {
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO users VALUES (1, 'bob')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT id, name FROM users").unwrap();
-    if let Statement::Select { columns, from, .. } = stmt {
-        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };
-        let info = catalog.get_table(table).unwrap();
-        let (idxs, meta) = select_projection_indices(&info.columns, &columns).unwrap();
-        assert_eq!(format_header(&meta), "id INTEGER | name TEXT");
-        let mut rows = Vec::new();
-        aerodb::execution::execute_select_with_indexes(&mut catalog, table, None, &mut rows).unwrap();
-        let vals = row_to_strings(&rows[0]);
-        let proj: Vec<_> = idxs
-            .iter()
-            .map(|p| match p {
-                aerodb::execution::runtime::Projection::Index(i) => vals[*i].clone(),
-                aerodb::execution::runtime::Projection::Literal(s) => s.clone(),
-                aerodb::execution::runtime::Projection::Subquery(_) => String::new(),
-                aerodb::execution::runtime::Projection::Expr(_) => String::new(),
-            })
-            .collect();
-        assert_eq!(proj, vec!["1", "bob"]);
-    } else { panic!("expected select"); }
+    let mut out = Vec::new();
+    let meta = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
+    assert_eq!(format_header(&meta), "id INTEGER | name TEXT");
+    assert_eq!(out[0], vec!["1", "bob"]);
 }
-

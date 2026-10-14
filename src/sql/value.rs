@@ -1,8 +1,5 @@
 //! Typed runtime SQL values and operations over them.
 
-// The binary target does not consume this module until the evaluator lands.
-#![allow(dead_code)]
-
 use crate::sql::decimal::{Decimal, DecimalError};
 use crate::storage::row::{
     ColumnType, ColumnValue, parse_date, parse_datetime, parse_time, parse_year,
@@ -226,9 +223,90 @@ fn fit_string(s: &str, n: usize, pad: bool) -> Result<String, ValueError> {
     }
 }
 
+impl SqlType {
+    /// SQL spelling of the type (parses back through `CAST(.. AS <name>)`).
+    pub fn name(&self) -> String {
+        match self {
+            SqlType::Boolean => "BOOLEAN".into(),
+            SqlType::Integer => "INTEGER".into(),
+            SqlType::SmallInt => "SMALLINT".into(),
+            SqlType::BigInt => "BIGINT".into(),
+            SqlType::Decimal { precision, scale } => format!("DECIMAL({},{})", precision, scale),
+            SqlType::Double => "DOUBLE".into(),
+            SqlType::Text => "TEXT".into(),
+            SqlType::Char(n) => format!("CHAR({})", n),
+            SqlType::Varchar(n) => format!("VARCHAR({})", n),
+            SqlType::Date => "DATE".into(),
+            SqlType::DateTime => "DATETIME".into(),
+            SqlType::Timestamp => "TIMESTAMP".into(),
+            SqlType::Time => "TIME".into(),
+            SqlType::Year => "YEAR".into(),
+            SqlType::Null => "NULL".into(),
+        }
+    }
+
+    /// The SQL type of values stored in a column of `ct`.
+    pub fn from_column_type(ct: &ColumnType) -> SqlType {
+        match ct {
+            ColumnType::Integer | ColumnType::MediumInt { .. } => SqlType::Integer,
+            ColumnType::SmallInt { .. } => SqlType::SmallInt,
+            ColumnType::Text => SqlType::Text,
+            ColumnType::Boolean => SqlType::Boolean,
+            ColumnType::Char(n) => SqlType::Char(*n),
+            ColumnType::Varchar(n) => SqlType::Varchar(*n),
+            ColumnType::Decimal { precision, scale } => SqlType::Decimal {
+                precision: *precision,
+                scale: *scale,
+            },
+            ColumnType::Double { .. } => SqlType::Double,
+            ColumnType::Date => SqlType::Date,
+            ColumnType::DateTime => SqlType::DateTime,
+            ColumnType::Timestamp => SqlType::Timestamp,
+            ColumnType::Time => SqlType::Time,
+            ColumnType::Year => SqlType::Year,
+        }
+    }
+
+    pub fn is_numeric(&self) -> bool {
+        matches!(
+            self,
+            SqlType::Integer | SqlType::SmallInt | SqlType::BigInt | SqlType::Decimal { .. } | SqlType::Double
+        )
+    }
+
+    pub fn is_text(&self) -> bool {
+        matches!(self, SqlType::Text | SqlType::Char(_) | SqlType::Varchar(_))
+    }
+}
+
 impl Value {
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
+    }
+
+    /// The SQL type describing this value (`SqlType::Null` for NULL).
+    pub fn sql_type(&self) -> SqlType {
+        match self {
+            Value::Null => SqlType::Null,
+            Value::Bool(_) => SqlType::Boolean,
+            Value::Int(_) => SqlType::Integer,
+            Value::Decimal(d) => {
+                let digits = d.mantissa().unsigned_abs().to_string().len() as u8;
+                let scale = d.scale();
+                SqlType::Decimal {
+                    precision: digits.max(scale + 1).min(crate::sql::decimal::MAX_PRECISION),
+                    scale,
+                }
+            }
+            Value::Double(_) => SqlType::Double,
+            Value::Text(_) => SqlType::Text,
+            Value::Char(s) => SqlType::Char(s.chars().count()),
+            Value::Date(_) => SqlType::Date,
+            Value::DateTime(_) => SqlType::DateTime,
+            Value::Timestamp(_) => SqlType::Timestamp,
+            Value::Time(_) => SqlType::Time,
+            Value::Year(_) => SqlType::Year,
+        }
     }
 
     pub fn from_column_value(cv: &ColumnValue) -> Value {
@@ -323,13 +401,17 @@ impl Value {
             if matches!(op, ArithOp::Div | ArithOp::Rem) && b == 0.0 {
                 return Err(ValueError::DivisionByZero);
             }
-            return Ok(Value::Double(match op {
+            let r = match op {
                 ArithOp::Add => a + b,
                 ArithOp::Sub => a - b,
                 ArithOp::Mul => a * b,
                 ArithOp::Div => a / b,
                 ArithOp::Rem => a % b,
-            }));
+            };
+            if !r.is_finite() {
+                return Err(ValueError::NumericOverflow);
+            }
+            return Ok(Value::Double(r));
         }
         if let (Value::Int(a), Value::Int(b)) = (self, o) {
             if matches!(op, ArithOp::Div | ArithOp::Rem) && *b == 0 {
@@ -729,6 +811,22 @@ mod tests {
         let r = Value::Double(20.0).mul(&dec("1.05")).unwrap();
         assert!(matches!(r, Value::Double(_)));
         assert_eq!(r.to_string(), "21");
+    }
+
+    #[test]
+    fn double_overflow_is_an_error() {
+        assert_eq!(
+            Value::Double(f64::MAX).mul(&Value::Double(2.0)),
+            Err(ValueError::NumericOverflow)
+        );
+        assert_eq!(
+            Value::Double(f64::MAX).add(&Value::Double(f64::MAX)),
+            Err(ValueError::NumericOverflow)
+        );
+        assert_eq!(
+            Value::Double(1e300).div(&Value::Double(1e-300)),
+            Err(ValueError::NumericOverflow)
+        );
     }
 
     #[test]

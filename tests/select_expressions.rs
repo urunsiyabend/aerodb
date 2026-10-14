@@ -1,4 +1,4 @@
-use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::{Statement, Expr, SelectExpr, ColumnDef}}, execution::runtime::{execute_select_statement, handle_statement}, storage::row::{ColumnType}};
+use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::{BinaryOp, Statement, Expr, SelectItem, SetExpr, ColumnDef}, value::Value}, execution::runtime::{execute_select_statement, handle_statement}, storage::row::{ColumnType}};
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -10,18 +10,15 @@ fn setup_catalog(filename: &str) -> Catalog {
 #[test]
 fn parse_select_add_expr() {
     let stmt = parse_statement("SELECT val + 5 FROM numbers").unwrap();
-    if let Statement::Select { columns, .. } = stmt {
-        match &columns[0] {
-            SelectExpr { expr: aerodb::sql::ast::SelectItem::Expr(expr_box), .. } => match **expr_box {
-                Expr::Add { ref left, ref right } => {
-                    assert_eq!(left, "val");
-                    assert_eq!(right, "5");
-                }
-                _ => panic!("expected Add"),
-            },
-            _ => panic!("expected expression"),
+    let Statement::Query(q) = stmt else { panic!("expected select") };
+    let SetExpr::Select(sel) = q.body else { panic!("expected select") };
+    match &sel.projection[0] {
+        SelectItem::Expr { expr: Expr::Binary { op: BinaryOp::Add, left, right }, .. } => {
+            assert_eq!(**left, Expr::Column { table: None, name: "val".into() });
+            assert_eq!(**right, Expr::Literal(Value::Int(5)));
         }
-    } else { panic!("expected select") }
+        _ => panic!("expected Add expression"),
+    }
 }
 
 #[test]
@@ -38,7 +35,7 @@ fn execute_select_add_expr() {
     }).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO numbers VALUES (1, 10)").unwrap()).unwrap();
     let stmt = parse_statement("SELECT val + 5 FROM numbers WHERE id = 1").unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
         let _header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(out, vec![vec![String::from("15")]]);
@@ -58,7 +55,7 @@ fn execute_select_mul_double_expr() {
     }).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (1, 20.0)").unwrap()).unwrap();
     let stmt = parse_statement("SELECT id, total * 1.05 FROM orders WHERE id = 1").unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
         let _header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(out, vec![vec![String::from("1"), String::from("21")]]);

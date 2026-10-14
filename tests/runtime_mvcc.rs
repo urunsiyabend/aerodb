@@ -1,7 +1,7 @@
 use aerodb::{
     engine::Engine,
-    execution::runtime::{execute_group_query, execute_multi_join, execute_select_with_indexes},
-    sql::{ast::Statement, parser::parse_statement},
+    execution::runtime::{execute_select_statement, execute_select_with_indexes},
+    sql::parser::{parse_expression_sql, parse_statement},
 };
 use std::fs;
 
@@ -30,13 +30,7 @@ fn indexed_select_obeys_mvcc_visibility_across_transaction_lifecycle() {
         .execute(parse_statement("INSERT INTO t VALUES (1, 'alice')").unwrap())
         .unwrap();
 
-    let predicate = parse_statement("SELECT * FROM t WHERE name = 'alice'").unwrap();
-    let selection = match predicate {
-        Statement::Select {
-            where_predicate, ..
-        } => where_predicate,
-        _ => unreachable!(),
-    };
+    let selection = Some(parse_expression_sql("name = 'alice'").unwrap());
 
     let mut same_tx_rows = Vec::new();
     execute_select_with_indexes(
@@ -96,48 +90,11 @@ fn joins_and_aggregates_read_visible_rows_inside_transaction() {
 
     let stmt = parse_statement("SELECT a.v, b.id FROM a JOIN b ON a.id = b.a_id").unwrap();
     let mut join_rows = Vec::new();
-    if let Statement::Select {
-        columns,
-        from,
-        joins,
-        where_predicate,
-        ..
-    } = stmt
-    {
-        let base_table = match from.first().unwrap() {
-            aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(),
-            _ => unreachable!(),
-        };
-        let plan = aerodb::execution::plan::MultiJoinPlan {
-            base_table,
-            base_alias: None,
-            joins,
-            projections: columns,
-            where_predicate,
-        };
-        execute_multi_join(&plan, &mut engine.catalog, &mut join_rows).unwrap();
-    }
+    execute_select_statement(&mut engine.catalog, &stmt, &mut join_rows, None).unwrap();
     assert_eq!(join_rows, vec![vec!["av1".to_string(), "1".to_string()]]);
 
     let group_stmt = parse_statement("SELECT COUNT(*) FROM a").unwrap();
     let mut aggregate_rows = Vec::new();
-    if let Statement::Select {
-        columns,
-        where_predicate,
-        ..
-    } = group_stmt
-    {
-        execute_group_query(
-            &mut engine.catalog,
-            "a",
-            &columns,
-            None,
-            None,
-            where_predicate,
-            &mut aggregate_rows,
-            None,
-        )
-        .unwrap();
-    }
+    execute_select_statement(&mut engine.catalog, &group_stmt, &mut aggregate_rows, None).unwrap();
     assert_eq!(aggregate_rows, vec![vec!["1".to_string()]]);
 }

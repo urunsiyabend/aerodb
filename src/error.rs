@@ -1,6 +1,8 @@
 use std::io;
 use thiserror::Error;
 
+use crate::sql::value::ValueError;
+
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error("table '{0}' not found")]
@@ -27,6 +29,68 @@ pub enum DbError {
     WriteConflict(i32),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("syntax error: {0}")]
+    Syntax(String),
+    #[error("feature not supported: {0}")]
+    FeatureNotSupported(String),
+    #[error("function {0} does not exist")]
+    UndefinedFunction(String),
+    #[error("division by zero")]
+    DivisionByZero,
+    #[error("numeric value out of range: {0}")]
+    NumericOverflow(String),
+    #[error("value too long: {0}")]
+    StringTooLong(String),
+    #[error("invalid value for cast: {0}")]
+    InvalidCast(String),
+    #[error("type mismatch: {0}")]
+    TypeMismatch(String),
+    #[error("cardinality violation: {0}")]
+    CardinalityViolation(String),
+    #[error("column reference '{0}' is ambiguous")]
+    AmbiguousColumn(String),
+}
+
+impl DbError {
+    /// The five-character SQLSTATE code classifying this error.
+    pub fn sqlstate(&self) -> &'static str {
+        match self {
+            DbError::TableNotFound(_) => "42P01",
+            DbError::ColumnNotFound(_) => "42703",
+            DbError::DuplicateKey(_) => "23505",
+            DbError::NullViolation(_) => "23502",
+            DbError::Overflow => "22003",
+            DbError::ParseError(_) => "42601",
+            DbError::InvalidValue(_) => "22023",
+            DbError::ForeignKeyViolation(_) => "23503",
+            DbError::GroupByMismatch(_) => "42803",
+            DbError::NotFound(_) => "42704",
+            DbError::WriteConflict(_) => "40001",
+            DbError::Io(_) => "58030",
+            DbError::Syntax(_) => "42601",
+            DbError::FeatureNotSupported(_) => "0A000",
+            DbError::UndefinedFunction(_) => "42883",
+            DbError::DivisionByZero => "22012",
+            DbError::NumericOverflow(_) => "22003",
+            DbError::StringTooLong(_) => "22001",
+            DbError::InvalidCast(_) => "22018",
+            DbError::TypeMismatch(_) => "42804",
+            DbError::CardinalityViolation(_) => "21000",
+            DbError::AmbiguousColumn(_) => "42702",
+        }
+    }
+}
+
+impl From<ValueError> for DbError {
+    fn from(e: ValueError) -> Self {
+        match e {
+            ValueError::DivisionByZero => DbError::DivisionByZero,
+            ValueError::NumericOverflow => DbError::NumericOverflow("numeric value out of range".into()),
+            ValueError::InvalidCast(m) => DbError::InvalidCast(m),
+            ValueError::StringTooLong(m) => DbError::StringTooLong(m),
+            ValueError::TypeMismatch(m) => DbError::TypeMismatch(m),
+        }
+    }
 }
 
 pub type DbResult<T> = Result<T, DbError>;

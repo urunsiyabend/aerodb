@@ -1,4 +1,4 @@
-use aerodb::sql::{ast::{Expr, SelectItem, Statement, TableRef}, parser::parse_statement};
+use aerodb::sql::{ast::{BinaryOp, Expr, SelectItem, SetExpr, Statement, TableRef}, parser::parse_statement, value::Value};
 
 #[test]
 fn insert_quoted_literal_with_spaces() {
@@ -9,7 +9,7 @@ fn insert_quoted_literal_with_spaces() {
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].len(), 1);
             match &rows[0][0] {
-                Expr::Literal(value) => assert_eq!(value, "hello world"),
+                Expr::Literal(Value::Text(value)) => assert_eq!(value, "hello world"),
                 other => panic!("Expected literal, got {:?}", other),
             }
         }
@@ -21,12 +21,13 @@ fn insert_quoted_literal_with_spaces() {
 fn select_quoted_identifier_with_spaces() {
     let stmt = parse_statement("SELECT \"my column\" FROM t").unwrap();
     match stmt {
-        Statement::Select { columns, from, .. } => {
-            match &columns[0].expr {
-                SelectItem::Column(name) => assert_eq!(name, "my column"),
+        Statement::Query(q) => {
+            let SetExpr::Select(sel) = q.body else { panic!("expected select") };
+            match &sel.projection[0] {
+                SelectItem::Expr { expr: Expr::Column { table: None, name }, .. } => assert_eq!(name, "my column"),
                 other => panic!("Expected column, got {:?}", other),
             }
-            match &from[0] {
+            match &sel.from[0] {
                 TableRef::Named { name, .. } => assert_eq!(name, "t"),
                 other => panic!("Expected table ref, got {:?}", other),
             }
@@ -39,12 +40,13 @@ fn select_quoted_identifier_with_spaces() {
 fn where_clause_quoted_literal_with_spaces() {
     let stmt = parse_statement("SELECT name FROM t WHERE name = 'Alice Smith'").unwrap();
     match stmt {
-        Statement::Select { where_predicate, .. } => {
-            let expr = where_predicate.expect("Expected where predicate");
+        Statement::Query(q) => {
+            let SetExpr::Select(sel) = q.body else { panic!("expected select") };
+            let expr = sel.selection.expect("Expected where predicate");
             match expr {
-                Expr::Equals { left, right } => {
-                    assert_eq!(left, "name");
-                    assert_eq!(right, "Alice Smith");
+                Expr::Binary { op: BinaryOp::Eq, left, right } => {
+                    assert_eq!(*left, Expr::Column { table: None, name: "name".into() });
+                    assert_eq!(*right, Expr::Literal(Value::Text("Alice Smith".into())));
                 }
                 other => panic!("Expected equals expression, got {:?}", other),
             }

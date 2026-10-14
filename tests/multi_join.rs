@@ -1,5 +1,5 @@
 use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::Statement}, storage::row::ColumnType};
-use aerodb::execution::runtime::{execute_multi_join};
+use aerodb::execution::runtime::execute_select_statement;
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -44,11 +44,9 @@ fn join_two_tables() {
     }
 
     let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+    if let Statement::Query(_) = stmt {
         let mut results = Vec::new();
-        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut results, None).unwrap();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], vec![String::from("av1"), String::from("bw1")]);
     } else { panic!("expected select") }
@@ -91,11 +89,9 @@ fn join_three_tables() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO c VALUES (1, 1, 'cx1')").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO c VALUES (2, 3, 'cx2')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT a.v, b.w, c.x FROM a JOIN b ON a.id = b.a_id JOIN c ON b.id = c.b_id").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+    if let Statement::Query(_) = stmt {
         let mut results = Vec::new();
-        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut results, None).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], vec![String::from("av1"), String::from("bw1"), String::from("cx1")]);
     } else { panic!("expected select") }
@@ -126,12 +122,10 @@ fn join_with_where() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO a VALUES (2, 'av2')").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (1, 1, 'bw1')").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (2, 2, 'bw2')").unwrap()).unwrap();
-    let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id WHERE a.v = av1").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+    let stmt = parse_statement("SELECT a.v, b.w FROM a JOIN b ON a.id = b.a_id WHERE a.v = 'av1'").unwrap();
+    if let Statement::Query(_) = stmt {
         let mut results = Vec::new();
-        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut results, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![String::from("av1"), String::from("bw1")]);
     } else { panic!("expected select") }
@@ -161,11 +155,9 @@ fn left_join_preserves_left_rows() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (10, 1)").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT a.id, b.id FROM a LEFT JOIN b ON a.id = b.a_id").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+    if let Statement::Query(_) = stmt {
         let mut results = Vec::new();
-        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut results, None).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&vec![String::from("1"), String::from("10")]));
         assert!(results.contains(&vec![String::from("2"), String::from("NULL")]));
@@ -196,11 +188,9 @@ fn right_join_preserves_right_rows() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (11, 3)").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT a.id, b.id FROM a RIGHT JOIN b ON a.id = b.a_id").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+    if let Statement::Query(_) = stmt {
         let mut results = Vec::new();
-        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut results, None).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&vec![String::from("1"), String::from("10")]));
         assert!(results.contains(&vec![String::from("NULL"), String::from("11")]));
@@ -231,20 +221,16 @@ fn cross_join_and_non_equality_predicate() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO b VALUES (11)").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT a.id, b.id FROM a CROSS JOIN b").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+    if let Statement::Query(_) = stmt {
         let mut results = Vec::new();
-        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut results, None).unwrap();
         assert_eq!(results.len(), 4);
     } else { panic!("expected select") }
 
     let stmt = parse_statement("SELECT a.id, b.id FROM a JOIN b ON a.id >= b.id").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let base_table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias: None, joins, projections: columns, where_predicate };
+    if let Statement::Query(_) = stmt {
         let mut results = Vec::new();
-        execute_multi_join(&plan, &mut catalog, &mut results).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut results, None).unwrap();
         assert_eq!(results.len(), 0);
     } else { panic!("expected select") }
 }

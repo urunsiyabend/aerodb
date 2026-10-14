@@ -1,4 +1,4 @@
-use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::Statement}, execution::runtime::{handle_statement, execute_select_with_indexes}};
+use aerodb::{catalog::Catalog, storage::pager::Pager, sql::parser::parse_statement, execution::runtime::{handle_statement, execute_select_with_indexes}};
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -58,17 +58,9 @@ fn selects_use_full_scan_after_drop() {
     handle_statement(&mut catalog, parse_statement("DROP INDEX idx1").unwrap()).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO t VALUES (4, 'u2')").unwrap()).unwrap();
 
-    let stmt = parse_statement("SELECT * FROM t WHERE name = u2").unwrap();
-    if let Statement::Select { from, where_predicate, .. } = stmt {
-        let table_name = match from.first().unwrap() {
-            aerodb::sql::ast::TableRef::Named { name, .. } => name.clone(),
-            _ => panic!("expected table"),
-        };
-        let mut rows = Vec::new();
-        let used = execute_select_with_indexes(&mut catalog, &table_name, where_predicate, &mut rows).unwrap();
-        assert!(!used);
-        assert_eq!(rows.len(), 2);
-    } else {
-        panic!("expected select");
-    }
+    let where_predicate = aerodb::sql::parser::parse_expression_sql("name = 'u2'").unwrap();
+    let mut rows = Vec::new();
+    let used = execute_select_with_indexes(&mut catalog, "t", Some(where_predicate), &mut rows).unwrap();
+    assert!(!used);
+    assert_eq!(rows.len(), 2);
 }

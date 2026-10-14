@@ -1,6 +1,13 @@
 use crate::{
-    catalog::Catalog, error::DbResult, execution::runtime::handle_statement, sql::ast::Statement,
-    storage::pager::Pager, storage::vacuum::VacuumReport, transaction::TransactionManager,
+    catalog::Catalog,
+    error::DbResult,
+    execution::query::{QueryResult, execute_query},
+    execution::runtime::handle_statement,
+    sql::ast::Statement,
+    sql::parser::parse_sql,
+    storage::pager::Pager,
+    storage::vacuum::VacuumReport,
+    transaction::TransactionManager,
 };
 
 pub struct Engine {
@@ -20,6 +27,28 @@ impl Engine {
     pub fn execute(&mut self, stmt: Statement) -> DbResult<()> {
         self.transaction_manager
             .execute(&mut self.catalog, stmt, handle_statement)
+    }
+
+    /// Parse and execute one SQL statement (printing query results like the REPL).
+    pub fn execute_sql(&mut self, sql: &str) -> DbResult<()> {
+        self.execute(parse_sql(sql)?)
+    }
+
+    /// Parse and run one statement inside the transaction manager, returning
+    /// the typed result rows of a query without printing them. Non-query
+    /// statements are executed and yield an empty result.
+    pub fn query(&mut self, sql: &str) -> DbResult<QueryResult> {
+        let stmt = parse_sql(sql)?;
+        let mut result = QueryResult::default();
+        self.transaction_manager
+            .execute(&mut self.catalog, stmt, |catalog, stmt| match stmt {
+                Statement::Query(q) => {
+                    result = execute_query(catalog, &q, None)?;
+                    Ok(())
+                }
+                other => handle_statement(catalog, other),
+            })?;
+        Ok(result)
     }
 
     /// Physically prune obsolete MVCC versions from `table_name`. The vacuum

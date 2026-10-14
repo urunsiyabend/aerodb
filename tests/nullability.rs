@@ -11,7 +11,7 @@ fn setup_catalog(filename: &str) -> Catalog {
 fn parse_insert_null() {
     let stmt = parse_statement("INSERT INTO users VALUES (1, NULL)").unwrap();
     if let Statement::Insert { rows, .. } = stmt {
-        assert!(matches!(rows[0][1], Expr::Literal(ref v) if v == "NULL"));
+        assert!(matches!(rows[0][1], Expr::Literal(aerodb::sql::value::Value::Null)));
     } else { panic!("expected insert"); }
 }
 
@@ -32,7 +32,7 @@ fn insert_and_retrieve_null() {
     execute_select_with_indexes(
         &mut catalog,
         "users",
-        Some(Expr::Equals { left: "id".into(), right: "1".into() }),
+        Some(aerodb::sql::parser::parse_expression_sql("id = 1").unwrap()),
         &mut out,
     ).unwrap();
     assert_eq!(out[0].data.0[1], ColumnValue::Null);

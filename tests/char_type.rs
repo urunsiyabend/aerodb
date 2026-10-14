@@ -1,4 +1,4 @@
-use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{ast::{Statement, TableRef, Expr}, parser::parse_statement}, execution::runtime::{select_projection_indices, execute_select_with_indexes, row_to_strings, Projection, format_header}, storage::row::{ColumnType}};
+use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{ast::{Statement, Expr}, parser::parse_statement, value::Value}, execution::runtime::{execute_select_statement, format_header}, storage::row::{ColumnType}};
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -19,19 +19,12 @@ fn char_column_basic() {
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false,
     }).unwrap();
-    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "items".into(), columns: None, rows: vec![vec![Expr::Literal("1".into()), Expr::Literal("A".into())]] }).unwrap();
+    aerodb::execution::handle_statement(&mut catalog, Statement::Insert { table_name: "items".into(), columns: None, rows: vec![vec![Expr::Literal(Value::Int(1)), Expr::Literal(Value::Text("A".into()))]] }).unwrap();
     let stmt = parse_statement("SELECT code FROM items").unwrap();
-    if let Statement::Select { columns, from, .. } = stmt {
-        let table = match from.first().unwrap() { TableRef::Named { name, .. } => name, _ => panic!("expected table") };
-        let info = catalog.get_table(table).unwrap();
-        let (idxs, meta) = select_projection_indices(&info.columns, &columns).unwrap();
-        assert_eq!(format_header(&meta), "code CHAR(3)");
-        let mut rows = Vec::new();
-        execute_select_with_indexes(&mut catalog, table, None, &mut rows).unwrap();
-        let vals = row_to_strings(&rows[0]);
-        let proj: Vec<_> = idxs.iter().map(|p| match p { Projection::Index(i) => vals[*i].clone(), _ => String::new() }).collect();
-        assert_eq!(proj, vec!["A  "]);
-    } else { panic!("expected select"); }
+    let mut out = Vec::new();
+    let meta = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
+    assert_eq!(format_header(&meta), "code CHAR(3)");
+    assert_eq!(out[0], vec!["A  "]);
 }
 
 #[test]
@@ -51,7 +44,7 @@ fn char_column_validate_length() {
         Statement::Insert {
             table_name: "items".into(),
             columns: None,
-            rows: vec![vec![Expr::Literal("2".into()), Expr::Literal("SASASDADSA".into())]],
+            rows: vec![vec![Expr::Literal(Value::Int(2)), Expr::Literal(Value::Text("SASASDADSA".into()))]],
         },
     );
     assert!(matches!(res, Err(aerodb::error::DbError::InvalidValue(_))));

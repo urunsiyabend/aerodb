@@ -21,8 +21,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::{
     catalog::Catalog,
     error::DbResult,
+    execution::query::{QueryResult, execute_query},
     execution::runtime::{execute_select_with_indexes, handle_statement},
     sql::ast::Statement,
+    sql::parser::parse_sql,
     storage::pager::Pager,
     storage::row::Row,
     transaction::{IsolationLevel, TransactionId, TransactionManager},
@@ -96,6 +98,18 @@ impl Database {
             let mut rows = Vec::new();
             execute_select_with_indexes(catalog, table, None, &mut rows)?;
             Ok(rows)
+        })
+    }
+
+    /// Run one SQL query within transaction `tx` and return its typed result.
+    /// Non-query statements are executed and yield an empty result.
+    pub fn query(&self, tx: &TxHandle, sql: &str) -> DbResult<QueryResult> {
+        let stmt = parse_sql(sql)?;
+        let mut core = self.lock();
+        let Core { catalog, manager } = &mut *core;
+        manager.run_with(catalog, tx.id, |catalog| match stmt {
+            Statement::Query(q) => execute_query(catalog, &q, None),
+            other => handle_statement(catalog, other).map(|()| QueryResult::default()),
         })
     }
 

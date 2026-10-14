@@ -12,8 +12,8 @@ fn parse_default_functions() {
     let stmt = parse_statement("CREATE TABLE logs (id INTEGER, created DATETIME DEFAULT CURRENT_TIMESTAMP, updated DATETIME DEFAULT GETUTCDATE())").unwrap();
     use aerodb::sql::ast::Expr;
     if let Statement::CreateTable { columns, .. } = stmt {
-        assert!(matches!(columns[1].default_value, Some(Expr::FunctionCall { ref name, .. }) if name.eq_ignore_ascii_case("CURRENT_TIMESTAMP")));
-        assert!(matches!(columns[2].default_value, Some(Expr::FunctionCall { ref name, .. }) if name.eq_ignore_ascii_case("GETUTCDATE")));
+        assert!(matches!(columns[1].default_value, Some(Expr::Function { ref name, .. }) if name.eq_ignore_ascii_case("CURRENT_TIMESTAMP")));
+        assert!(matches!(columns[2].default_value, Some(Expr::Function { ref name, .. }) if name.eq_ignore_ascii_case("GETUTCDATE")));
     } else { panic!("expected create table"); }
 }
 
@@ -24,7 +24,7 @@ fn insert_with_function_defaults() {
     handle_statement(&mut catalog, parse_statement("CREATE TABLE logs (id INTEGER, created DATETIME DEFAULT CURRENT_TIMESTAMP, utc_time DATETIME DEFAULT GETUTCDATE())").unwrap()).unwrap();
     handle_statement(&mut catalog, parse_statement("INSERT INTO logs (id) VALUES (1)").unwrap()).unwrap();
     let mut out = Vec::new();
-    execute_select_with_indexes(&mut catalog, "logs", Some(aerodb::sql::ast::Expr::Equals { left: "id".into(), right: "1".into() }), &mut out).unwrap();
+    execute_select_with_indexes(&mut catalog, "logs", Some(aerodb::sql::parser::parse_expression_sql("id = 1").unwrap()), &mut out).unwrap();
     if let ColumnValue::DateTime(created) = out[0].data.0[1] {
         let now = chrono::Local::now().timestamp();
         assert!((created - now).abs() <= 5);
@@ -56,7 +56,7 @@ fn current_timestamp_with_parentheses() {
     execute_select_with_indexes(
         &mut catalog,
         "logs",
-        Some(aerodb::sql::ast::Expr::Equals { left: "id".into(), right: "1".into() }),
+        Some(aerodb::sql::parser::parse_expression_sql("id = 1").unwrap()),
         &mut out,
     )
     .unwrap();

@@ -1,4 +1,4 @@
-use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::Statement}, execution::runtime::{execute_group_query, format_header}, storage::row::ColumnType};
+use aerodb::{catalog::Catalog, storage::pager::Pager, sql::{parser::parse_statement, ast::Statement}, execution::runtime::{execute_select_statement, format_header}, storage::row::ColumnType};
 use std::fs;
 
 fn setup_catalog(filename: &str) -> Catalog {
@@ -32,10 +32,9 @@ fn grouped_column_ok() {
     let mut catalog = setup_catalog(filename);
     create_matches_table(&mut catalog);
     let stmt = parse_statement("SELECT team, SUM(score) FROM matches GROUP BY team").unwrap();
-    if let Statement::Select { columns, from, group_by, .. } = stmt {
-        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
-        let header = execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), None, None, &mut out, None).unwrap();
+        let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "team TEXT | SUM(score) INTEGER");
         out.sort();
         assert_eq!(out.len(), 2);
@@ -48,10 +47,9 @@ fn all_aggregated_ok() {
     let mut catalog = setup_catalog(filename);
     create_matches_table(&mut catalog);
     let stmt = parse_statement("SELECT SUM(score) FROM matches GROUP BY team").unwrap();
-    if let Statement::Select { columns, from, group_by, .. } = stmt {
-        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
-        let header = execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), None, None, &mut out, None).unwrap();
+        let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "SUM(score) INTEGER");
     } else { panic!("expected select") }
 }
@@ -62,10 +60,9 @@ fn having_uses_aggregate() {
     let mut catalog = setup_catalog(filename);
     create_matches_table(&mut catalog);
     let stmt = parse_statement("SELECT team, COUNT(*) FROM matches GROUP BY team HAVING COUNT(*) > 1").unwrap();
-    if let Statement::Select { columns, from, group_by, having: Some(have), .. } = stmt {
-        let table = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, .. } => name, _ => panic!("expected table") };
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
-        let header = execute_group_query(&mut catalog, table, &columns, group_by.as_deref(), Some(have), None, &mut out, None).unwrap();
+        let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "team TEXT | COUNT(*) INTEGER");
         assert_eq!(out.len(), 1);
     } else { panic!("expected select") }

@@ -42,7 +42,7 @@ fn enforce_not_null() {
     aerodb::execution::runtime::execute_select_with_indexes(
         &mut catalog,
         "persons",
-        Some(aerodb::sql::ast::Expr::Equals { left: "id".into(), right: "1".into() }),
+        Some(aerodb::sql::parser::parse_expression_sql("id = 1").unwrap()),
         &mut out,
     ).unwrap();
     assert!(matches!(out[0].data.0[3], ColumnValue::Null));

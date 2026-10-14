@@ -22,7 +22,7 @@ fn column_aliases() {
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO employees VALUES (1, 'John', 'Doe')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT first_name AS fname, last_name lname FROM employees").unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
         let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "fname TEXT | lname TEXT");
@@ -54,11 +54,9 @@ fn table_aliases() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO employees VALUES (1, 'John', 1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO departments VALUES (1, 'Sales')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT e.first_name, d.department_name FROM employees AS e JOIN departments d ON e.department_id = d.department_id").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let (base_table, base_alias) = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, alias } => (name.clone(), alias.clone()), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias, joins, projections: columns, where_predicate };
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
-        aerodb::execution::runtime::execute_multi_join(&plan, &mut catalog, &mut out).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(out, vec![vec!["John".to_string(), "Sales".to_string()]]);
     } else { panic!("expected select") }
 }
@@ -88,11 +86,9 @@ fn mixed_aliases() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO employees VALUES (1, 'John', 'Doe', 1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO departments VALUES (1, 'Sales')").unwrap()).unwrap();
     let stmt = parse_statement("SELECT e.first_name fname, e.last_name lname, d.department_name dept FROM employees e JOIN departments d ON e.department_id = d.department_id").unwrap();
-    if let Statement::Select { columns, from, joins, where_predicate, .. } = stmt {
-        let (base_table, base_alias) = match from.first().unwrap() { aerodb::sql::ast::TableRef::Named { name, alias } => (name.clone(), alias.clone()), _ => panic!("expected table") };
-        let plan = aerodb::execution::plan::MultiJoinPlan { base_table, base_alias, joins, projections: columns, where_predicate };
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
-        aerodb::execution::runtime::execute_multi_join(&plan, &mut catalog, &mut out).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(out, vec![vec!["John".to_string(), "Doe".to_string(), "Sales".to_string()]]);
     } else { panic!("expected select") }
 }
@@ -120,11 +116,13 @@ fn subquery_alias() {
     }
     let query = "SELECT avg.dept_id, avg.avg_salary FROM ( SELECT department_id dept_id, AVG(salary) avg_salary FROM employees GROUP BY department_id ) avg";
     let stmt = parse_statement(query).unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(ref q) = stmt {
+        let result = aerodb::execution::execute_query(&mut catalog, q, None).unwrap();
+        // AVG over INTEGER is DOUBLE (0.5.1 labelled every aggregate INTEGER).
+        assert_eq!(aerodb::execution::runtime::format_result_header(&result.columns), "dept_id INTEGER | avg_salary DOUBLE");
         let mut out = Vec::new();
-        let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
+        execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         out.sort();
-        assert_eq!(format_header(&header), "dept_id INTEGER | avg_salary INTEGER");
         assert_eq!(out, vec![vec!["1".to_string(), "200".to_string()], vec!["2".to_string(), "200".to_string()]]);
     } else { panic!("expected select") }
 }

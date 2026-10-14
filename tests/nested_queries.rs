@@ -1,11 +1,20 @@
-use aerodb::sql::{parser::parse_statement, ast::{Statement, TableRef, SelectExpr}};
+use aerodb::sql::{parser::parse_statement, ast::{Expr, Select, SelectItem, SetExpr, Statement, TableRef}};
+
+/// The single SELECT of a parsed query statement.
+fn select_of(sql: &str) -> Select {
+    match parse_statement(sql).unwrap() {
+        Statement::Query(q) => match q.body {
+            SetExpr::Select(s) => *s,
+            other => panic!("expected select, got {other:?}"),
+        },
+        other => panic!("expected query, got {other:?}"),
+    }
+}
 
 #[test]
 fn parse_from_subquery() {
-    let stmt = parse_statement("SELECT * FROM (SELECT id FROM t1) AS sub").unwrap();
-    if let Statement::Select { from, .. } = stmt {
-        assert!(matches!(from[0], TableRef::Subquery { .. }));
-    } else { panic!("expected select"); }
+    let sel = select_of("SELECT * FROM (SELECT id FROM t1) AS sub");
+    assert!(matches!(sel.from[0], TableRef::Subquery { .. }));
 }
 
 use aerodb::{catalog::Catalog, storage::pager::Pager, execution::runtime::{execute_select_statement, format_header}};
@@ -33,7 +42,7 @@ fn execute_from_subquery_simple() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO t1 VALUES (2)").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT * FROM (SELECT id FROM t1) AS sub").unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
         let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "id INTEGER");
@@ -44,13 +53,13 @@ fn execute_from_subquery_simple() {
 
 #[test]
 fn parse_where_in_subquery() {
-    let stmt = parse_statement("SELECT id FROM users WHERE id IN (SELECT id FROM admins)").unwrap();
-    if let Statement::Select { where_predicate: Some(pred), .. } = stmt {
-        match pred {
-            aerodb::sql::ast::Expr::InSubquery { ref left, .. } => assert_eq!(left, "id"),
-            _ => panic!("expected InSubquery"),
+    let sel = select_of("SELECT id FROM users WHERE id IN (SELECT id FROM admins)");
+    match sel.selection.expect("expected select with predicate") {
+        Expr::InSubquery { expr, .. } => {
+            assert_eq!(*expr, Expr::Column { table: None, name: "id".into() })
         }
-    } else { panic!("expected select with predicate"); }
+        _ => panic!("expected InSubquery"),
+    }
 }
 
 #[test]
@@ -75,7 +84,7 @@ fn execute_where_in_subquery() {
     }
 
     let stmt = parse_statement("SELECT id FROM users WHERE id IN (SELECT id FROM admins)").unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
         let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "id INTEGER");
@@ -87,13 +96,10 @@ fn execute_where_in_subquery() {
 
 #[test]
 fn parse_exists_subquery() {
-    let stmt = parse_statement("SELECT name FROM users WHERE EXISTS (SELECT user_id FROM orders WHERE orders.user_id = users.id)").unwrap();
-    if let Statement::Select { where_predicate: Some(pred), .. } = stmt {
-        if !matches!(pred, aerodb::sql::ast::Expr::ExistsSubquery { .. }) {
-            panic!("expected ExistsSubquery");
-        }
-    } else {
-        panic!("expected select with predicate");
+    let sel = select_of("SELECT name FROM users WHERE EXISTS (SELECT user_id FROM orders WHERE orders.user_id = users.id)");
+    let pred = sel.selection.expect("expected select with predicate");
+    if !matches!(pred, Expr::Exists { negated: false, .. }) {
+        panic!("expected Exists");
     }
 }
 
@@ -125,7 +131,7 @@ fn execute_exists_correlated() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (11, 2, 'Phone')").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT name FROM users WHERE EXISTS (SELECT user_id FROM orders WHERE orders.user_id = users.id)").unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
         let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "name TEXT");
@@ -164,7 +170,7 @@ fn execute_exists_constant() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (11, 2, 'Phone')").unwrap()).unwrap();
 
     let stmt = parse_statement("SELECT name FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)").unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
         let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
         assert_eq!(format_header(&header), "name TEXT");
@@ -177,10 +183,8 @@ fn execute_exists_constant() {
 
 #[test]
 fn parse_select_subquery() {
-    let stmt = parse_statement("SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.user_id = users.id) FROM users").unwrap();
-    if let Statement::Select { columns, .. } = stmt {
-        assert!(matches!(columns[1].expr, aerodb::sql::ast::SelectItem::Subquery(_)));
-    } else { panic!("expected select"); }
+    let sel = select_of("SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.user_id = users.id) FROM users");
+    assert!(matches!(sel.projection[1], SelectItem::Expr { expr: Expr::ScalarSubquery(_), .. }));
 }
 
 #[test]
@@ -209,10 +213,12 @@ fn execute_scalar_subquery() {
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (11, 1)").unwrap()).unwrap();
     aerodb::execution::handle_statement(&mut catalog, parse_statement("INSERT INTO orders VALUES (12, 2)").unwrap()).unwrap();
     let stmt = parse_statement("SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.user_id = users.id) FROM users").unwrap();
-    if let Statement::Select { .. } = stmt {
+    if let Statement::Query(_) = stmt {
         let mut out = Vec::new();
         let header = execute_select_statement(&mut catalog, &stmt, &mut out, None).unwrap();
-        assert_eq!(format_header(&header), "name TEXT | SUBQUERY TEXT");
+        // The scalar subquery yields COUNT(*) values, so the column is INTEGER
+        // (0.5.1 labelled every scalar subquery TEXT).
+        assert_eq!(format_header(&header), "name TEXT | SUBQUERY INTEGER");
         assert_eq!(out.len(), 2);
         out.sort();
         assert_eq!(out, vec![vec!["Alice".to_string(), "2".to_string()], vec!["Bob".to_string(), "1".to_string()]]);

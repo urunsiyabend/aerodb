@@ -49,6 +49,32 @@ pub struct Catalog {
     pre_tx_indexes: Option<HashMap<String, IndexInfo>>,
 }
 
+/// Prefix marking a persisted DEFAULT stored as SQL expression text
+/// (`Expr::to_sql`). Unprefixed text is a 0.5.1 default.
+pub const DEFAULT_SQL_MARKER: &str = "\u{1}sql:";
+
+/// Decode a persisted DEFAULT. Marker-prefixed text is parsed as an SQL
+/// expression; legacy (0.5.1) text keeps its old meaning: the system time
+/// functions, or else the raw text as a literal coerced on insert.
+pub fn decode_default_expr(stored: &str) -> io::Result<Expr> {
+    if let Some(sql) = stored.strip_prefix(DEFAULT_SQL_MARKER) {
+        return crate::sql::parser::parse_expression_sql(sql).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("bad stored DEFAULT '{}': {}", sql, e))
+        });
+    }
+    let upper = stored.to_ascii_uppercase();
+    let func = match upper.as_str() {
+        "CURRENT_TIMESTAMP" | "CURRENT_TIMESTAMP()" => Some("CURRENT_TIMESTAMP"),
+        "GETDATE()" => Some("GETDATE"),
+        "GETUTCDATE()" => Some("GETUTCDATE"),
+        _ => None,
+    };
+    Ok(match func {
+        Some(name) => Expr::Function { name: name.into(), args: Vec::new() },
+        None => Expr::Literal(crate::sql::value::Value::Text(stored.to_string())),
+    })
+}
+
 /// Initialize `page_num` as an empty leaf root and persist it.
 ///
 /// Shared by every fresh-tree allocation (catalog pages, table roots, index
@@ -972,9 +998,11 @@ impl Catalog {
             match default {
                 Some(expr) => {
                     vals.push(ColumnValue::Integer(1));
-                    vals.push(ColumnValue::Text(
-                        crate::sql::ast::expr_to_string(expr).into(),
-                    ));
+                    vals.push(ColumnValue::Text(format!(
+                        "{}{}",
+                        DEFAULT_SQL_MARKER,
+                        expr.to_sql()
+                    )));
                 }
                 None => {
                     vals.push(ColumnValue::Integer(0));
@@ -995,6 +1023,7 @@ impl Catalog {
             }
             let to_code = |a: &Option<crate::sql::ast::Action>| match a {
                 Some(crate::sql::ast::Action::Cascade) => 1,
+                Some(crate::sql::ast::Action::Restrict) => 2,
                 _ => 0,
             };
             vals.push(ColumnValue::Integer(to_code(&fk.on_delete)));
@@ -1155,7 +1184,7 @@ impl Catalog {
             let default = if has_default {
                 if let Some(ColumnValue::Text(s)) = values.get(idx) {
                     idx += 1;
-                    Some(crate::sql::ast::parse_default_expr(s))
+                    Some(decode_default_expr(s)?)
                 } else {
                     None
                 }
@@ -1212,12 +1241,10 @@ impl Catalog {
                     return Err(io::Error::new(io::ErrorKind::Other, "fk pcol name"));
                 }
             }
-            let action_from = |v: i32| {
-                if v == 1 {
-                    Some(crate::sql::ast::Action::Cascade)
-                } else {
-                    Some(crate::sql::ast::Action::NoAction)
-                }
+            let action_from = |v: i32| match v {
+                1 => Some(crate::sql::ast::Action::Cascade),
+                2 => Some(crate::sql::ast::Action::Restrict),
+                _ => Some(crate::sql::ast::Action::NoAction),
             };
             let on_delete = match values.get(idx) {
                 Some(ColumnValue::Integer(i)) => action_from(*i),
@@ -1285,5 +1312,23 @@ impl Catalog {
             _ => 1,
         };
         Ok((name, cur, start, inc))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sql::value::Value;
+
+    #[test]
+    fn decodes_marked_and_legacy_defaults() {
+        let marked = format!("{}{}", DEFAULT_SQL_MARKER, "(1 + 2)");
+        assert_eq!(decode_default_expr(&marked).unwrap().to_sql(), "(1 + 2)");
+        for legacy in ["CURRENT_TIMESTAMP", "current_timestamp()", "GETDATE()", "GETUTCDATE()"] {
+            assert!(matches!(decode_default_expr(legacy).unwrap(), Expr::Function { .. }), "{legacy}");
+        }
+        // 0.5.1 stored literal text unquoted; it stays a text literal coerced on insert.
+        assert_eq!(decode_default_expr("18").unwrap(), Expr::Literal(Value::Text("18".into())));
+        assert!(decode_default_expr(&format!("{}{}", DEFAULT_SQL_MARKER, "1 +")).is_err());
     }
 }

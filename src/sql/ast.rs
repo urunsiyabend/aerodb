@@ -1,104 +1,74 @@
-// src/sql/ast.rs
+//! Typed SQL abstract syntax tree produced by `sql::parser`.
+
+use crate::sql::value::{SqlType, Value};
 use crate::storage::row::ColumnType;
 
-#[derive(Debug, Clone)]
-pub enum Expr {
-    Equals { left: String, right: String },
-    NotEquals { left: String, right: String },
-    Add { left: String, right: String },
-    Subtract { left: String, right: String },
-    Multiply { left: String, right: String },
-    Divide { left: String, right: String },
-    Modulo { left: String, right: String },
-    BitwiseAnd { left: String, right: String },
-    BitwiseOr { left: String, right: String },
-    BitwiseXor { left: String, right: String },
-    Between { expr: String, low: String, high: String },
-    GreaterThan { left: String, right: String },
-    GreaterOrEquals { left: String, right: String },
-    LessThan { left: String, right: String },
-    LessOrEquals { left: String, right: String },
-    InSubquery { left: String, query: Box<Statement> },
-    ExistsSubquery { query: Box<Statement> },
-    And(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
-    Subquery(Box<Statement>),
-    Literal(String),
-    DefaultValue,
-    FunctionCall { name: String, args: Vec<Expr> },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Neg,
+    Plus,
+    Not,
 }
 
-#[derive(Debug, Clone)]
-pub struct OrderBy {
-    pub column: String,
-    pub descending: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    And,
+    Or,
+    Concat,
+    BitAnd,
+    BitOr,
+    BitXor,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Action {
-    NoAction,
-    Cascade,
+impl BinaryOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinaryOp::Eq => "=",
+            BinaryOp::NotEq => "<>",
+            BinaryOp::Lt => "<",
+            BinaryOp::LtEq => "<=",
+            BinaryOp::Gt => ">",
+            BinaryOp::GtEq => ">=",
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Mod => "%",
+            BinaryOp::And => "AND",
+            BinaryOp::Or => "OR",
+            BinaryOp::Concat => "||",
+            BinaryOp::BitAnd => "&",
+            BinaryOp::BitOr => "|",
+            BinaryOp::BitXor => "^",
+        }
+    }
+
+    pub fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq
+        )
+    }
 }
 
-#[derive(Debug, Clone)]
-pub struct ForeignKey {
-    pub columns: Vec<String>,
-    pub parent_table: String,
-    pub parent_columns: Vec<String>,
-    pub on_delete: Option<Action>,
-    pub on_update: Option<Action>,
-}
-
-#[derive(Debug, Clone)]
-pub struct JoinClause {
-    pub join_type: JoinType,
-    pub table: String,
-    pub alias: Option<String>,
-    pub predicate: Option<Expr>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum JoinType {
-    Inner,
-    Left,
-    Right,
-    Full,
-    Cross,
-}
-
-#[derive(Debug, Clone)]
-pub enum TableRef {
-    Named { name: String, alias: Option<String> },
-    Subquery { query: Box<Statement>, alias: String },
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggFunc {
     Min,
     Max,
     Count,
     Sum,
     Avg,
-}
-
-/// SQL literal used in DEFAULT clauses and elsewhere.
-pub type Literal = String;
-
-#[derive(Debug, Clone)]
-pub struct ColumnDef {
-    pub name: String,
-    pub col_type: ColumnType,
-    pub not_null: bool,
-    pub default_value: Option<Expr>,
-    pub auto_increment: bool,
-    pub primary_key: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct CreateSequence {
-    pub name: String,
-    pub start: i64,
-    pub increment: i64,
 }
 
 impl AggFunc {
@@ -113,24 +83,200 @@ impl AggFunc {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr {
+    Literal(Value),
+    Column {
+        table: Option<String>,
+        name: String,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expr>,
+    },
+    Binary {
+        op: BinaryOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    IsNull {
+        expr: Box<Expr>,
+        negated: bool,
+    },
+    /// `IS [NOT] TRUE|FALSE|UNKNOWN`; `value: None` means UNKNOWN.
+    IsTruth {
+        expr: Box<Expr>,
+        value: Option<bool>,
+        negated: bool,
+    },
+    InList {
+        expr: Box<Expr>,
+        list: Vec<Expr>,
+        negated: bool,
+    },
+    InSubquery {
+        expr: Box<Expr>,
+        query: Box<Query>,
+        negated: bool,
+    },
+    Exists {
+        query: Box<Query>,
+        negated: bool,
+    },
+    Between {
+        expr: Box<Expr>,
+        low: Box<Expr>,
+        high: Box<Expr>,
+        negated: bool,
+    },
+    Like {
+        expr: Box<Expr>,
+        pattern: Box<Expr>,
+        escape: Option<Box<Expr>>,
+        negated: bool,
+    },
+    Case {
+        operand: Option<Box<Expr>>,
+        whens: Vec<(Expr, Expr)>,
+        else_result: Option<Box<Expr>>,
+    },
+    Cast {
+        expr: Box<Expr>,
+        ty: SqlType,
+    },
+    /// Scalar function call; `name` is upper-cased.
+    Function {
+        name: String,
+        args: Vec<Expr>,
+    },
+    /// `arg: None` is `COUNT(*)`.
+    Aggregate {
+        func: AggFunc,
+        arg: Option<Box<Expr>>,
+        distinct: bool,
+    },
+    ScalarSubquery(Box<Query>),
+    /// The `DEFAULT` keyword; only legal as a whole INSERT value / UPDATE SET value.
+    Default,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOperator {
+    Union,
+    Except,
+    Intersect,
+}
+
+impl SetOperator {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SetOperator::Union => "UNION",
+            SetOperator::Except => "EXCEPT",
+            SetOperator::Intersect => "INTERSECT",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Query {
+    pub body: SetExpr,
+    pub order_by: Vec<OrderByItem>,
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetExpr {
+    Select(Box<Select>),
+    SetOp {
+        op: SetOperator,
+        all: bool,
+        left: Box<SetExpr>,
+        right: Box<SetExpr>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Select {
+    pub distinct: bool,
+    pub projection: Vec<SelectItem>,
+    pub from: Vec<TableRef>,
+    pub joins: Vec<JoinClause>,
+    pub selection: Option<Expr>,
+    pub group_by: Vec<Expr>,
+    pub having: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SelectItem {
-    All,
-    Column(String),
-    Aggregate { func: AggFunc, column: Option<String> },
-    Expr(Box<Expr>),
-    Subquery(Box<Statement>),
-    Literal(String),
+    Wildcard,
+    QualifiedWildcard(String),
+    Expr { expr: Expr, alias: Option<String> },
 }
 
-#[derive(Debug, Clone)]
-pub struct SelectExpr {
-    pub expr: SelectItem,
-    pub alias: Option<String>,
+#[derive(Debug, Clone, PartialEq)]
+pub enum TableRef {
+    Named { name: String, alias: Option<String> },
+    Subquery { query: Box<Query>, alias: String },
 }
-pub type Predicate = Expr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinType {
+    Inner,
+    Left,
+    Right,
+    Full,
+    Cross,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinClause {
+    pub join_type: JoinType,
+    pub table: TableRef,
+    pub predicate: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderByItem {
+    pub expr: Expr,
+    pub descending: bool,
+    pub nulls_first: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    NoAction,
+    Restrict,
+    Cascade,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForeignKey {
+    pub columns: Vec<String>,
+    pub parent_table: String,
+    pub parent_columns: Vec<String>,
+    pub on_delete: Option<Action>,
+    pub on_update: Option<Action>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnDef {
+    pub name: String,
+    pub col_type: ColumnType,
+    pub not_null: bool,
+    pub default_value: Option<Expr>,
+    pub auto_increment: bool,
+    pub primary_key: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateSequence {
+    pub name: String,
+    pub start: i64,
+    pub increment: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     CreateTable {
         table_name: String,
@@ -153,166 +299,408 @@ pub enum Statement {
     },
     Insert {
         table_name: String,
-        columns: Option<Vec<String>>, // None for unqualified
-        rows: Vec<Vec<Expr>>, // one or more tuples of values
+        columns: Option<Vec<String>>,
+        rows: Vec<Vec<Expr>>,
     },
-    Select {
-        columns: Vec<SelectExpr>,
-        from: Vec<TableRef>,
-        joins: Vec<JoinClause>,
-        where_predicate: Option<Predicate>,
-        group_by: Option<Vec<String>>,
-        having: Option<Predicate>,
-        order_by: Option<OrderBy>,
-        limit: Option<usize>,
-        offset: Option<usize>,
-    },
+    Query(Box<Query>),
     Delete {
         table_name: String,
         selection: Option<Expr>,
     },
     Update {
         table_name: String,
-        assignments: Vec<(String, String)>,
+        assignments: Vec<(String, Expr)>,
         selection: Option<Expr>,
     },
     CreateSequence(CreateSequence),
-    BeginTransaction { name: Option<String> },
+    BeginTransaction {
+        name: Option<String>,
+    },
     Commit,
     Rollback,
     Exit,
 }
 
-use std::collections::HashMap;
+// ---------------------------------------------------------------------------
+// SQL text rendering
+// ---------------------------------------------------------------------------
 
-/// Evaluate an expression against a map of column values. If an operand
-/// matches a column name, the corresponding value is used; otherwise the
-/// operand itself is treated as a literal string.
-use crate::storage::row::ColumnValue;
+/// Words the parser treats as reserved; identifiers spelled like one of these
+/// are rendered quoted so the text parses back to the same AST.
+pub const RESERVED_WORDS: &[&str] = &[
+    "ALL", "AND", "AS", "ASC", "BETWEEN", "BY", "CASE", "CAST", "CROSS", "DEFAULT", "DESC",
+    "DISTINCT", "ELSE", "END", "ESCAPE", "EXCEPT", "EXISTS", "FALSE", "FROM", "FULL", "GROUP",
+    "HAVING", "IN", "INNER", "INTERSECT", "INTO", "IS", "JOIN", "LEFT", "LIKE", "LIMIT", "NOT",
+    "NULL", "NULLS", "OFFSET", "ON", "OR", "ORDER", "OUTER", "OVER", "RIGHT", "SELECT", "SET",
+    "THEN", "TRUE", "UNION", "USING", "VALUES", "WHEN", "WHERE", "WINDOW", "WITH",
+];
 
-pub fn evaluate_expression(expr: &Expr, values: &HashMap<String, String>) -> ColumnValue {
-    fn get_value<'a>(token: &'a str, values: &'a HashMap<String, String>) -> &'a str {
-        values.get(token).map(String::as_str).unwrap_or(token)
-    }
-
-    match expr {
-        Expr::Equals { left, right } => ColumnValue::Boolean(get_value(left, values) == get_value(right, values)),
-        Expr::NotEquals { left, right } => ColumnValue::Boolean(get_value(left, values) != get_value(right, values)),
-        Expr::Add { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
-            ColumnValue::Double(l + r)
-        }
-        Expr::Subtract { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
-            ColumnValue::Double(l - r)
-        }
-        Expr::Multiply { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
-            ColumnValue::Double(l * r)
-        }
-        Expr::Divide { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(1.0);
-            if r == 0.0 { ColumnValue::Double(0.0) } else { ColumnValue::Double(l / r) }
-        }
-        Expr::Modulo { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(1.0);
-            if r == 0.0 { ColumnValue::Double(0.0) } else { ColumnValue::Double(l % r) }
-        }
-        Expr::BitwiseAnd { left, right } => {
-            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
-            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
-            ColumnValue::Integer(l & r)
-        }
-        Expr::BitwiseOr { left, right } => {
-            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
-            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
-            ColumnValue::Integer(l | r)
-        }
-        Expr::BitwiseXor { left, right } => {
-            let l = get_value(left, values).parse::<i32>().unwrap_or(0);
-            let r = get_value(right, values).parse::<i32>().unwrap_or(0);
-            ColumnValue::Integer(l ^ r)
-        }
-        Expr::Between { expr: v, low, high } => {
-            let val = get_value(v, values).parse::<f64>().unwrap_or(0.0);
-            let l = get_value(low, values).parse::<f64>().unwrap_or(0.0);
-            let h = get_value(high, values).parse::<f64>().unwrap_or(0.0);
-            ColumnValue::Boolean(val >= l && val <= h)
-        }
-        Expr::GreaterThan { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
-            ColumnValue::Boolean(l > r)
-        }
-        Expr::GreaterOrEquals { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
-            ColumnValue::Boolean(l >= r)
-        }
-        Expr::LessThan { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
-            ColumnValue::Boolean(l < r)
-        }
-        Expr::LessOrEquals { left, right } => {
-            let l = get_value(left, values).parse::<f64>().unwrap_or(0.0);
-            let r = get_value(right, values).parse::<f64>().unwrap_or(0.0);
-            ColumnValue::Boolean(l <= r)
-        }
-        Expr::FunctionCall { name, args } => {
-            let arg_vals: Vec<ColumnValue> = args.iter().map(|a| evaluate_expression(a, values)).collect();
-            match crate::sql::functions::FunctionEvaluator::evaluate_function(name, &arg_vals) {
-                Ok(v) => v,
-                Err(_) => ColumnValue::Null,
-            }
-        }
-        Expr::InSubquery { .. } | Expr::ExistsSubquery { .. } => ColumnValue::Boolean(false),
-        Expr::And(a, b) => {
-            match (evaluate_expression(a, values), evaluate_expression(b, values)) {
-                (ColumnValue::Boolean(l), ColumnValue::Boolean(r)) => ColumnValue::Boolean(l && r),
-                _ => ColumnValue::Boolean(false),
-            }
-        }
-        Expr::Or(a, b) => {
-            match (evaluate_expression(a, values), evaluate_expression(b, values)) {
-                (ColumnValue::Boolean(l), ColumnValue::Boolean(r)) => ColumnValue::Boolean(l || r),
-                _ => ColumnValue::Boolean(false),
-            }
-        }
-        Expr::Subquery(_) | Expr::Literal(_) | Expr::FunctionCall { .. } | Expr::DefaultValue => ColumnValue::Boolean(false),
-    }
+pub fn is_reserved_word(word: &str) -> bool {
+    RESERVED_WORDS.iter().any(|w| w.eq_ignore_ascii_case(word))
 }
 
-pub fn expr_to_string(expr: &Expr) -> String {
-    match expr {
-        Expr::Literal(s) => s.clone(),
-        Expr::DefaultValue => "DEFAULT".into(),
-        Expr::FunctionCall { name, args } => {
-            if args.is_empty() {
-                format!("{}{}", name, if name.ends_with("()") { "" } else { "()" })
-            } else {
-                let inner: Vec<String> = args.iter().map(expr_to_string).collect();
-                format!("{}({})", name, inner.join(", "))
-            }
-        }
-        _ => String::new(),
-    }
-}
-
-pub fn parse_default_expr(s: &str) -> Expr {
-    let upper = s.to_ascii_uppercase();
-    if upper == "CURRENT_TIMESTAMP" || upper == "CURRENT_TIMESTAMP()" {
-        Expr::FunctionCall { name: "CURRENT_TIMESTAMP".into(), args: Vec::new() }
-    } else if upper == "GETDATE()" {
-        Expr::FunctionCall { name: "GETDATE".into(), args: Vec::new() }
-    } else if upper == "GETUTCDATE()" {
-        Expr::FunctionCall { name: "GETUTCDATE".into(), args: Vec::new() }
+/// Render an identifier, quoting it when it is not a plain unreserved word.
+pub fn quote_ident(name: &str) -> String {
+    let mut chars = name.chars();
+    let plain = match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => chars.all(|c| c.is_alphanumeric() || c == '_'),
+        _ => false,
+    };
+    if plain && !is_reserved_word(name) {
+        name.to_string()
     } else {
-        Expr::Literal(s.to_string())
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+}
+
+fn quote_str(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+fn literal_sql(v: &Value) -> String {
+    match v {
+        Value::Null => "NULL".into(),
+        Value::Bool(true) => "TRUE".into(),
+        Value::Bool(false) => "FALSE".into(),
+        Value::Int(i) => i.to_string(),
+        Value::Decimal(d) => {
+            let s = d.to_string();
+            // An integral decimal must keep a point so it re-lexes as exact numeric.
+            if s.contains('.') { s } else { format!("{}.", s) }
+        }
+        Value::Double(f) => format!("{:e}", f),
+        Value::Text(s) => quote_str(s),
+        Value::Char(s) => format!("CAST({} AS CHAR({}))", quote_str(s), s.chars().count().max(1)),
+        Value::Date(_) => format!("DATE {}", quote_str(&v.to_string())),
+        Value::DateTime(_) => format!("CAST({} AS DATETIME)", quote_str(&v.to_string())),
+        Value::Timestamp(_) => format!("CAST({} AS TIMESTAMP)", quote_str(&v.to_string())),
+        Value::Time(_) => format!("CAST({} AS TIME)", quote_str(&v.to_string())),
+        Value::Year(_) => format!("CAST({} AS YEAR)", quote_str(&v.to_string())),
+    }
+}
+
+fn join_sql(items: &[Expr]) -> String {
+    items.iter().map(Expr::to_sql).collect::<Vec<_>>().join(", ")
+}
+
+impl Expr {
+    /// Round-trippable SQL text for this expression.
+    pub fn to_sql(&self) -> String {
+        match self {
+            Expr::Literal(v) => literal_sql(v),
+            Expr::Column { table: Some(t), name } => format!("{}.{}", quote_ident(t), quote_ident(name)),
+            Expr::Column { table: None, name } => quote_ident(name),
+            Expr::Unary { op, expr } => match op {
+                UnaryOp::Neg => format!("(-{})", expr.to_sql()),
+                UnaryOp::Plus => format!("(+{})", expr.to_sql()),
+                UnaryOp::Not => format!("(NOT {})", expr.to_sql()),
+            },
+            Expr::Binary { op, left, right } => {
+                format!("({} {} {})", left.to_sql(), op.symbol(), right.to_sql())
+            }
+            Expr::IsNull { expr, negated } => {
+                format!("({} IS {}NULL)", expr.to_sql(), if *negated { "NOT " } else { "" })
+            }
+            Expr::IsTruth { expr, value, negated } => format!(
+                "({} IS {}{})",
+                expr.to_sql(),
+                if *negated { "NOT " } else { "" },
+                match value {
+                    Some(true) => "TRUE",
+                    Some(false) => "FALSE",
+                    None => "UNKNOWN",
+                }
+            ),
+            Expr::InList { expr, list, negated } => format!(
+                "({} {}IN ({}))",
+                expr.to_sql(),
+                if *negated { "NOT " } else { "" },
+                join_sql(list)
+            ),
+            Expr::InSubquery { expr, query, negated } => format!(
+                "({} {}IN ({}))",
+                expr.to_sql(),
+                if *negated { "NOT " } else { "" },
+                query.to_sql()
+            ),
+            Expr::Exists { query, negated } => {
+                format!("({}EXISTS ({}))", if *negated { "NOT " } else { "" }, query.to_sql())
+            }
+            Expr::Between { expr, low, high, negated } => format!(
+                "({} {}BETWEEN {} AND {})",
+                expr.to_sql(),
+                if *negated { "NOT " } else { "" },
+                low.to_sql(),
+                high.to_sql()
+            ),
+            Expr::Like { expr, pattern, escape, negated } => {
+                let mut s = format!(
+                    "({} {}LIKE {}",
+                    expr.to_sql(),
+                    if *negated { "NOT " } else { "" },
+                    pattern.to_sql()
+                );
+                if let Some(e) = escape {
+                    s.push_str(&format!(" ESCAPE {}", e.to_sql()));
+                }
+                s.push(')');
+                s
+            }
+            Expr::Case { operand, whens, else_result } => {
+                let mut s = String::from("CASE");
+                if let Some(op) = operand {
+                    s.push(' ');
+                    s.push_str(&op.to_sql());
+                }
+                for (w, t) in whens {
+                    s.push_str(&format!(" WHEN {} THEN {}", w.to_sql(), t.to_sql()));
+                }
+                if let Some(e) = else_result {
+                    s.push_str(&format!(" ELSE {}", e.to_sql()));
+                }
+                s.push_str(" END");
+                s
+            }
+            Expr::Cast { expr, ty } => format!("CAST({} AS {})", expr.to_sql(), ty.name()),
+            Expr::Function { name, args } => {
+                if args.is_empty() && name == "CURRENT_TIMESTAMP" {
+                    name.clone()
+                } else {
+                    format!("{}({})", name, join_sql(args))
+                }
+            }
+            Expr::Aggregate { func, arg, distinct } => match arg {
+                None => format!("{}(*)", func.as_str()),
+                Some(a) => format!(
+                    "{}({}{})",
+                    func.as_str(),
+                    if *distinct { "DISTINCT " } else { "" },
+                    a.to_sql()
+                ),
+            },
+            Expr::ScalarSubquery(q) => format!("({})", q.to_sql()),
+            Expr::Default => "DEFAULT".into(),
+        }
+    }
+
+    /// True when this expression contains an aggregate call outside of any
+    /// nested subquery.
+    pub fn contains_aggregate(&self) -> bool {
+        let mut found = false;
+        self.walk(&mut |e| {
+            if matches!(e, Expr::Aggregate { .. }) {
+                found = true;
+            }
+        });
+        found
+    }
+
+    /// Pre-order visit of this expression and its children, not descending
+    /// into subqueries.
+    pub fn walk(&self, f: &mut dyn FnMut(&Expr)) {
+        f(self);
+        for child in self.children() {
+            child.walk(f);
+        }
+    }
+
+    /// Direct child expressions (subquery bodies excluded).
+    pub fn children(&self) -> Vec<&Expr> {
+        match self {
+            Expr::Literal(_) | Expr::Column { .. } | Expr::Default | Expr::ScalarSubquery(_) => {
+                Vec::new()
+            }
+            Expr::Exists { .. } => Vec::new(),
+            Expr::Unary { expr, .. }
+            | Expr::IsNull { expr, .. }
+            | Expr::IsTruth { expr, .. }
+            | Expr::Cast { expr, .. }
+            | Expr::InSubquery { expr, .. } => vec![expr],
+            Expr::Binary { left, right, .. } => vec![left, right],
+            Expr::InList { expr, list, .. } => {
+                let mut v: Vec<&Expr> = vec![expr];
+                v.extend(list.iter());
+                v
+            }
+            Expr::Between { expr, low, high, .. } => vec![expr, low, high],
+            Expr::Like { expr, pattern, escape, .. } => {
+                let mut v: Vec<&Expr> = vec![expr, pattern];
+                if let Some(e) = escape {
+                    v.push(e);
+                }
+                v
+            }
+            Expr::Case { operand, whens, else_result } => {
+                let mut v: Vec<&Expr> = Vec::new();
+                if let Some(o) = operand {
+                    v.push(o);
+                }
+                for (w, t) in whens {
+                    v.push(w);
+                    v.push(t);
+                }
+                if let Some(e) = else_result {
+                    v.push(e);
+                }
+                v
+            }
+            Expr::Function { args, .. } => args.iter().collect(),
+            Expr::Aggregate { arg, .. } => arg.iter().map(|a| a.as_ref()).collect(),
+        }
+    }
+
+    /// Rebuild this expression bottom-up, replacing nodes via `f` (applied
+    /// after children are rebuilt). Subquery bodies are left untouched.
+    pub fn transform(&self, f: &mut dyn FnMut(Expr) -> Expr) -> Expr {
+        let b = |e: &Expr, f: &mut dyn FnMut(Expr) -> Expr| Box::new(e.transform(f));
+        let rebuilt = match self {
+            Expr::Literal(_) | Expr::Column { .. } | Expr::Default | Expr::ScalarSubquery(_) | Expr::Exists { .. } => {
+                self.clone()
+            }
+            Expr::Unary { op, expr } => Expr::Unary { op: *op, expr: b(expr, f) },
+            Expr::Binary { op, left, right } => Expr::Binary { op: *op, left: b(left, f), right: b(right, f) },
+            Expr::IsNull { expr, negated } => Expr::IsNull { expr: b(expr, f), negated: *negated },
+            Expr::IsTruth { expr, value, negated } => {
+                Expr::IsTruth { expr: b(expr, f), value: *value, negated: *negated }
+            }
+            Expr::InList { expr, list, negated } => Expr::InList {
+                expr: b(expr, f),
+                list: list.iter().map(|e| e.transform(f)).collect(),
+                negated: *negated,
+            },
+            Expr::InSubquery { expr, query, negated } => {
+                Expr::InSubquery { expr: b(expr, f), query: query.clone(), negated: *negated }
+            }
+            Expr::Between { expr, low, high, negated } => Expr::Between {
+                expr: b(expr, f),
+                low: b(low, f),
+                high: b(high, f),
+                negated: *negated,
+            },
+            Expr::Like { expr, pattern, escape, negated } => Expr::Like {
+                expr: b(expr, f),
+                pattern: b(pattern, f),
+                escape: escape.as_ref().map(|e| b(e, f)),
+                negated: *negated,
+            },
+            Expr::Case { operand, whens, else_result } => Expr::Case {
+                operand: operand.as_ref().map(|e| b(e, f)),
+                whens: whens.iter().map(|(w, t)| (w.transform(f), t.transform(f))).collect(),
+                else_result: else_result.as_ref().map(|e| b(e, f)),
+            },
+            Expr::Cast { expr, ty } => Expr::Cast { expr: b(expr, f), ty: *ty },
+            Expr::Function { name, args } => Expr::Function {
+                name: name.clone(),
+                args: args.iter().map(|e| e.transform(f)).collect(),
+            },
+            Expr::Aggregate { func, arg, distinct } => Expr::Aggregate {
+                func: *func,
+                arg: arg.as_ref().map(|e| b(e, f)),
+                distinct: *distinct,
+            },
+        };
+        f(rebuilt)
+    }
+}
+
+fn table_ref_sql(t: &TableRef) -> String {
+    match t {
+        TableRef::Named { name, alias: Some(a) } => format!("{} AS {}", quote_ident(name), quote_ident(a)),
+        TableRef::Named { name, alias: None } => quote_ident(name),
+        TableRef::Subquery { query, alias } => format!("({}) AS {}", query.to_sql(), quote_ident(alias)),
+    }
+}
+
+impl Select {
+    pub fn to_sql(&self) -> String {
+        let mut s = String::from("SELECT ");
+        if self.distinct {
+            s.push_str("DISTINCT ");
+        }
+        let items: Vec<String> = self
+            .projection
+            .iter()
+            .map(|i| match i {
+                SelectItem::Wildcard => "*".to_string(),
+                SelectItem::QualifiedWildcard(q) => format!("{}.*", quote_ident(q)),
+                SelectItem::Expr { expr, alias: Some(a) } => format!("{} AS {}", expr.to_sql(), quote_ident(a)),
+                SelectItem::Expr { expr, alias: None } => expr.to_sql(),
+            })
+            .collect();
+        s.push_str(&items.join(", "));
+        if !self.from.is_empty() {
+            s.push_str(" FROM ");
+            s.push_str(&self.from.iter().map(table_ref_sql).collect::<Vec<_>>().join(", "));
+        }
+        for j in &self.joins {
+            let kw = match j.join_type {
+                JoinType::Inner => "JOIN",
+                JoinType::Left => "LEFT JOIN",
+                JoinType::Right => "RIGHT JOIN",
+                JoinType::Full => "FULL JOIN",
+                JoinType::Cross => "CROSS JOIN",
+            };
+            s.push_str(&format!(" {} {}", kw, table_ref_sql(&j.table)));
+            if let Some(p) = &j.predicate {
+                s.push_str(&format!(" ON {}", p.to_sql()));
+            }
+        }
+        if let Some(w) = &self.selection {
+            s.push_str(&format!(" WHERE {}", w.to_sql()));
+        }
+        if !self.group_by.is_empty() {
+            s.push_str(&format!(" GROUP BY {}", join_sql(&self.group_by)));
+        }
+        if let Some(h) = &self.having {
+            s.push_str(&format!(" HAVING {}", h.to_sql()));
+        }
+        s
+    }
+}
+
+impl SetExpr {
+    pub fn to_sql(&self) -> String {
+        match self {
+            SetExpr::Select(s) => s.to_sql(),
+            SetExpr::SetOp { op, all, left, right } => format!(
+                "({}) {}{} ({})",
+                left.to_sql(),
+                op.as_str(),
+                if *all { " ALL" } else { "" },
+                right.to_sql()
+            ),
+        }
+    }
+}
+
+impl Query {
+    pub fn to_sql(&self) -> String {
+        let mut s = self.body.to_sql();
+        if !self.order_by.is_empty() {
+            let items: Vec<String> = self
+                .order_by
+                .iter()
+                .map(|o| {
+                    let mut t = o.expr.to_sql();
+                    if o.descending {
+                        t.push_str(" DESC");
+                    }
+                    match o.nulls_first {
+                        Some(true) => t.push_str(" NULLS FIRST"),
+                        Some(false) => t.push_str(" NULLS LAST"),
+                        None => {}
+                    }
+                    t
+                })
+                .collect();
+            s.push_str(&format!(" ORDER BY {}", items.join(", ")));
+        }
+        if let Some(l) = self.limit {
+            s.push_str(&format!(" LIMIT {}", l));
+        }
+        if let Some(o) = self.offset {
+            s.push_str(&format!(" OFFSET {}", o));
+        }
+        s
     }
 }

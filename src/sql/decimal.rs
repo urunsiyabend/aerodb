@@ -1,8 +1,5 @@
 //! Exact fixed-point decimal arithmetic backed by an i128 mantissa.
 
-// The binary target does not consume this module until the evaluator lands.
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::fmt;
 

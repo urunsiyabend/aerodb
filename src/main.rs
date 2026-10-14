@@ -1,25 +1,17 @@
 // src/main.rs
-
-mod storage;
-mod sql;
-mod catalog;
-mod execution;
-mod transaction;
-mod constraints;
-mod error;
-mod planner;
+//
+// The REPL binary links the `aerodb` library instead of re-compiling its
+// modules, so the library is built (and unit-tested) once.
 
 use std::io::{self, Write};
-use log::{debug, info, warn};
+use log::{info, warn};
 
-use crate::storage::pager::Pager;
-use crate::storage::btree::BTree;
-use crate::storage::row::{RowData, ColumnValue, ColumnType, build_row_data};
-use crate::catalog::Catalog;
-use crate::sql::parser::parse_statement;
-use crate::sql::ast::{Statement, Expr, expr_to_string};
-use crate::execution::{execute_delete, execute_select_with_indexes, handle_statement};
-use crate::error::DbError;
+use aerodb::catalog::Catalog;
+use aerodb::error::DbError;
+use aerodb::execution::handle_statement;
+use aerodb::sql::ast::Statement;
+use aerodb::sql::parser::parse_statement;
+use aerodb::storage::pager::Pager;
 
 // const DATABASE_FILE: &str = "data.aerodb";
 const DATABASE_FILE: &str = "data.aerodb";
@@ -30,7 +22,7 @@ fn main() -> io::Result<()> {
     info!("AeroDB v0.5(Transaction with WAL). Type .exit to quit.");
 
     let mut catalog = Catalog::open(Pager::new(DATABASE_FILE)?)?;
-    let mut transaction_manager = crate::transaction::TransactionManager::new();
+    let mut transaction_manager = aerodb::transaction::TransactionManager::new();
 
     loop {
         print!("aerodb> ");
@@ -68,6 +60,7 @@ fn main() -> io::Result<()> {
                         DbError::ForeignKeyViolation(m) => println!("Error: {}", m),
                         DbError::WriteConflict(k) => println!("Error: write conflict on logical key {}", k),
                         DbError::Io(err) => println!("IO error: {}", err),
+                        other => println!("Error: {}", other),
                     }
                 }
             }

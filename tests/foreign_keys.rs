@@ -43,7 +43,7 @@ fn foreign_key_basic() {
     aerodb::execution::handle_statement(&mut catalog, good_order).unwrap();
 
     // attempt delete user id=1 without cascade should fail
-    let del = Statement::Delete { table_name: "users".into(), selection: Some(aerodb::sql::ast::Expr::Equals { left: "id".into(), right: "1".into() }) };
+    let del = Statement::Delete { table_name: "users".into(), selection: Some(aerodb::sql::parser::parse_expression_sql("id = 1").unwrap()) };
     let res = aerodb::execution::handle_statement(&mut catalog, del);
     assert!(res.is_err());
 }
@@ -79,7 +79,7 @@ fn foreign_key_on_delete_cascade() {
     aerodb::execution::handle_statement(&mut catalog, insert_order).unwrap();
 
     // delete user should cascade
-    let del = Statement::Delete { table_name: "users".into(), selection: Some(aerodb::sql::ast::Expr::Equals { left: "id".into(), right: "1".into() }) };
+    let del = Statement::Delete { table_name: "users".into(), selection: Some(aerodb::sql::parser::parse_expression_sql("id = 1").unwrap()) };
     aerodb::execution::handle_statement(&mut catalog, del).unwrap();
 
     // verify orders table empty

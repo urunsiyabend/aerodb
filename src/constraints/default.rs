@@ -1,31 +1,15 @@
-use crate::error::{DbError, DbResult};
+use crate::error::DbResult;
+use crate::execution::eval::evaluate_constant;
 use crate::sql::ast::Expr;
-use crate::sql::functions::FunctionEvaluator;
-use crate::storage::row::ColumnValue;
+use crate::sql::value::Value;
 
 pub struct DefaultConstraint;
 
 impl DefaultConstraint {
-    pub fn evaluate(expr: &Expr) -> DbResult<String> {
-        match expr {
-            Expr::Literal(s) => Ok(s.clone()),
-            Expr::FunctionCall { name, args } => {
-                let arg_vals: Vec<ColumnValue> = args
-                    .iter()
-                    .map(|e| match Self::evaluate(e) {
-                        Ok(s) => Ok(ColumnValue::Text(s)),
-                        Err(e) => Err(e),
-                    })
-                    .collect::<Result<_, _>>()?;
-                match FunctionEvaluator::evaluate_function(name, &arg_vals) {
-                    Ok(val) => Ok(val.to_string_value()),
-                    Err(_) => Err(DbError::InvalidValue("function error".into())),
-                }
-            }
-            _ => Err(DbError::InvalidValue(
-                "unsupported default expression".into(),
-            )),
-        }
+    /// Evaluate a column DEFAULT expression. The caller coerces the result to
+    /// the column type with `Value::to_column_value`.
+    pub fn evaluate(expr: &Expr) -> DbResult<Value> {
+        evaluate_constant(expr)
     }
 }
 
