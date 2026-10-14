@@ -352,7 +352,14 @@ impl Binder<'_> {
         let catalog = self.catalog()?;
         let mut scope = Scope::new();
         match tref {
-            TableRef::Named { name, alias } => match catalog.resolve_relation(name)? {
+            TableRef::Named { schema: Some(schema), name, alias } => {
+                let view = crate::execution::information_schema::resolve(schema, name)?;
+                let qualifier = alias.clone().unwrap_or_else(|| view.name.to_string());
+                for (col, ty) in view.columns {
+                    scope.push(Some(qualifier.clone()), col.to_string(), *ty);
+                }
+            }
+            TableRef::Named { schema: None, name, alias } => match catalog.resolve_relation(name)? {
                 Relation::Table(info) => {
                     let qualifier = alias.clone().unwrap_or_else(|| info.name.clone());
                     for (col, ty) in &info.columns {
@@ -764,6 +771,13 @@ pub fn bound_view_query(catalog: &Catalog, query: &Query) -> DbResult<Query> {
     let mut q = query.clone();
     bind_query(catalog, &mut q, None)?;
     Ok(q)
+}
+
+/// The static result type of each output column of a view's stored query
+/// (`SqlType::Null` where none is derivable, e.g. an untyped NULL).
+pub fn view_column_types(catalog: &Catalog, query: &Query) -> DbResult<Vec<SqlType>> {
+    let cols = Binder { catalog: Some(catalog) }.query(&mut query.clone(), &[])?;
+    Ok(cols.into_iter().map(|c| c.bound.ty).collect())
 }
 
 /// Bind a row predicate over `scope` (WHERE of UPDATE/DELETE, index scans):

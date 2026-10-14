@@ -1,5 +1,6 @@
 pub mod bind;
 pub mod eval;
+pub mod information_schema;
 pub mod query;
 pub mod runtime;
 

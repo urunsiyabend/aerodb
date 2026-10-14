@@ -39,6 +39,11 @@ impl Engine {
     }
 
     /// Parse and execute one SQL statement (printing query results like the REPL).
+    ///
+    /// This is an embedded, typed Rust API: it is not the SQL standard's
+    /// SQL/CLI binding, nor an ODBC or JDBC driver. Errors are
+    /// [`crate::error::DbError`] values; [`crate::error::DbError::sqlstate`]
+    /// gives their SQLSTATE class.
     pub fn execute_sql(&mut self, sql: &str) -> DbResult<()> {
         let stmt = self.parse(sql)?;
         self.execute(stmt)
@@ -53,6 +58,10 @@ impl Engine {
     /// Parse and run one statement inside the transaction manager, returning
     /// the typed result rows of a query without printing them. Non-query
     /// statements are executed and yield an empty result.
+    ///
+    /// Like [`Engine::execute_sql`], a typed Rust API (not SQL/CLI, ODBC or
+    /// JDBC): values come back as [`crate::sql::value::Value`]s with result
+    /// column types, errors as [`crate::error::DbError`] with a SQLSTATE.
     pub fn query(&mut self, sql: &str) -> DbResult<QueryResult> {
         let stmt = self.parse(sql)?;
         let mut result = QueryResult::default();

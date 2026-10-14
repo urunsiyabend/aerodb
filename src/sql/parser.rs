@@ -278,6 +278,26 @@ impl Parser {
         Ok(Ident { value, quoted })
     }
 
+    /// The name of a relation a statement writes, creates, drops or
+    /// references (everything but a FROM item). Only unqualified names are
+    /// user relations: `information_schema.x` is read-only (0A000), another
+    /// schema qualifier names nothing (`TableNotFound`, 42P01) or, for a
+    /// relation being created (`creating`), is unsupported (0A000).
+    fn parse_object_name(&mut self, creating: bool) -> DbResult<Ident> {
+        let first = self.parse_ident_ref()?;
+        if !self.eat_symbol(".") {
+            return Ok(first);
+        }
+        let name = self.parse_ident_ref()?;
+        if crate::execution::information_schema::is_schema(&first) {
+            return Err(crate::execution::information_schema::read_only());
+        }
+        if creating {
+            return Err(unsupported("schema-qualified names (the only schema is information_schema)"));
+        }
+        Err(DbError::TableNotFound(format!("{}.{}", first.value, name.value)))
+    }
+
     fn at_ident(&self) -> bool {
         match &self.peek().kind {
             TokenKind::Ident(s) => !is_reserved_word(s),
@@ -392,7 +412,7 @@ impl Parser {
     fn parse_insert(&mut self) -> DbResult<Statement> {
         self.expect_kw("INSERT")?;
         self.expect_kw("INTO")?;
-        let table_name = self.parse_ident_ref()?;
+        let table_name = self.parse_object_name(false)?;
         let columns = if self.is_symbol("(") {
             if self.is_kw_at(1, "SELECT") {
                 return Err(unsupported("INSERT ... SELECT"));
@@ -433,7 +453,7 @@ impl Parser {
 
     fn parse_update(&mut self) -> DbResult<Statement> {
         self.expect_kw("UPDATE")?;
-        let table_name = self.parse_ident_ref()?;
+        let table_name = self.parse_object_name(false)?;
         self.expect_kw("SET")?;
         let mut assignments = Vec::new();
         loop {
@@ -460,7 +480,7 @@ impl Parser {
     fn parse_delete(&mut self) -> DbResult<Statement> {
         self.expect_kw("DELETE")?;
         self.expect_kw("FROM")?;
-        let table_name = self.parse_ident_ref()?;
+        let table_name = self.parse_object_name(false)?;
         let selection = if self.eat_kw("WHERE") { Some(self.parse_expr()?) } else { None };
         Ok(Statement::Delete { table_name, selection })
     }
@@ -473,7 +493,7 @@ impl Parser {
         if !self.eat_kw("TABLE") {
             return Err(unsupported("ALTER other than ALTER TABLE"));
         }
-        let table_name = self.parse_ident_ref()?;
+        let table_name = self.parse_object_name(false)?;
         if !self.eat_kw("ADD") {
             return Err(unsupported("ALTER TABLE forms other than ADD COLUMN"));
         }
@@ -503,7 +523,7 @@ impl Parser {
                 self.advance();
                 if_exists = true;
             }
-            let table_name = self.parse_ident()?;
+            let table_name = self.parse_object_name(false)?.value;
             if self.is_kw("CASCADE") {
                 return Err(unsupported("DROP TABLE ... CASCADE"));
             }
@@ -519,7 +539,7 @@ impl Parser {
                 self.advance();
                 if_exists = true;
             }
-            let name = self.parse_ident()?;
+            let name = self.parse_object_name(false)?.value;
             if self.is_kw("CASCADE") {
                 return Err(unsupported("DROP VIEW ... CASCADE"));
             }
@@ -557,7 +577,7 @@ impl Parser {
         if self.eat_kw("INDEX") {
             let index_name = self.parse_ident()?;
             self.expect_kw("ON")?;
-            let table_name = self.parse_ident_ref()?;
+            let table_name = self.parse_object_name(false)?;
             self.expect_symbol("(")?;
             let column_name = self.parse_ident_ref()?;
             if self.is_symbol(",") {
@@ -573,7 +593,7 @@ impl Parser {
             return Err(unsupported("CREATE OR REPLACE VIEW"));
         }
         if self.eat_kw("VIEW") {
-            let name = self.parse_ident()?;
+            let name = self.parse_object_name(true)?.value;
             let columns = if self.eat_symbol("(") {
                 let mut cols = vec![self.parse_ident()?];
                 while self.eat_symbol(",") {
@@ -596,7 +616,7 @@ impl Parser {
             self.expect_kw("EXISTS")?;
             if_not_exists = true;
         }
-        let table_name = self.parse_ident()?;
+        let table_name = self.parse_object_name(true)?.value;
         self.expect_symbol("(")?;
         let mut columns: Vec<ColumnDef> = Vec::new();
         let mut fks = Vec::new();
@@ -676,7 +696,7 @@ impl Parser {
     /// is meant (left empty here, resolved at CREATE TABLE).
     fn parse_references(&mut self, columns: Vec<Ident>) -> DbResult<ForeignKey> {
         self.expect_kw("REFERENCES")?;
-        let parent_table = self.parse_ident_ref()?;
+        let parent_table = self.parse_object_name(false)?;
         let parent_columns = if self.is_symbol("(") { self.parse_ident_list()? } else { Vec::new() };
         let mut on_delete = None;
         let mut on_update = None;
@@ -1032,12 +1052,18 @@ impl Parser {
                 .ok_or_else(|| DbError::Syntax("subquery in FROM must have an alias".into()))?;
             return Ok(TableRef::Subquery { query: Box::new(query), alias });
         }
-        let name = self.parse_ident_ref()?;
-        if self.is_symbol(".") {
-            return Err(unsupported("schema-qualified table names"));
-        }
+        let first = self.parse_ident_ref()?;
+        let (schema, name) = if self.eat_symbol(".") {
+            let name = self.parse_ident_ref()?;
+            if self.is_symbol(".") {
+                return Err(unsupported("catalog-qualified table names"));
+            }
+            (Some(first), name)
+        } else {
+            (None, first)
+        };
         let alias = self.parse_optional_alias()?;
-        Ok(TableRef::Named { name, alias })
+        Ok(TableRef::Named { schema, name, alias })
     }
 
     fn parse_join(&mut self) -> DbResult<Option<JoinClause>> {

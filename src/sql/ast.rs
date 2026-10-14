@@ -284,7 +284,9 @@ pub enum SelectItem {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TableRef {
-    Named { name: Ident, alias: Option<String> },
+    /// A table or view; `schema` is the qualifier of `schema.name` (only
+    /// `information_schema` resolves, see `execution::information_schema`).
+    Named { schema: Option<Ident>, name: Ident, alias: Option<String> },
     Subquery { query: Box<Query>, alias: String },
 }
 
@@ -715,8 +717,16 @@ impl Expr {
 
 fn table_ref_sql(t: &TableRef) -> String {
     match t {
-        TableRef::Named { name, alias: Some(a) } => format!("{} AS {}", ident_sql(name), quote_ident(a)),
-        TableRef::Named { name, alias: None } => ident_sql(name),
+        TableRef::Named { schema, name, alias } => {
+            let mut s = match schema {
+                Some(sc) => format!("{}.{}", ident_sql(sc), ident_sql(name)),
+                None => ident_sql(name),
+            };
+            if let Some(a) = alias {
+                s.push_str(&format!(" AS {}", quote_ident(a)));
+            }
+            s
+        }
         TableRef::Subquery { query, alias } => format!("({}) AS {}", query.to_sql(), quote_ident(alias)),
     }
 }
@@ -786,6 +796,8 @@ impl SetExpr {
 impl Query {
     /// Every relation name this query reads from (FROM / JOIN items at any
     /// depth, including subqueries inside expressions), in encounter order.
+    /// Schema-qualified (information_schema) views are not user relations
+    /// and are left out.
     pub fn referenced_relations(&self) -> Vec<Ident> {
         fn in_expr(e: &Expr, out: &mut Vec<Ident>) {
             e.walk(&mut |n| match n {
@@ -797,7 +809,8 @@ impl Query {
         }
         fn in_table(t: &TableRef, out: &mut Vec<Ident>) {
             match t {
-                TableRef::Named { name, .. } => out.push(name.clone()),
+                TableRef::Named { schema: None, name, .. } => out.push(name.clone()),
+                TableRef::Named { schema: Some(_), .. } => {}
                 TableRef::Subquery { query, .. } => in_query(query, out),
             }
         }

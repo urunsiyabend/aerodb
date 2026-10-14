@@ -81,7 +81,41 @@ pub enum DbError {
 }
 
 impl DbError {
-    /// The five-character SQLSTATE code classifying this error.
+    /// The five-character SQLSTATE code classifying this error. Every
+    /// variant has exactly one code:
+    ///
+    /// | SQLSTATE | condition | variants |
+    /// |---|---|---|
+    /// | 0A000 | feature not supported (incl. writes to information_schema) | `FeatureNotSupported` |
+    /// | 21000 | cardinality violation | `CardinalityViolation` |
+    /// | 22001 | string data, right truncation | `StringTooLong` |
+    /// | 22003 | numeric value out of range | `Overflow`, `NumericOverflow` |
+    /// | 22012 | division by zero | `DivisionByZero` |
+    /// | 22018 | invalid character value for cast | `InvalidCast` |
+    /// | 22023 | invalid parameter value | `InvalidValue` |
+    /// | 23502 | not-null violation | `NullViolation` |
+    /// | 23503 | foreign key violation (statement end, RESTRICT, or COMMIT recheck) | `ForeignKeyViolation` |
+    /// | 23505 | unique violation (PRIMARY KEY or UNIQUE) | `DuplicateKey`, `UniqueViolation` |
+    /// | 23514 | check violation | `CheckViolation` |
+    /// | 25P01 | no active SQL transaction | `NoActiveTransaction` |
+    /// | 25P02 | in failed SQL transaction | `InFailedTransaction` |
+    /// | 2BP01 | dependent objects still exist | `DependentObjects` |
+    /// | 40001 | serialization failure (write/write conflict) | `WriteConflict` |
+    /// | 42601 | syntax error | `Syntax`, `ParseError` |
+    /// | 42701 | duplicate column | `DuplicateColumn` |
+    /// | 42702 | ambiguous column | `AmbiguousColumn` |
+    /// | 42703 | undefined column | `ColumnNotFound` |
+    /// | 42704 | undefined object (sequence, index, ...) | `NotFound` |
+    /// | 42710 | duplicate object (constraint name) | `DuplicateConstraint` |
+    /// | 42803 | grouping error | `GroupByMismatch` |
+    /// | 42804 | datatype mismatch | `TypeMismatch` |
+    /// | 42809 | wrong object type | `WrongObjectType` |
+    /// | 42830 | invalid foreign key | `InvalidForeignKey` |
+    /// | 42883 | undefined function | `UndefinedFunction` |
+    /// | 42P01 | undefined table (incl. unknown schema qualifier) | `TableNotFound` |
+    /// | 42P07 | duplicate table | `DuplicateObject` |
+    /// | 54000 | program limit exceeded (row too large for a page) | `RowTooLarge` |
+    /// | 58030 | I/O error | `Io` |
     pub fn sqlstate(&self) -> &'static str {
         match self {
             DbError::TableNotFound(_) => "42P01",
@@ -134,3 +168,98 @@ impl From<ValueError> for DbError {
 }
 
 pub type DbResult<T> = Result<T, DbError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No wildcard arm: a new variant without a row in the table below does
+    /// not compile.
+    fn covered(e: &DbError) {
+        match e {
+            DbError::TableNotFound(_)
+            | DbError::ColumnNotFound(_)
+            | DbError::DuplicateKey(_)
+            | DbError::NullViolation(_)
+            | DbError::Overflow
+            | DbError::ParseError(_)
+            | DbError::InvalidValue(_)
+            | DbError::ForeignKeyViolation(_)
+            | DbError::GroupByMismatch(_)
+            | DbError::NotFound(_)
+            | DbError::WriteConflict(_)
+            | DbError::Io(_)
+            | DbError::Syntax(_)
+            | DbError::FeatureNotSupported(_)
+            | DbError::UndefinedFunction(_)
+            | DbError::DivisionByZero
+            | DbError::NumericOverflow(_)
+            | DbError::StringTooLong(_)
+            | DbError::InvalidCast(_)
+            | DbError::TypeMismatch(_)
+            | DbError::CardinalityViolation(_)
+            | DbError::AmbiguousColumn(_)
+            | DbError::InvalidForeignKey(_)
+            | DbError::UniqueViolation { .. }
+            | DbError::CheckViolation { .. }
+            | DbError::InFailedTransaction
+            | DbError::DependentObjects(_)
+            | DbError::DuplicateObject(_)
+            | DbError::DuplicateColumn(_)
+            | DbError::WrongObjectType(_)
+            | DbError::DuplicateConstraint { .. }
+            | DbError::RowTooLarge(_)
+            | DbError::NoActiveTransaction(_) => {}
+        }
+    }
+
+    #[test]
+    fn every_variant_has_its_sqlstate() {
+        let s = || String::from("x");
+        let table: Vec<(DbError, &str)> = vec![
+            (DbError::TableNotFound(s()), "42P01"),
+            (DbError::ColumnNotFound(s()), "42703"),
+            (DbError::DuplicateKey(s()), "23505"),
+            (DbError::NullViolation(s()), "23502"),
+            (DbError::Overflow, "22003"),
+            (DbError::ParseError(s()), "42601"),
+            (DbError::InvalidValue(s()), "22023"),
+            (DbError::ForeignKeyViolation(s()), "23503"),
+            (DbError::GroupByMismatch(s()), "42803"),
+            (DbError::NotFound(s()), "42704"),
+            (DbError::WriteConflict(1), "40001"),
+            (DbError::Io(io::Error::other("x")), "58030"),
+            (DbError::Syntax(s()), "42601"),
+            (DbError::FeatureNotSupported(s()), "0A000"),
+            (DbError::UndefinedFunction(s()), "42883"),
+            (DbError::DivisionByZero, "22012"),
+            (DbError::NumericOverflow(s()), "22003"),
+            (DbError::StringTooLong(s()), "22001"),
+            (DbError::InvalidCast(s()), "22018"),
+            (DbError::TypeMismatch(s()), "42804"),
+            (DbError::CardinalityViolation(s()), "21000"),
+            (DbError::AmbiguousColumn(s()), "42702"),
+            (DbError::InvalidForeignKey(s()), "42830"),
+            (DbError::UniqueViolation { constraint: s(), key: s() }, "23505"),
+            (DbError::CheckViolation { constraint: s() }, "23514"),
+            (DbError::InFailedTransaction, "25P02"),
+            (DbError::DependentObjects(s()), "2BP01"),
+            (DbError::DuplicateObject(s()), "42P07"),
+            (DbError::DuplicateColumn(s()), "42701"),
+            (DbError::WrongObjectType(s()), "42809"),
+            (DbError::DuplicateConstraint { name: s(), table: s() }, "42710"),
+            (DbError::RowTooLarge(s()), "54000"),
+            (DbError::NoActiveTransaction(s()), "25P01"),
+        ];
+        // One row per variant (the match above has 33 arms).
+        assert_eq!(table.len(), 33);
+        let mut seen = std::collections::HashSet::new();
+        for (e, code) in &table {
+            covered(e);
+            assert!(seen.insert(std::mem::discriminant(e)), "variant listed twice: {e:?}");
+            assert_eq!(e.sqlstate(), *code, "{e:?}");
+            assert_eq!(code.len(), 5);
+            assert!(code.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase()), "{code}");
+        }
+    }
+}

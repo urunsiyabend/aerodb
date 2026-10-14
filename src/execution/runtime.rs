@@ -754,6 +754,12 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 }
                 return Err(DbError::DuplicateObject(table_name));
             }
+            // Same rule as ALTER TABLE ... ADD COLUMN: a declared name twice.
+            for (i, c) in columns.iter().enumerate() {
+                if columns[..i].iter().any(|p| p.name == c.name) {
+                    return Err(DbError::DuplicateColumn(c.name.clone()));
+                }
+            }
             let declared: Vec<(String, ColumnType)> =
                 columns.iter().map(|c| (c.name.clone(), c.col_type)).collect();
             let resolved = keys::resolve_table_constraints(

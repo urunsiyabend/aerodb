@@ -125,7 +125,16 @@ pub fn row_key(row: &[Value]) -> Vec<KeyPart> {
 
 fn load_table_ref(catalog: &Catalog, tref: &TableRef, outer: Option<&Env>) -> DbResult<(Scope, Vec<Vec<Value>>)> {
     match tref {
-        TableRef::Named { name, alias } => match catalog.resolve_relation(name)? {
+        TableRef::Named { schema: Some(schema), name, alias } => {
+            let view = crate::execution::information_schema::resolve(schema, name)?;
+            let qualifier = alias.clone().unwrap_or_else(|| view.name.to_string());
+            let mut scope = Scope::new();
+            for (col, ty) in view.columns {
+                scope.push(Some(qualifier.clone()), col.to_string(), *ty);
+            }
+            Ok((scope, crate::execution::information_schema::rows(catalog, view)?))
+        }
+        TableRef::Named { schema: None, name, alias } => match catalog.resolve_relation(name)? {
             Relation::Table(info) => {
                 let qualifier = alias.clone().unwrap_or_else(|| info.name.clone());
                 let mut scope = Scope::new();
@@ -755,7 +764,14 @@ fn static_source_scope(catalog: &Catalog, sel: &Select) -> DbResult<Scope> {
     let mut scope = Scope::new();
     for tref in sel.from.iter().chain(sel.joins.iter().map(|j| &j.table)) {
         match tref {
-            TableRef::Named { name, alias } => {
+            TableRef::Named { schema: Some(schema), name, alias } => {
+                let view = crate::execution::information_schema::resolve(schema, name)?;
+                let qualifier = alias.clone().unwrap_or_else(|| view.name.to_string());
+                for (col, _) in view.columns {
+                    scope.push(Some(qualifier.clone()), col.to_string(), SqlType::Null);
+                }
+            }
+            TableRef::Named { schema: None, name, alias } => {
                 let (rel_name, columns): (&str, Vec<&String>) = match catalog.resolve_relation(name)? {
                     Relation::Table(info) => (&info.name, info.columns.iter().map(|(c, _)| c).collect()),
                     Relation::View(view) => (&view.name, view.columns.iter().collect()),
