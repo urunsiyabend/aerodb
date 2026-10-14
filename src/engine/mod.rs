@@ -50,8 +50,10 @@ impl Engine {
     }
 
     /// Parse one statement; a syntax error inside an explicit transaction
-    /// fails the transaction like any other statement error.
-    fn parse(&mut self, sql: &str) -> DbResult<Statement> {
+    /// fails the transaction like any other statement error (so callers
+    /// that parse and [`Engine::execute`] separately, like the REPL, keep
+    /// the 25P02 rule).
+    pub fn parse(&mut self, sql: &str) -> DbResult<Statement> {
         parse_sql(sql).inspect_err(|_| self.transaction_manager.statement_failed(&self.catalog))
     }
 
