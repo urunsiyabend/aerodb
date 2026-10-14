@@ -410,6 +410,30 @@ fn commit_recheck_rejects_concurrent_duplicate_text_key() {
     db.commit(check).unwrap();
 }
 
+#[test]
+fn insert_of_alias_key_committed_after_snapshot_is_duplicate_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(db_path(&dir).to_str().unwrap()).unwrap();
+    let setup = db.begin().unwrap();
+    db.query(&setup, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)").unwrap();
+    db.commit(setup).unwrap();
+
+    let a = db.begin().unwrap();
+    let b = db.begin().unwrap();
+    db.query(&b, "INSERT INTO t VALUES (5, 'b')").unwrap();
+    db.commit(b).unwrap();
+    let res = db.query(&a, "INSERT INTO t VALUES (5, 'a')").map(|_| ()).and_then(|_| db.commit(a));
+    match res {
+        Err(e @ DbError::DuplicateKey(_)) => assert_eq!(e.sqlstate(), "23505"),
+        other => panic!("expected DuplicateKey, got {other:?}"),
+    }
+    let check = db.begin().unwrap();
+    let r = db.query(&check, "SELECT v FROM t").unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0][0].to_string(), "b");
+    db.commit(check).unwrap();
+}
+
 // ---- exact types --------------------------------------------------------------
 
 #[test]

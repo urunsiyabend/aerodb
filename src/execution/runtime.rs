@@ -181,7 +181,14 @@ fn alias_key(catalog: &mut Catalog, table_name: &str, alias_idx: usize, alias: i
         .versions_of(alias)?
         .iter()
         .any(|r| r.data.0.get(alias_idx) != Some(&ColumnValue::Integer(alias)));
-    if foreign { catalog.allocate_rowid(table_name) } else { Ok(alias) }
+    // A committed, live same-alias version that our snapshot cannot see must
+    // not be collided with physically: use a fresh rowid so the commit
+    // re-check reports DuplicateKey (23505) rather than a raw B-tree error.
+    let committed_live = !foreign
+        && BTree::open_root(&catalog.pager, root)?
+            .find_visible(alias, &Snapshot::new(u64::MAX, Vec::new()))?
+            .is_some();
+    if foreign || committed_live { catalog.allocate_rowid(table_name) } else { Ok(alias) }
 }
 
 /// Write `data` as a new version with physical key `key` and index it.
