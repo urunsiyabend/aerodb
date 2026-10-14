@@ -49,7 +49,7 @@ fn main() -> io::Result<()> {
                     transaction_manager.execute(&mut catalog, stmt, handle_statement)
                 {
                     match e {
-                        DbError::TableNotFound(t) => println!("Error: table '{}' not found", t),
+                        DbError::TableNotFound(t) => println!("Error: no such table: {}", t),
                         DbError::DuplicateKey(k) => println!("Error: duplicate primary key {}", k),
                         DbError::Overflow => println!("Error: value out of range"),
                         DbError::ParseError(m) | DbError::InvalidValue(m) => println!("Error: {}", m),

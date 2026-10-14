@@ -5,7 +5,7 @@ use crate::sql::value::ValueError;
 
 #[derive(Debug, Error)]
 pub enum DbError {
-    #[error("table '{0}' not found")]
+    #[error("no such table: {0}")]
     TableNotFound(String),
     #[error("column '{0}' not found")]
     ColumnNotFound(String),
@@ -211,6 +211,17 @@ mod tests {
             | DbError::RowTooLarge(_)
             | DbError::NoActiveTransaction(_) => {}
         }
+    }
+
+    /// 0.5.1 wording kept for message compatibility (the audit oracle and
+    /// existing clients match "no such table"); SQLSTATE stays 42P01.
+    #[test]
+    fn table_not_found_message_says_no_such_table() {
+        let e = DbError::TableNotFound("t".into());
+        let msg = e.to_string();
+        assert!(msg.to_lowercase().contains("no such table"), "{msg}");
+        assert!(msg.contains('t'), "{msg}");
+        assert_eq!(e.sqlstate(), "42P01");
     }
 
     #[test]
