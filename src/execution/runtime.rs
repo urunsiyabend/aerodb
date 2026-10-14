@@ -682,26 +682,9 @@ pub fn execute_select_with_indexes(
                     None
                 };
                 if let Some(val_cv) = lookup {
-                    let expected = Catalog::value_to_string(&val_cv);
-                    let hash = Catalog::hash_value(&val_cv);
-                    let mut index_tree = BTree::open_root(&catalog.pager, index.root_page)?;
-                    let mut candidate_keys = Vec::new();
-                    if let Some(row) = index_tree.find(hash)?
-                        && let ColumnValue::Text(ref stored) = row.data.0[0]
-                        && stored == &expected
-                    {
-                        candidate_keys = row
-                            .data
-                            .0
-                            .iter()
-                            .skip(1)
-                            .filter_map(|val| match val {
-                                ColumnValue::Integer(k) => Some(*k),
-                                _ => None,
-                            })
-                            .collect();
-                    }
-                    drop(index_tree);
+                    // Only the bucket group of exactly this value (hash
+                    // collisions are skipped; NULL is never a candidate).
+                    let candidate_keys = catalog.index_candidates(index.root_page, &val_cv)?;
                     let pred = selection.as_ref().expect("probe implies a predicate");
                     let cx = Ctx::with_catalog(catalog);
                     let mut table_tree = BTree::open_root(&catalog.pager, info.root_page)?;

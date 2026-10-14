@@ -814,36 +814,111 @@ impl Catalog {
 
     /// Append an index candidate for a logical base-row key.
     ///
-    /// Index payloads are `[indexed_value_as_text, logical_row_key, ...]`; they do
-    /// not own MVCC visibility. UPDATE and DELETE may leave stale candidates until
-    /// vacuum, and indexed reads must call `find_visible` on the base table before
-    /// returning a row.
+    /// An index tree is keyed by the (lossy) [`Catalog::hash_value`] of the
+    /// indexed value. Each entry is a *bucket* holding one group per distinct
+    /// value with that hash: `[Text(value), Integer(row_key)..., Text(value2),
+    /// Integer(row_key)..., ...]` (a `Text` starts a group, so a 0.6.0 entry
+    /// with a single group reads the same). Lookups use only the group whose
+    /// value text equals the probe exactly ([`Catalog::index_bucket_keys`]).
+    ///
+    /// NULL is never indexed: it equals nothing, so an equality probe can
+    /// never need it. Entries do not own MVCC visibility: they are built from
+    /// every stored version (dead or aborted versions add harmless extra
+    /// candidates, and versions older snapshots still see stay findable).
+    /// UPDATE and DELETE may leave stale candidates until vacuum; indexed
+    /// reads must resolve each candidate with `find_visible` on the base table
+    /// and re-check the predicate before returning a row.
     pub(crate) fn insert_index_value(
         index_tree: &mut BTree,
         value: ColumnValue,
         row_key: i32,
     ) -> io::Result<u32> {
+        let Some(text) = Self::index_key_text(&value) else {
+            return Ok(index_tree.root_page());
+        };
         let hash = Catalog::hash_value(&value);
         if let Some(mut existing) = index_tree.find(hash)? {
-            if let ColumnValue::Text(ref s) = existing.data.0[0] {
-                if *s == Self::value_to_string(&value) {
-                    existing.data.0.push(ColumnValue::Integer(row_key));
-                    if !index_tree.delete(hash)? {
-                        return Err(io::Error::other(format!(
-                            "internal error: index entry {hash} found but not deleted"
-                        )));
-                    }
-                    index_tree.insert(hash, existing.data)?;
-                    return Ok(index_tree.root_page());
-                }
+            if !Self::index_bucket_add(&mut existing.data, &text, row_key) {
+                return Ok(index_tree.root_page());
             }
+            if !index_tree.delete(hash)? {
+                return Err(io::Error::other(format!(
+                    "internal error: index entry {hash} found but not deleted"
+                )));
+            }
+            index_tree.insert(hash, existing.data)?;
+            return Ok(index_tree.root_page());
         }
-        let data = RowData(vec![
-            ColumnValue::Text(Self::value_to_string(&value)),
-            ColumnValue::Integer(row_key),
-        ]);
+        let data = RowData(vec![ColumnValue::Text(text), ColumnValue::Integer(row_key)]);
         index_tree.insert(hash, data)?;
         Ok(index_tree.root_page())
+    }
+
+    /// The exact identity of an indexed value inside its hash bucket, or
+    /// `None` for NULL (never indexed, never probed). Values of one column
+    /// share one type, so the text is injective per index; numerically equal
+    /// spellings are normalised (DECIMAL scale, DOUBLE `-0`).
+    pub(crate) fn index_key_text(val: &ColumnValue) -> Option<String> {
+        match val {
+            ColumnValue::Null => None,
+            ColumnValue::Double(f) if *f == 0.0 => Some("0".into()),
+            ColumnValue::Decimal(d) => Some(d.normalize().to_string()),
+            other => Some(Self::value_to_string(other)),
+        }
+    }
+
+    /// Add `row_key` to the group of `text` in bucket `entry`, appending a new
+    /// group when the bucket holds only other values with the same hash.
+    /// Returns false when the key was already listed (nothing changed).
+    pub(crate) fn index_bucket_add(entry: &mut RowData, text: &str, row_key: i32) -> bool {
+        let values = &mut entry.0;
+        let start = values.iter().position(|v| matches!(v, ColumnValue::Text(s) if s == text));
+        match start {
+            Some(start) => {
+                let end = values[start + 1..]
+                    .iter()
+                    .position(|v| matches!(v, ColumnValue::Text(_)))
+                    .map_or(values.len(), |off| start + 1 + off);
+                if values[start + 1..end].contains(&ColumnValue::Integer(row_key)) {
+                    return false;
+                }
+                values.insert(end, ColumnValue::Integer(row_key));
+            }
+            None => {
+                values.push(ColumnValue::Text(text.to_string()));
+                values.push(ColumnValue::Integer(row_key));
+            }
+        }
+        true
+    }
+
+    /// The row keys listed for exactly `text` in bucket `entry` (other values
+    /// sharing the hash are skipped).
+    pub(crate) fn index_bucket_keys(entry: &RowData, text: &str) -> Vec<i32> {
+        let mut keys = Vec::new();
+        let mut in_group = false;
+        for v in &entry.0 {
+            match v {
+                ColumnValue::Text(s) => in_group = s == text,
+                ColumnValue::Integer(k) if in_group => keys.push(*k),
+                _ => {}
+            }
+        }
+        keys
+    }
+
+    /// Candidate row keys for `value` in the index tree rooted at
+    /// `index_root` (empty for NULL). Candidates may be stale: callers check
+    /// base-row visibility and the predicate.
+    pub(crate) fn index_candidates(&self, index_root: u32, value: &ColumnValue) -> io::Result<Vec<i32>> {
+        let Some(text) = Self::index_key_text(value) else {
+            return Ok(Vec::new());
+        };
+        let mut tree = BTree::open_root(&self.pager, index_root)?;
+        Ok(match tree.find(Self::hash_value(value))? {
+            Some(entry) => Self::index_bucket_keys(&entry.data, &text),
+            None => Vec::new(),
+        })
     }
 
     pub(crate) fn value_to_string(val: &ColumnValue) -> String {
@@ -1845,6 +1920,76 @@ mod tests {
         // A table row still decodes as a table.
         let table = Row::new(1, Catalog::serialize_catalog_row(&constrained_table()));
         assert!(matches!(Catalog::decode_catalog_row(&table).unwrap(), CatalogEntry::Table(_)));
+    }
+
+    /// Two distinct TEXT values with the same index hash (searched, not
+    /// hard-coded, so the test survives a hasher change).
+    fn colliding_texts() -> (String, String) {
+        let mut seen = std::collections::HashMap::new();
+        (0..)
+            .find_map(|i| {
+                let s = format!("k{i}");
+                seen.insert(Catalog::hash_value(&ColumnValue::Text(s.clone())), s.clone())
+                    .map(|prev| (prev, s))
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn index_bucket_keeps_one_group_per_value() {
+        let (a, b) = colliding_texts();
+        let mut entry = RowData(vec![ColumnValue::Text(a.clone()), ColumnValue::Integer(1)]);
+        assert!(Catalog::index_bucket_add(&mut entry, &b, 2));
+        assert!(Catalog::index_bucket_add(&mut entry, &a, 3));
+        assert!(Catalog::index_bucket_add(&mut entry, &b, 4));
+        assert!(!Catalog::index_bucket_add(&mut entry, &a, 1), "duplicate key not re-added");
+        assert_eq!(
+            entry.0,
+            vec![
+                ColumnValue::Text(a.clone()),
+                ColumnValue::Integer(1),
+                ColumnValue::Integer(3),
+                ColumnValue::Text(b.clone()),
+                ColumnValue::Integer(2),
+                ColumnValue::Integer(4),
+            ]
+        );
+        assert_eq!(Catalog::index_bucket_keys(&entry, &a), vec![1, 3]);
+        assert_eq!(Catalog::index_bucket_keys(&entry, &b), vec![2, 4]);
+        assert!(Catalog::index_bucket_keys(&entry, "other").is_empty());
+    }
+
+    #[test]
+    fn index_tree_separates_colliding_values_and_skips_null() {
+        let (a, b) = colliding_texts();
+        let (_dir, catalog) = catalog_with_table();
+        let root = catalog.pager.allocate_page().unwrap();
+        init_leaf_root(&catalog.pager, root).unwrap();
+        let mut tree = BTree::open_root(&catalog.pager, root).unwrap();
+        for (v, k) in [
+            (ColumnValue::Text(a.clone()), 1),
+            (ColumnValue::Text(b.clone()), 2),
+            (ColumnValue::Null, 3),
+            (ColumnValue::Text(a.clone()), 4),
+        ] {
+            Catalog::insert_index_value(&mut tree, v, k).unwrap();
+        }
+        // NULL vs 0 and 1.5 vs 1.7 share a hash too.
+        Catalog::insert_index_value(&mut tree, ColumnValue::Integer(0), 5).unwrap();
+        Catalog::insert_index_value(&mut tree, ColumnValue::Null, 6).unwrap();
+        Catalog::insert_index_value(&mut tree, ColumnValue::Double(1.5), 7).unwrap();
+        Catalog::insert_index_value(&mut tree, ColumnValue::Double(1.7), 8).unwrap();
+        drop(tree);
+        let keys = |v: ColumnValue| catalog.index_candidates(root, &v).unwrap();
+        assert_eq!(keys(ColumnValue::Text(a.clone())), vec![1, 4]);
+        assert_eq!(keys(ColumnValue::Text(b.clone())), vec![2]);
+        assert!(keys(ColumnValue::Null).is_empty());
+        assert_eq!(keys(ColumnValue::Integer(0)), vec![5]);
+        assert_eq!(keys(ColumnValue::Double(1.5)), vec![7]);
+        assert_eq!(keys(ColumnValue::Double(1.7)), vec![8]);
+        assert!(keys(ColumnValue::Double(1.6)).is_empty());
+        // -0 and 0 are one value (equal under `=`).
+        assert_eq!(Catalog::index_key_text(&ColumnValue::Double(-0.0)), Some("0".into()));
     }
 
     #[test]
