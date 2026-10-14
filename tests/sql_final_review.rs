@@ -51,7 +51,10 @@ fn create_index_over_null_and_zero() {
     exec(&mut e, "INSERT INTO ix VALUES (1, NULL), (2, 0)");
     exec(&mut e, "CREATE INDEX ixn ON ix(n)");
     assert_eq!(q(&mut e, "SELECT id FROM ix WHERE n = 0"), table(&[&["2"]]));
-    assert_eq!(q(&mut e, "SELECT id FROM ix WHERE n IS NULL"), table(&[&["1"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM ix WHERE n IS NULL"),
+        table(&[&["1"]])
+    );
 }
 
 #[test]
@@ -64,7 +67,10 @@ fn indexed_null_after_zero_insert_and_update() {
     exec(&mut e, "INSERT INTO ix VALUES (3, 7)");
     exec(&mut e, "UPDATE ix SET n = NULL WHERE id = 3");
     assert_eq!(q(&mut e, "SELECT id FROM ix WHERE n = 0"), table(&[&["1"]]));
-    assert_eq!(q_set(&mut e, "SELECT id FROM ix WHERE n IS NULL"), table(&[&["2"], &["3"]]));
+    assert_eq!(
+        q_set(&mut e, "SELECT id FROM ix WHERE n IS NULL"),
+        table(&[&["2"], &["3"]])
+    );
     assert_eq!(q(&mut e, "SELECT id FROM ix WHERE n = 7"), table(&[]));
 }
 
@@ -76,12 +82,24 @@ fn indexed_double_values_with_equal_hash() {
     exec(&mut e, "INSERT INTO d VALUES (1, 1.5)");
     exec(&mut e, "INSERT INTO d VALUES (2, 1.7)");
     exec(&mut e, "INSERT INTO d VALUES (3, 1.5)");
-    assert_eq!(q_set(&mut e, "SELECT id FROM d WHERE x = 1.5"), table(&[&["1"], &["3"]]));
-    assert_eq!(q(&mut e, "SELECT id FROM d WHERE x = 1.7"), table(&[&["2"]]));
+    assert_eq!(
+        q_set(&mut e, "SELECT id FROM d WHERE x = 1.5"),
+        table(&[&["1"], &["3"]])
+    );
+    assert_eq!(
+        q(&mut e, "SELECT id FROM d WHERE x = 1.7"),
+        table(&[&["2"]])
+    );
     assert_eq!(q(&mut e, "SELECT id FROM d WHERE x = 1.6"), table(&[]));
     exec(&mut e, "UPDATE d SET x = 1.7 WHERE id = 3");
-    assert_eq!(q_set(&mut e, "SELECT id FROM d WHERE x = 1.7"), table(&[&["2"], &["3"]]));
-    assert_eq!(q(&mut e, "SELECT id FROM d WHERE x = 1.5"), table(&[&["1"]]));
+    assert_eq!(
+        q_set(&mut e, "SELECT id FROM d WHERE x = 1.7"),
+        table(&[&["2"], &["3"]])
+    );
+    assert_eq!(
+        q(&mut e, "SELECT id FROM d WHERE x = 1.5"),
+        table(&[&["1"]])
+    );
 }
 
 #[test]
@@ -95,18 +113,30 @@ fn indexed_text_values_with_colliding_hash() {
     // Index built over existing rows and maintained by later writes.
     let (_dir, mut e) = engine();
     exec(&mut e, "CREATE TABLE t(id INTEGER PRIMARY KEY, s TEXT)");
-    exec(&mut e, &format!("INSERT INTO t VALUES (1, '{a}'), (2, '{b}')"));
+    exec(
+        &mut e,
+        &format!("INSERT INTO t VALUES (1, '{a}'), (2, '{b}')"),
+    );
     exec(&mut e, "CREATE INDEX ts ON t(s)");
     exec(&mut e, &format!("INSERT INTO t VALUES (3, '{b}')"));
     exec(&mut e, &format!("INSERT INTO t VALUES (4, '{a}')"));
-    assert_eq!(q_set(&mut e, &format!("SELECT id FROM t WHERE s = '{a}'")), table(&[&["1"], &["4"]]));
-    assert_eq!(q_set(&mut e, &format!("SELECT id FROM t WHERE s = '{b}'")), table(&[&["2"], &["3"]]));
+    assert_eq!(
+        q_set(&mut e, &format!("SELECT id FROM t WHERE s = '{a}'")),
+        table(&[&["1"], &["4"]])
+    );
+    assert_eq!(
+        q_set(&mut e, &format!("SELECT id FROM t WHERE s = '{b}'")),
+        table(&[&["2"], &["3"]])
+    );
 }
 
 #[test]
 fn create_index_after_updates_and_rollback_and_reopen() {
     let (dir, mut e) = engine();
-    exec(&mut e, "CREATE TABLE f(id INTEGER PRIMARY KEY, d DOUBLE, n INTEGER)");
+    exec(
+        &mut e,
+        "CREATE TABLE f(id INTEGER PRIMARY KEY, d DOUBLE, n INTEGER)",
+    );
     exec(&mut e, "INSERT INTO f VALUES (1, 1.5, 0), (2, 2.5, 5)");
     // Committed update: the old version (1.5) stays physically present.
     exec(&mut e, "UPDATE f SET d = 1.7 WHERE id = 1");
@@ -116,17 +146,26 @@ fn create_index_after_updates_and_rollback_and_reopen() {
     exec(&mut e, "ROLLBACK");
     exec(&mut e, "CREATE INDEX fd ON f(d)");
     exec(&mut e, "CREATE INDEX fn ON f(n)");
-    assert_eq!(q(&mut e, "SELECT id FROM f WHERE d = 1.7"), table(&[&["1"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM f WHERE d = 1.7"),
+        table(&[&["1"]])
+    );
     assert_eq!(q(&mut e, "SELECT id FROM f WHERE d = 1.5"), table(&[]));
     assert_eq!(q(&mut e, "SELECT id FROM f WHERE n = 0"), table(&[&["1"]]));
     // Indexes are not persisted: after reopen they can be created again.
     let mut e = reopen(&dir, e);
     exec(&mut e, "CREATE INDEX fd ON f(d)");
     exec(&mut e, "CREATE INDEX fn ON f(n)");
-    assert_eq!(q(&mut e, "SELECT id FROM f WHERE d = 1.7"), table(&[&["1"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM f WHERE d = 1.7"),
+        table(&[&["1"]])
+    );
     assert_eq!(q(&mut e, "SELECT id FROM f WHERE n = 0"), table(&[&["1"]]));
     exec(&mut e, "INSERT INTO f VALUES (3, 1.5, NULL)");
-    assert_eq!(q(&mut e, "SELECT id FROM f WHERE d = 1.5"), table(&[&["3"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM f WHERE d = 1.5"),
+        table(&[&["3"]])
+    );
 }
 
 // ---- I1: identifier rule for relation / index / sequence names ------------------
@@ -180,7 +219,10 @@ fn drop_table_and_view_use_the_identifier_rule() {
     assert_eq!(state(&mut e, "DROP TABLE tc"), "42P01");
     // Parent referenced with another spelling is still a dependent.
     exec(&mut e, "CREATE TABLE Par(id INTEGER PRIMARY KEY)");
-    exec(&mut e, "CREATE TABLE ch(id INTEGER PRIMARY KEY, p INTEGER REFERENCES PAR(id))");
+    exec(
+        &mut e,
+        "CREATE TABLE ch(id INTEGER PRIMARY KEY, p INTEGER REFERENCES PAR(id))",
+    );
     assert_eq!(state(&mut e, "DROP TABLE par"), "2BP01");
 }
 
@@ -211,11 +253,17 @@ fn sequence_names_follow_the_identifier_rule() {
 #[test]
 fn drop_table_drops_its_auto_increment_sequence() {
     let (_dir, mut e) = engine();
-    exec(&mut e, "CREATE TABLE ai(id INTEGER NOT NULL AUTO_INCREMENT, v TEXT)");
+    exec(
+        &mut e,
+        "CREATE TABLE ai(id INTEGER NOT NULL AUTO_INCREMENT, v TEXT)",
+    );
     exec(&mut e, "INSERT INTO ai (v) VALUES ('a')");
     exec(&mut e, "INSERT INTO ai (v) VALUES ('b')");
     exec(&mut e, "DROP TABLE ai");
-    exec(&mut e, "CREATE TABLE ai(id INTEGER NOT NULL AUTO_INCREMENT, v TEXT)");
+    exec(
+        &mut e,
+        "CREATE TABLE ai(id INTEGER NOT NULL AUTO_INCREMENT, v TEXT)",
+    );
     exec(&mut e, "INSERT INTO ai (v) VALUES ('c')");
     assert_eq!(q(&mut e, "SELECT id, v FROM ai"), table(&[&["1", "c"]]));
 }
@@ -223,8 +271,14 @@ fn drop_table_drops_its_auto_increment_sequence() {
 #[test]
 fn auto_increment_sequence_names_do_not_collide() {
     let (_dir, mut e) = engine();
-    exec(&mut e, "CREATE TABLE a_b(c INTEGER NOT NULL AUTO_INCREMENT, v TEXT)");
-    exec(&mut e, "CREATE TABLE a(b_c INTEGER NOT NULL AUTO_INCREMENT, v TEXT)");
+    exec(
+        &mut e,
+        "CREATE TABLE a_b(c INTEGER NOT NULL AUTO_INCREMENT, v TEXT)",
+    );
+    exec(
+        &mut e,
+        "CREATE TABLE a(b_c INTEGER NOT NULL AUTO_INCREMENT, v TEXT)",
+    );
     exec(&mut e, "INSERT INTO a_b (v) VALUES ('x')");
     exec(&mut e, "INSERT INTO a_b (v) VALUES ('y')");
     exec(&mut e, "INSERT INTO a (v) VALUES ('z')");
@@ -246,8 +300,20 @@ fn legacy_auto_increment_sequence_is_still_used_and_dropped() {
         .create_table_with_fks(
             "leg",
             vec![
-                ("id".into(), aerodb::storage::row::ColumnType::Integer, true, None, true),
-                ("v".into(), aerodb::storage::row::ColumnType::Text, false, None, false),
+                (
+                    "id".into(),
+                    aerodb::storage::row::ColumnType::Integer,
+                    true,
+                    None,
+                    true,
+                ),
+                (
+                    "v".into(),
+                    aerodb::storage::row::ColumnType::Text,
+                    false,
+                    None,
+                    false,
+                ),
             ],
             Vec::new(),
             None,
@@ -259,9 +325,15 @@ fn legacy_auto_increment_sequence_is_still_used_and_dropped() {
     run("INSERT INTO leg (v) VALUES ('x')").unwrap();
     run("DROP TABLE leg").unwrap();
     drop(run);
-    assert!(catalog.next_sequence_value("leg_id").is_err(), "legacy sequence dropped");
+    assert!(
+        catalog.next_sequence_value("leg_id").is_err(),
+        "legacy sequence dropped"
+    );
     let mut e = Engine::open(path.to_str().unwrap()).unwrap();
-    exec(&mut e, "CREATE TABLE leg(id INTEGER NOT NULL AUTO_INCREMENT, v TEXT)");
+    exec(
+        &mut e,
+        "CREATE TABLE leg(id INTEGER NOT NULL AUTO_INCREMENT, v TEXT)",
+    );
     exec(&mut e, "INSERT INTO leg (v) VALUES ('y')");
     assert_eq!(q(&mut e, "SELECT id FROM leg"), table(&[&["1"]]));
 }
@@ -278,8 +350,20 @@ fn legacy_auto_increment_sequence_values_continue() {
         .create_table_with_fks(
             "leg",
             vec![
-                ("id".into(), aerodb::storage::row::ColumnType::Integer, true, None, true),
-                ("v".into(), aerodb::storage::row::ColumnType::Text, false, None, false),
+                (
+                    "id".into(),
+                    aerodb::storage::row::ColumnType::Integer,
+                    true,
+                    None,
+                    true,
+                ),
+                (
+                    "v".into(),
+                    aerodb::storage::row::ColumnType::Text,
+                    false,
+                    None,
+                    false,
+                ),
             ],
             Vec::new(),
             None,
@@ -287,7 +371,11 @@ fn legacy_auto_increment_sequence_values_continue() {
         .unwrap();
     catalog.create_sequence("leg_id", 1, 1).unwrap();
     catalog.update_sequence_current("leg_id", 41).unwrap();
-    handle_statement(&mut catalog, parse_sql("INSERT INTO leg (v) VALUES ('x')").unwrap()).unwrap();
+    handle_statement(
+        &mut catalog,
+        parse_sql("INSERT INTO leg (v) VALUES ('x')").unwrap(),
+    )
+    .unwrap();
     let r = aerodb::execution::query::execute_query(
         &mut catalog,
         &match parse_sql("SELECT id FROM leg").unwrap() {
@@ -306,8 +394,14 @@ fn legacy_auto_increment_sequence_values_continue() {
 fn case_results_take_the_unified_type() {
     use aerodb::sql::value::Value;
     let (_dir, mut e) = engine();
-    exec(&mut e, "CREATE TABLE e(id INTEGER PRIMARY KEY, sal DECIMAL(8,2), n INTEGER, x DOUBLE)");
-    exec(&mut e, "INSERT INTO e VALUES (1, 100, 1, 0.5), (2, 200, 2, 0.5), (3, 50, 3, 0.5), (4, 75, 4, 0.5)");
+    exec(
+        &mut e,
+        "CREATE TABLE e(id INTEGER PRIMARY KEY, sal DECIMAL(8,2), n INTEGER, x DOUBLE)",
+    );
+    exec(
+        &mut e,
+        "INSERT INTO e VALUES (1, 100, 1, 0.5), (2, 200, 2, 0.5), (3, 50, 3, 0.5), (4, 75, 4, 0.5)",
+    );
     fn kinds(e: &mut Engine, sql: &str) -> Vec<(String, &'static str)> {
         let r = e.query(sql).unwrap_or_else(|m| panic!("`{sql}`: {m}"));
         r.rows
@@ -328,15 +422,24 @@ fn case_results_take_the_unified_type() {
     }
     // Integer alternatives become DECIMAL (scale 0, as in PostgreSQL).
     assert_eq!(
-        kinds(&mut e, "SELECT CASE WHEN id > 2 THEN sal ELSE 1 END FROM e ORDER BY id"),
+        kinds(
+            &mut e,
+            "SELECT CASE WHEN id > 2 THEN sal ELSE 1 END FROM e ORDER BY id"
+        ),
         dec(&["1", "1", "50.00", "75.00"])
     );
     assert_eq!(
-        kinds(&mut e, "SELECT CASE WHEN id > 2 THEN n ELSE sal END FROM e ORDER BY id"),
+        kinds(
+            &mut e,
+            "SELECT CASE WHEN id > 2 THEN n ELSE sal END FROM e ORDER BY id"
+        ),
         dec(&["100.00", "200.00", "3", "4"])
     );
     assert_eq!(
-        kinds(&mut e, "SELECT CASE WHEN id > 2 THEN 1 ELSE sal END FROM e ORDER BY id"),
+        kinds(
+            &mut e,
+            "SELECT CASE WHEN id > 2 THEN 1 ELSE sal END FROM e ORDER BY id"
+        ),
         dec(&["100.00", "200.00", "1", "1"])
     );
     // DOUBLE wins over INTEGER and DECIMAL.
@@ -346,11 +449,22 @@ fn case_results_take_the_unified_type() {
     );
     assert!(mixed.iter().all(|(_, k)| *k == "double"), "{mixed:?}");
     // COALESCE results follow the same rule.
-    assert_eq!(kinds(&mut e, "SELECT COALESCE(n, sal) FROM e WHERE id = 1"), dec(&["1"]));
+    assert_eq!(
+        kinds(&mut e, "SELECT COALESCE(n, sal) FROM e WHERE id = 1"),
+        dec(&["1"])
+    );
     // Integer-only CASE is unchanged.
-    let ints = kinds(&mut e, "SELECT CASE WHEN id > 2 THEN n ELSE 0 END FROM e ORDER BY id");
+    let ints = kinds(
+        &mut e,
+        "SELECT CASE WHEN id > 2 THEN n ELSE 0 END FROM e ORDER BY id",
+    );
     assert_eq!(
         ints,
-        vec![("0".into(), "int"), ("0".into(), "int"), ("3".into(), "int"), ("4".into(), "int")]
+        vec![
+            ("0".into(), "int"),
+            ("0".into(), "int"),
+            ("3".into(), "int"),
+            ("4".into(), "int")
+        ]
     );
 }

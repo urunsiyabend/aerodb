@@ -19,7 +19,10 @@ fn repl_reports_parse_errors_with_sqlstate_and_fails_the_transaction() {
     let (_dir, mut e) = engine();
     assert_eq!(repl(&mut e, "CREATE TABLE t(id INTEGER)"), "");
     let out = repl(&mut e, "SELEC nonsense");
-    assert!(out.starts_with("Error: ") && out.contains("(42601)"), "{out}");
+    assert!(
+        out.starts_with("Error: ") && out.contains("(42601)"),
+        "{out}"
+    );
     // Outside a transaction a parse error changes nothing.
     assert_eq!(repl(&mut e, "INSERT INTO t VALUES (1)"), "");
     assert_eq!(repl(&mut e, "BEGIN"), "");
@@ -32,10 +35,22 @@ fn repl_reports_parse_errors_with_sqlstate_and_fails_the_transaction() {
     assert_eq!(rows(&mut e, "SELECT id FROM t").unwrap(), table(&[&["1"]]));
     // Execution errors carry their SQLSTATE too.
     let out = repl(&mut e, "SELECT nope FROM t");
-    assert!(out.starts_with("Error: ") && out.contains("(42703)"), "{out}");
+    assert!(
+        out.starts_with("Error: ") && out.contains("(42703)"),
+        "{out}"
+    );
     let mut sink = Vec::new();
-    assert!(matches!(run_line(&mut e, ".exit", &mut sink).unwrap(), LineOutcome::Exit));
-    assert!(matches!(run_line(&mut e, "exit", &mut sink).unwrap(), LineOutcome::Exit));
-    assert!(matches!(run_line(&mut e, "  ", &mut sink).unwrap(), LineOutcome::Continue));
+    assert!(matches!(
+        run_line(&mut e, ".exit", &mut sink).unwrap(),
+        LineOutcome::Exit
+    ));
+    assert!(matches!(
+        run_line(&mut e, "exit", &mut sink).unwrap(),
+        LineOutcome::Exit
+    ));
+    assert!(matches!(
+        run_line(&mut e, "  ", &mut sink).unwrap(),
+        LineOutcome::Continue
+    ));
     assert!(sink.is_empty());
 }

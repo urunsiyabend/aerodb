@@ -260,7 +260,10 @@ fn widen_result(e: &mut Expr, b: &Bound, target: &SqlType) -> DbResult<()> {
         Expr::Literal(v) => *v = v.cast_to(&to)?,
         _ => {
             let inner = std::mem::replace(e, Expr::Literal(Value::Null));
-            *e = Expr::Cast { expr: Box::new(inner), ty: to };
+            *e = Expr::Cast {
+                expr: Box::new(inner),
+                ty: to,
+            };
         }
     }
     Ok(())
@@ -839,12 +842,7 @@ impl Binder<'_> {
             }
             Expr::Function { name, args } => {
                 if name.as_str() == "COALESCE" {
-                    return self.result_alternatives(
-                        args.iter_mut(),
-                        "COALESCE",
-                        scope,
-                        outer,
-                    );
+                    return self.result_alternatives(args.iter_mut(), "COALESCE", scope, outer);
                 }
                 if name.as_str() == "NULLIF" && args.len() == 2 {
                     let a = self.expr(&mut args[0], scope, outer)?;
