@@ -3,7 +3,7 @@
 **Tarih:** 14 Ekim 2026. **Sürüm:** `0.6.0`. **Dal:** `release/sql-0.6.0`.
 
 **Git HEAD:**
-- Kaynak kod (`src/`, `tests/`) en son `fd7985824cd71b185fe16345a54230d74fb04013` commit'inde değişti.
+- Kaynak kod (`src/`, `tests/`) en son `7c61351df17b58658318ccd5a4fb861dfc9eae3d` commit'inde değişti (final review düzeltme dalgası; ilk audit koşusu `fd79858` kodu üzerindeydi).
 - Sonraki commit'ler yalnız dokümantasyon ve audit artifact'ı ekler.
 - Audit, bu belgeyi ekleyen commit üzerinde çalıştırıldı. Kesin HEAD, `audit/audit-summary-0.6.0.json` içindeki `head` alanındadır.
 
@@ -28,8 +28,8 @@ Audit, `audit/` altındaki dosyalara dokunulmadan çalıştırıldı: `run_probe
 
 ### Test sayıları
 
-`cargo test --all-targets` ve `cargo test --release --all-targets`, kod HEAD'i `fd79858` üzerinde koşuldu:
-- **49 sonuç bloğu, 558 test geçti, 0 başarısız, 0 ignored.** Debug ve release aynıdır.
+`cargo test --all-targets` ve `cargo test --release --all-targets`, kod HEAD'i `7c61351` üzerinde koşuldu:
+- **51 sonuç bloğu, 576 test geçti, 0 başarısız, 0 ignored.** Debug ve release aynıdır. (Final review öncesi, `fd79858`: 49 blok, 558 test.)
 - 0.5.1 tabanı 40 blok ve 227 testti. Ancak 0.5.1'de `main.rs` kütüphane modüllerini yeniden derlediği için lib unit testleri iki kez sayılıyordu. 0.6.0'da `main.rs` kütüphaneye bağlanır ve unit testler bir kez çalışır, dolayısıyla sayılar birebir karşılaştırılamaz.
 - Testlerin yeşil olması aşağıda adı geçen sınırlamaları ortadan kaldırmaz.
 
@@ -72,6 +72,16 @@ HEAD `32a4197` üzerindeki ara koşuda tek bir `bug` kalmıştı: `drop_table`, 
 - **Neden:** Oracle deseni 0.5.1 metni `No such table` idi; 0.6.0 ise `table 't' not found` yazıyordu.
 - **Düzeltme:** Oracle değiştirilmedi. `DbError::TableNotFound` mesajı 0.5.1 ifadesine döndürüldü: `no such table: t`. SQLSTATE `42P01` aynı kaldı.
 - **Test:** `error::tests::table_not_found_message_says_no_such_table`.
+
+### Final review düzeltmeleri
+
+Bütün dalın son incelemesinden sonra kod yeniden değişti; audit ve testler son kod HEAD'inde yeniden koşuldu (yukarıdaki sayılar):
+- İndeks hash çakışmaları (NULL/0, DOUBLE 1.5/1.7, TEXT/DECIMAL) artık 58030 vermiyor; kova başına değer grupları, NULL indekslenmez.
+- Tablo/view/indeks/sequence isimleri tanımlayıcı kuralını izler (CREATE çakışması 42P07, DROP aynı kuralla bulur, belirsiz isim 42702).
+- CLI hataları SQLSTATE ile basar; açık transaction içindeki sözdizimi hatası transaction'ı failed duruma geçirir.
+- Yinelenen indeks adı 42P07; `AUTO_INCREMENT` sequence'ları çakışmayan iç adlar alır ve `DROP TABLE` ile silinir (0.5.x `{tablo}_{kolon}` sequence'ları hâlâ bulunur).
+- `CASE` / `COALESCE` sonuçları birleşik sayısal tipe çevrilir.
+- Testler: `tests/sql_final_review.rs`, `tests/repl_line.rs`, `src/catalog/mod.rs` unit (index_bucket_keeps_one_group_per_value, index_tree_separates_colliding_values_and_skips_null).
 
 ## Yöntem
 
@@ -157,7 +167,7 @@ Tüm `tests/sql_*.rs` dosyaları 0.6.0'da eklendi; `tests/storage_format.rs` ve 
 | F051-03 | Core | unsupported | unsupported | `timestamp_literal` (syntax_rejected, 0A000) | `TIMESTAMP '…'` / `TIME '…'` literal'leri bilinçli olarak reddedilir |
 | F191 | Optional | implemented | implemented | `fk_delete_cascade` (result_matches) | `tests/sql_identity_types.rs` (on_delete_cascade_with_composite_key, on_delete_cascade_self_referencing_cycle); `tests/foreign_keys.rs` |
 | F201 | Core | unsupported | implemented | `cast` (result_matches) | `tests/sql_semantics.rs` (cast); `src/sql/value.rs` unit (cast_text_to_integer, cast_numeric_to_integer_rounds_half_away, cast_to_decimal_and_text, cast_to_char_and_varchar) |
-| F261-02 | Core | unsupported | implemented | `case` (result_matches) | `tests/sql_semantics.rs` (case); `src/execution/eval.rs` unit (functions_and_case) |
+| F261-02 | Core | unsupported | implemented | `case` (result_matches) | `tests/sql_semantics.rs` (case); `src/execution/eval.rs` unit (functions_and_case); `tests/sql_final_review.rs` (case_results_take_the_unified_type) |
 | F261-04 | Core | unsupported | implemented | `coalesce` (result_matches) | `tests/sql_semantics.rs` (coalesce); `tests/sql_binding.rs` |
 | F302 | Optional | bug | implemented | `intersect` (result_matches) | `tests/sql_semantics.rs` (intersect, except_all_and_intersect_all_use_multiplicities); `tests/sql_parser.rs` (intersect_binds_tighter) |
 | F406 | Optional | implemented | implemented | `full_join` (result_matches) | `tests/sql_semantics.rs` (full_join) |
@@ -218,7 +228,7 @@ Bunlar audit'te probe'lanmadı; hepsi açıkça reddedilir, sessizce yok sayılm
   - Eski bir snapshot, yeni eklenen kolonu NULL olarak okur.
   - `ALTER TABLE ADD COLUMN`, eşzamanlı commit edilmemiş transaction'ların satırlarını yeniden yazmaz; bu satırlar DEFAULT yerine NULL okunur.
   - Ayrı `Database` transaction'larındaki eşzamanlı DDL birbirinden izole değildir: bir commit, başka bir transaction'ın commit edilmemiş katalog sayfasını diske yazabilir. DDL eşzamanlılığı roadmap'te P2'dir ve doğrulanmamıştır.
-- **Sözdizimi hatası ve failed transaction:** Açık transaction içindeki bir sözdizimi hatası, transaction'ı failed duruma (25P02) yalnız `Engine::execute_sql` / `Engine::query` yolunda geçirir. CLI ve `parse_statement` + `Engine::execute` kullanan çağıranlar (audit adapter'ı dahil) parse hatasını raporlar, transaction'ı bozmaz.
+- **Sözdizimi hatası ve failed transaction:** Açık transaction içindeki bir sözdizimi hatası, transaction'ı failed duruma (25P02) CLI'da ve `Engine::execute_sql` / `Engine::query` / `Engine::parse` yolunda geçirir (test: `tests/repl_line.rs`). Yalnız serbest `parse_statement` fonksiyonuyla parse edip `Engine::execute` çağıranlar (audit adapter'ı dahil) bunu atlar; parse hatası engine'e hiç ulaşmaz.
 
 **FK ve atama kuralları:**
 - **RESTRICT:**
@@ -233,6 +243,7 @@ Bunlar audit'te probe'lanmadı; hepsi açıkça reddedilir, sessizce yok sayılm
 - **FK hedefi:** Hedef, parent'ın PRIMARY KEY'i ya da bir UNIQUE kolon kümesi olmalıdır (42830). 0.5.1'de PK olmayan kolona verilmiş FK içeren eski kataloglar yine de yüklenir.
 
 **Tipler ve ifadeler:**
+- **CASE / COALESCE sonuç tipi:** Sonuçlar tek bir sayısal tipe çevrilir: DECIMAL yanındaki tamsayılar DECIMAL (PostgreSQL gibi scale 0), DOUBLE yanındaki tamsayı ve DECIMAL değerler DOUBLE olur. Farklı precision/scale'li DECIMAL'ler olduğu gibi kalır.
 - **Tamsayı bölmesi:** `INTEGER / INTEGER` sıfıra doğru keser. INTEGER kolonları 32 bittir; ifadeler 64 bitte hesaplanır ve atama sırasında taşma 22003'tür.
 - **Tarih:** Yalnız tarih içeren bir string TIMESTAMP/DATETIME için kabul edilmez.
 - **Kabul edilen standart dışı sözdizimi:**
@@ -250,7 +261,7 @@ Bunlar audit'te probe'lanmadı; hepsi açıkça reddedilir, sessizce yok sayılm
   - `public.t` 42P01 verir, oysa `information_schema` `table_schema = 'public'` raporlar.
   - Şema nitelemeli kolon referansları 0A000'dır.
   - Kullanılabilen tek şema niteleyicisi `information_schema`'dır.
-- **İsim eşleme:** `DROP TABLE` / `DROP VIEW` / `DROP INDEX` isimleri birebir (büyük/küçük harf duyarlı) eşler; diğer referanslar ise tırnaksız tanımlayıcı kuralını izler.
+- **İsim eşleme:** Tablo, view, indeks ve sequence isimleri de tanımlayıcı kuralını izler (final review düzeltmesi). Tırnaksız bir isimle `CREATE TABLE/VIEW/INDEX/SEQUENCE`, mevcut bir ismi büyük/küçük harf duyarsız eşlerse 42P07 verir; tırnaklı isim yalnız birebir aynı isimle çakışır. `DROP TABLE/VIEW/INDEX` isimleri aynı kuralla bulur. Tırnaklı ve yalnız harf büyüklüğüyle farklı iki nesneye tırnaksız referans 42702'dir (`AmbiguousRelation`). Test: `tests/sql_final_review.rs`.
 - **Meta veri:**
   - `unique_constraint_name`, aynı kolon kümesinde PK'yi tercih eder.
   - PK ihlali mesajı constraint adını içermez.
@@ -259,7 +270,7 @@ Bunlar audit'te probe'lanmadı; hepsi açıkça reddedilir, sessizce yok sayılm
 
 **Depolama ve performans:**
 - **Satır boyutu:** Bir satır tek bir 4 KiB sayfaya sığmalıdır (yaklaşık 4 KB serileştirilmiş veri). Daha büyük satırlar yazmadan önce 54000 ile reddedilir.
-- **İndeksler:** İkincil indeksler reopen'dan sonra kalıcı değildir (0.5.1'den beri). Tek kolonlu eşitlik içindir.
+- **İndeksler:** İkincil indeksler reopen'dan sonra kalıcı değildir (0.5.1'den beri). Tek kolonlu eşitlik içindir. Final review düzeltmesi: indeks girdileri kayıplı bir hash ile anahtarlandığı için aynı hash'e sahip ikinci bir değer (NULL ve 0, DOUBLE 1.5 ve 1.7, TEXT/DECIMAL çakışmaları) 58030 veriyordu; artık her hash kovası değer başına bir grup tutar, arama yalnız tam değerin grubunu kullanır ve NULL indekslenmez (test: `tests/sql_final_review.rs`, `src/catalog/mod.rs` unit).
 - **Performans:**
   - FK kontrolleri parent satırlarını tarar (O(n·m)).
   - `UPDATE/DELETE … WHERE`, PK ve UNIQUE kontrolleri görünür satırları tarar.
@@ -273,7 +284,7 @@ Bunlar audit'te probe'lanmadı; hepsi açıkça reddedilir, sessizce yok sayılm
 - **Depolama formatı:**
   - Format sürümü 2'dir.
   - 0.5.x dosyaları okunur ve yazılır; ilk yazım dosyayı sürüm 2 olarak işaretler.
-  - 0.5.x, yeni özellik kullanan v2 dosyalarında açık hatayla durur: view satırında "root page not int", yeni tip kodlarında "bad type", yeni değer etiketlerinde "Unknown type tag".
+  - 0.6.0'ın yazdığı bir dosyayı 0.5.x ile açmak **desteklenmez** ve sessizce yanlış davranabilir: 0.5.x sürüm alanını yok sayar ve satır anahtarını ilk kolon sanır, oysa 0.6.0 tekil tamsayı PK kolonunu (nerede olursa olsun) ya da ayrılmış bir row id'yi kullanır. Yalnız bazı yeni içerikler 0.5.x'te açık hata verir: view satırında "root page not int", yeni tip kodlarında "bad type", yeni değer etiketlerinde "Unknown type tag". v2 dosyalar 0.5.x okuyucusuyla test edilmedi.
   - Bilinmeyen gelecek sürümler, dosyalar değiştirilmeden reddedilir.
 
 **API ve CLI:**
@@ -281,7 +292,7 @@ Bunlar audit'te probe'lanmadı; hepsi açıkça reddedilir, sessizce yok sayılm
   - `Engine::query` / `Engine::execute_sql` / `Database::query` gömülü Rust API'leridir. SQL/CLI, ODBC veya JDBC değildir.
   - Kütüphane, CLI'dan kalma durum satırlarını stdout'a basar.
   - `Engine::new` açılamayan dosyada panic eder; bunun yerine `Engine::open` kullanılmalıdır.
-- **CLI:** CLI sabit `data.aerodb` yolunu kullanır, satır başına bir deyim kabul eder ve SQLSTATE göstermez; SQLSTATE yalnız Rust API'de `DbError::sqlstate()` ile alınır.
+- **CLI:** CLI sabit `data.aerodb` yolunu kullanır ve satır başına bir deyim kabul eder. Sözdizimi hataları dahil her hatayı `Error: <mesaj> (<SQLSTATE>)` biçiminde basar (satır işleyicisi `aerodb::repl::run_line`, test `tests/repl_line.rs`).
 
 Ayrıntılı liste: `CHANGELOG.md` → `[0.6.0]` → "Changed / breaking" ve "Known limitations".
 

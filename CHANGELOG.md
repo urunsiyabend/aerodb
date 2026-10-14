@@ -115,6 +115,28 @@ These are the 0.5.1 audit bugs.
   - DML on a missing table affected 0 rows instead of failing.
   - `CREATE TABLE t (x INTEGER, x INTEGER)` was accepted.
   - An oversized row failed with an I/O "Leaf overflow".
+- Found in the final review of this release (the first three also affected
+  0.5.1):
+  - Secondary indexes keyed entries by a lossy hash. A second value with the
+    same hash failed with an I/O "Duplicate key" error (58030) on `INSERT`,
+    `UPDATE` or `CREATE INDEX`. Examples: NULL next to 0, `DOUBLE` 1.5 next
+    to 1.7, and colliding TEXT or DECIMAL values. After such an `UPDATE`,
+    `CREATE INDEX` kept failing. An index entry now keeps one group of rows
+    per distinct value, lookups use only the exact value, and NULL is never
+    indexed.
+  - Dropping a table left its `AUTO_INCREMENT` sequence behind, so creating
+    the table again failed.
+  - The sequences of `a_b(c AUTO_INCREMENT)` and `a(b_c AUTO_INCREMENT)` had
+    the same name, so the second `CREATE TABLE` failed.
+  - `CREATE TABLE O` succeeded next to an existing `o` (and `CREATE TABLE OO`
+    next to a view `oo`). Every unquoted reference to either then failed as
+    ambiguous.
+  - A duplicate index name was an I/O error (58030), and a missing index was
+    reported as `index 'x' not found not found`.
+  - The CLI logged syntax errors at the hidden `warn` level, and a syntax
+    error inside `BEGIN` did not fail the transaction.
+  - `CASE WHEN … THEN dec_col ELSE 1 END` returned a mix of INTEGER and
+    DECIMAL values.
 
 ### Changed / breaking
 
@@ -123,6 +145,13 @@ These are the 0.5.1 audit bugs.
 - Identifiers follow the standard rule: unquoted identifiers match
   case-insensitively, quoted identifiers match exactly. Ambiguous references
   are 42702.
+  - The rule also applies to the names of tables, views, indexes and
+    sequences. `CREATE TABLE`/`VIEW`/`INDEX`/`SEQUENCE` with an unquoted name
+    that matches an existing name case-insensitively is 42P07 (`IF NOT EXISTS`
+    makes it a no-op). A quoted name collides only with the exact same name.
+  - `DROP TABLE`, `DROP VIEW` and `DROP INDEX` find names by the same rule.
+  - An unquoted table, view or index name that matches several objects is
+    42702 (`AmbiguousRelation`); quote it to choose one.
 - A bareword is no longer read as a string literal. `WHERE name = alice` is
   now a column reference (42703 if no such column exists).
 - A FOREIGN KEY must reference the parent's PRIMARY KEY or a UNIQUE column
@@ -136,11 +165,21 @@ These are the 0.5.1 audit bugs.
 - Inside an explicit transaction, a failed statement puts the transaction
   into the failed state. Every further statement is 25P02 until `ROLLBACK`.
   `COMMIT` of a failed transaction rolls it back and returns 25P02.
-  - A syntax error counts as a failed statement only when the SQL text goes
-    through `Engine::execute_sql`/`Engine::query`.
-  - The CLI, and callers that parse with `parse_statement` and then call
-    `Engine::execute`, report the parse error without failing the
-    transaction.
+  - A syntax error is a failed statement in the CLI and through
+    `Engine::execute_sql`, `Engine::query` and `Engine::parse`.
+  - Only callers that parse with the free function `parse_statement` and
+    then call `Engine::execute` bypass this.
+- The CLI prints every error, including syntax errors, as
+  `Error: <message> (<SQLSTATE>)`. Its line handler is
+  `aerodb::repl::run_line`.
+- Duplicate index and sequence names are 42P07; a missing index is 42704.
+- The results of `CASE` and `COALESCE` are converted to one numeric type.
+  Integers next to `DECIMAL` become `DECIMAL` (scale 0, as in PostgreSQL).
+  Integers and `DECIMAL` next to `DOUBLE` become `DOUBLE`.
+- `AUTO_INCREMENT` sequences of new tables get an internal name that cannot
+  collide. Sequences named `{table}_{column}` by 0.5.x are still used, and
+  `DROP TABLE` drops the table's sequences. A 0.5.x sequence name shared by
+  two tables is kept until neither uses it.
 - Result headers show SQL type labels derived from the expression (for
   example, `SUM` over DOUBLE is `DOUBLE`, and DECIMAL shows `DECIMAL(p,s)`).
   Some labels differ from 0.5.1.
@@ -170,10 +209,14 @@ These are the 0.5.1 audit bugs.
 - The metadata page records storage format version 2.
 - Files written by 0.5.x (version 0) open read/write; the first write stamps
   version 2.
-- 0.5.x builds ignore the version field. They still read a v2 file that uses
-  only 0.5.x features, but fail explicitly on new content: a view row ("root
-  page not int"), new type codes ("bad type"), or new value tags ("Unknown type
-  tag").
+- Opening a file written by 0.6.0 with 0.5.x is **unsupported** and may
+  misbehave silently. 0.5.x ignores the version field, and 0.6.0 stores rows
+  differently. For example, a row's storage key is its single integer
+  primary-key column wherever that column is, or an allocated row id (no
+  primary key, a text or a composite key), while 0.5.x assumes the key is the
+  first column. Only some new content fails explicitly in 0.5.x: a view
+  row ("root page not int"), new type codes ("bad type"), or new value tags
+  ("Unknown type tag"). No 0.5.x reader was tested against v2 files.
 - An unknown future version is rejected with an `InvalidData` error before WAL
   recovery. The main file, `.wal` and `.clog` are left unmodified.
 - Covered by two committed 0.5.1 fixtures (`tests/storage_format.rs`).
@@ -212,9 +255,6 @@ These are the 0.5.1 audit bugs.
     `table_schema = 'public'`.
   - Schema-qualified column references are 0A000.
   - The only schema accepted in FROM is `information_schema`.
-- `DROP TABLE`, `DROP VIEW` and `DROP INDEX` match names exactly
-  (case-sensitive). Unlike other references, they do not follow the unquoted
-  identifier rule.
 - Performance:
   - Foreign-key checks scan the parent rows (O(n·m)).
   - `UPDATE`/`DELETE … WHERE` and primary-key or UNIQUE checks scan visible

@@ -70,7 +70,8 @@ UPDATE users SET name = 'Bobby' WHERE id = 2
 DELETE FROM users WHERE id = 1
 ```
 
-Use `.exit` or `exit` to close the CLI.
+Use `.exit` or `exit` to close the CLI. Errors, including syntax errors, are
+printed with their SQLSTATE, for example `Error: no such table: t (42P01)`.
 
 You can also install the binary from the local checkout:
 
@@ -105,8 +106,18 @@ covered by the current test suite. The parser is fail-closed:
 
 Identifiers follow the standard rule: unquoted names match
 case-insensitively, `"quoted"` names match exactly, and an ambiguous reference
-is 42702. Comments (`-- …` and `/* … */`) are accepted. A bareword is always
-an identifier, never a string literal.
+is 42702. The same rule applies to the names of tables, views, indexes and
+sequences:
+- `CREATE TABLE`/`VIEW`/`INDEX`/`SEQUENCE` with an unquoted name that matches
+  an existing one case-insensitively is 42P07 (`CREATE TABLE O` next to `o`).
+  A quoted name collides only with the exact same name.
+- `DROP TABLE`, `DROP VIEW` and `DROP INDEX` find the object like every other
+  reference (`DROP VIEW vx` drops `Vx`).
+- An unquoted name that matches several objects (created with quoted names
+  differing only in case) is 42702; quote it to choose one.
+
+Comments (`-- …` and `/* … */`) are accepted. A bareword is always an
+identifier, never a string literal.
 
 ### Schema definition
 
@@ -157,7 +168,8 @@ Supported schema features:
     `RESTRICT` (checked immediately), `ON DELETE CASCADE` and
     `ON UPDATE CASCADE`.
   - Foreign keys are rechecked at COMMIT.
-- `AUTO_INCREMENT` on a single `NOT NULL` integer column per table.
+- `AUTO_INCREMENT` on a single `NOT NULL` integer column per table. Its
+  sequence is internal to the table and is dropped with it.
 - `CURRENT_TIMESTAMP`, `CURRENT_TIMESTAMP()`, `GETDATE()`, and `GETUTCDATE()`
   defaults.
 - `ALTER TABLE t ADD [COLUMN]` with `DEFAULT`, `NOT NULL`, `UNIQUE`, and
@@ -241,7 +253,9 @@ Supported query features include:
   - Division by zero is 22012.
   - Overflow is 22003.
 - `CAST`, searched and simple `CASE`, `COALESCE`, `NULLIF`, `UPPER`, `LOWER`,
-  `CHAR_LENGTH`, `ABS`, and `DATE 'YYYY-MM-DD'` literals.
+  `CHAR_LENGTH`, `ABS`, and `DATE 'YYYY-MM-DD'` literals. The results of a
+  `CASE` or `COALESCE` take one numeric type: integers next to `DECIMAL`
+  become `DECIMAL`, and anything next to `DOUBLE` becomes `DOUBLE`.
 - Aggregates: `COUNT(*)`, `COUNT`, `SUM`, `AVG`, `MIN`, and `MAX`, each with
   optional `DISTINCT`. NULLs are ignored, and an aggregate over no rows
   returns NULL (`COUNT` returns 0). `SUM`/`AVG` over `DECIMAL` are exact.
@@ -363,7 +377,7 @@ SQLSTATE, with exactly one code per variant:
 | 40001 | serialization failure (write/write conflict) | `WriteConflict` |
 | 42601 | syntax error | `Syntax`, `ParseError` |
 | 42701 | duplicate column | `DuplicateColumn` |
-| 42702 | ambiguous column | `AmbiguousColumn` |
+| 42702 | ambiguous column or relation name | `AmbiguousColumn`, `AmbiguousRelation` |
 | 42703 | undefined column | `ColumnNotFound` |
 | 42704 | undefined object (sequence, index, ...) | `NotFound` |
 | 42710 | duplicate object (constraint name) | `DuplicateConstraint` |
@@ -373,7 +387,7 @@ SQLSTATE, with exactly one code per variant:
 | 42830 | invalid foreign key | `InvalidForeignKey` |
 | 42883 | undefined function | `UndefinedFunction` |
 | 42P01 | undefined table (incl. unknown schema qualifier) | `TableNotFound` |
-| 42P07 | duplicate table | `DuplicateObject` |
+| 42P07 | duplicate table, view, index or sequence | `DuplicateObject` |
 | 54000 | program limit exceeded (row too large for a page) | `RowTooLarge` |
 | 58030 | I/O error | `Io` |
 
@@ -407,9 +421,10 @@ into the failed state:
 - Every further statement is rejected with 25P02 until `ROLLBACK`.
 - `COMMIT` of a failed transaction rolls it back and returns 25P02.
 
-Syntax errors fail the transaction only through `Engine::execute_sql` and
-`Engine::query`. The CLI reports a parse error without failing the
-transaction.
+A syntax error counts as a failed statement in the CLI and through
+`Engine::execute_sql`, `Engine::query` and `Engine::parse`. Only a caller that
+parses with the free function `parse_statement` and then calls
+`Engine::execute` bypasses this, because the parse never reaches the engine.
 
 DDL (`CREATE`/`DROP`/`ALTER`, views) is transactional within one session and
 rolls back with the transaction.
@@ -628,8 +643,6 @@ Naming:
 - `public.t` is rejected with 42P01, although `information_schema` reports
   `table_schema = 'public'`. Schema-qualified column references are 0A000.
   The only usable schema qualifier is `information_schema`.
-- `DROP TABLE`, `DROP VIEW` and `DROP INDEX` match names exactly
-  (case-sensitive).
 
 Storage and performance:
 - Secondary-index metadata is kept in memory and is not rebuilt when the
