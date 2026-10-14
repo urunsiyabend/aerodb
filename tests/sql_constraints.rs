@@ -406,7 +406,7 @@ fn no_action_allows_update_of_non_referenced_parent_column() {
 }
 
 #[test]
-fn on_delete_restrict_behaves_like_no_action() {
+fn on_delete_restrict_rejects_a_referenced_parent_until_its_children_are_gone() {
     let (_dir, mut e) = engine();
     exec(&mut e, "CREATE TABLE p (id INTEGER PRIMARY KEY)");
     exec(&mut e, "CREATE TABLE ch (id INTEGER PRIMARY KEY, pid INTEGER, FOREIGN KEY (pid) REFERENCES p(id) ON DELETE RESTRICT)");
@@ -646,26 +646,52 @@ fn on_update_no_action_accepts_key_swap() {
 
 #[test]
 fn on_delete_restrict_ignores_children_deleted_by_the_same_statement() {
-    // Self-reference: deleting the whole table also deletes the referencing row.
-    // NO ACTION checks the end state (nothing references the deleted keys); RESTRICT
-    // rejects as soon as a deleted key is referenced by a row visible at
-    // statement start.
+    // Controller ruling (fix round 1): RESTRICT fails when a deleted/changed
+    // key is still referenced by a child row the statement itself neither
+    // deletes nor re-points. Self-reference: deleting the whole table also
+    // deletes every referencing row, so it succeeds under RESTRICT as under NO ACTION.
+    for action in ["ON DELETE RESTRICT", "ON DELETE NO ACTION"] {
+        let (_dir, mut e) = engine();
+        exec(&mut e, &format!("CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER, FOREIGN KEY (boss) REFERENCES emp(id) {action})"));
+        exec(&mut e, "INSERT INTO emp VALUES (1, NULL), (2, 1), (3, 2)");
+        // The boss alone: its subordinate stays and still references it.
+        let v = err(&mut e, "DELETE FROM emp WHERE id = 1");
+        assert_eq!(v.sqlstate(), "23503", "{action}");
+        assert_eq!(q(&mut e, "SELECT COUNT(*) FROM emp"), table(&[&["3"]]));
+        exec(&mut e, "DELETE FROM emp");
+        assert_eq!(q(&mut e, "SELECT COUNT(*) FROM emp"), table(&[&["0"]]), "{action}");
+    }
+    // A row referencing only itself.
     let (_dir, mut e) = engine();
-    exec(&mut e, "CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER, FOREIGN KEY (boss) REFERENCES emp(id) ON DELETE RESTRICT)");
-    exec(&mut e, "INSERT INTO emp VALUES (1, NULL), (2, 1)");
-    let v = err(&mut e, "DELETE FROM emp");
-    assert_eq!(v.sqlstate(), "23503");
-    assert!(v.to_string().contains("RESTRICT"), "{v}");
-    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM emp"), table(&[&["2"]]));
-    // Leaves first is fine.
-    exec(&mut e, "DELETE FROM emp WHERE id = 2");
-    exec(&mut e, "DELETE FROM emp");
+    exec(&mut e, "CREATE TABLE s (id INTEGER PRIMARY KEY, me INTEGER, FOREIGN KEY (me) REFERENCES s(id) ON DELETE RESTRICT)");
+    exec(&mut e, "INSERT INTO s VALUES (1, 1), (2, 1)");
+    assert_eq!(state(&mut e, "DELETE FROM s WHERE id = 1"), "23503");
+    exec(&mut e, "DELETE FROM s WHERE id = 2");
+    exec(&mut e, "DELETE FROM s WHERE id = 1");
+    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM s"), table(&[&["0"]]));
+}
 
+#[test]
+fn on_update_restrict_allows_children_re_pointed_by_the_same_statement() {
+    // `UPDATE r SET id = 2, me = 2` moves the self-referencing row's key and
+    // re-points its own reference in one statement: no child keeps the old key.
     let (_dir, mut e) = engine();
-    exec(&mut e, "CREATE TABLE emp (id INTEGER PRIMARY KEY, boss INTEGER, FOREIGN KEY (boss) REFERENCES emp(id) ON DELETE NO ACTION)");
-    exec(&mut e, "INSERT INTO emp VALUES (1, NULL), (2, 1)");
-    exec(&mut e, "DELETE FROM emp");
-    assert_eq!(q(&mut e, "SELECT COUNT(*) FROM emp"), table(&[&["0"]]));
+    exec(&mut e, "CREATE TABLE r (id INTEGER PRIMARY KEY, me INTEGER, FOREIGN KEY (me) REFERENCES r(id) ON UPDATE RESTRICT)");
+    exec(&mut e, "INSERT INTO r VALUES (1, 1)");
+    exec(&mut e, "UPDATE r SET id = 2, me = 2");
+    assert_eq!(q(&mut e, "SELECT id, me FROM r"), table(&[&["2", "2"]]));
+    // Changing only the key leaves the row referencing the old key.
+    assert_eq!(state(&mut e, "UPDATE r SET id = 3"), "23503");
+    // Another row still referencing the old key blocks the change; re-pointing it too
+    // in the same statement does not (the new key is provided by the same statement).
+    exec(&mut e, "INSERT INTO r VALUES (5, 2)");
+    assert_eq!(state(&mut e, "UPDATE r SET id = id + 10, me = me + 10 WHERE id = 2"), "23503");
+    exec(&mut e, "UPDATE r SET id = id + 10, me = me + 10");
+    assert_eq!(q_set(&mut e, "SELECT id, me FROM r"), table(&[&["12", "12"], &["15", "12"]]));
+    // Key swap with an untouched child still fails (other rows re-providing the key do not help).
+    let (_dir, mut e) = engine();
+    key_swap_tables(&mut e, "ON UPDATE RESTRICT");
+    assert_eq!(state(&mut e, "UPDATE p SET id = 3 - id"), "23503");
 }
 
 #[test]
@@ -880,6 +906,43 @@ fn database_failed_multirow_statement_never_commits() {
     assert!(db.execute(&tx, stmt("INSERT INTO t VALUES (2, 2), (1, 9)")).is_err());
     assert_eq!(db.commit(tx).unwrap_err().sqlstate(), "25P02");
     assert_eq!(db_count(&db, "t"), 1);
+}
+
+#[test]
+fn database_ended_transaction_handles_are_refused_not_panicking() {
+    // TxHandle is Copy: a handle can be reused after its transaction ended.
+    let dir = tempfile::tempdir().unwrap();
+    let db = open_db(&dir);
+    db_setup(&db, &["CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)"]);
+    let ended = |e: DbError| assert_eq!(e.sqlstate(), "25P01", "{e:?}");
+
+    // Committed.
+    let tx = db.begin().unwrap();
+    db.execute(&tx, stmt("INSERT INTO t VALUES (1, 1)")).unwrap();
+    db.commit(tx).unwrap();
+    ended(db.commit(tx).unwrap_err());
+    ended(db.abort(tx).unwrap_err());
+    ended(db.execute(&tx, stmt("INSERT INTO t VALUES (2, 2)")).unwrap_err());
+    ended(db.query(&tx, "SELECT id FROM t").unwrap_err());
+    ended(db.query_all(&tx, "t").unwrap_err());
+
+    // Aborted: aborting again is a no-op, everything else is refused.
+    let tx = db.begin().unwrap();
+    db.execute(&tx, stmt("INSERT INTO t VALUES (3, 3)")).unwrap();
+    db.abort(tx).unwrap();
+    db.abort(tx).unwrap();
+    ended(db.commit(tx).unwrap_err());
+    ended(db.execute(&tx, stmt("INSERT INTO t VALUES (4, 4)")).unwrap_err());
+
+    // Failed, then COMMIT (rolled back, 25P02): a second COMMIT is refused, ABORT is a no-op.
+    let tx = db.begin().unwrap();
+    assert!(db.execute(&tx, stmt("INSERT INTO t VALUES (1, 9)")).is_err());
+    assert_eq!(db.commit(tx).unwrap_err().sqlstate(), "25P02");
+    ended(db.commit(tx).unwrap_err());
+    db.abort(tx).unwrap();
+
+    // The database is still usable and holds only the committed row.
+    assert_eq!(db_rows(&db, "SELECT id, n FROM t"), table(&[&["1", "1"]]));
 }
 
 #[test]

@@ -8,6 +8,7 @@ mod common;
 
 use aerodb::db::Database;
 use aerodb::engine::Engine;
+use aerodb::sql::value::Value;
 use common::{engine, err, exec, rows, table};
 
 fn q(e: &mut Engine, sql: &str) -> Vec<Vec<String>> {
@@ -255,4 +256,133 @@ fn compatible_categories_are_accepted() {
     exec(&mut e, "UPDATE t SET v = v + 1 WHERE b IS TRUE");
     exec(&mut e, "DELETE FROM t WHERE s IS NULL");
     assert_eq!(q(&mut e, "SELECT id, v FROM t ORDER BY id"), table(&[&["1", "1"], &["2", "5"]]));
+}
+
+// ---- fix round 1: character literals next to date/time kinds -----------------------
+
+/// `sql` must fail with an invalid-datetime / invalid-cast class (22007 / 22018).
+fn bad_literal(e: &mut Engine, sql: &str) {
+    let v = err(e, sql);
+    assert!(matches!(v.sqlstate(), "22007" | "22018"), "`{sql}`: expected 22007/22018, got {v:?}");
+}
+
+fn dates(e: &mut Engine, sql: &str) -> Vec<Vec<Value>> {
+    e.query(sql).unwrap_or_else(|m| panic!("`{sql}` failed: {m}")).rows
+}
+
+#[test]
+fn character_literal_next_to_a_date_is_converted_at_bind_time() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE dt (id INTEGER PRIMARY KEY, d DATE, s TEXT, ts TIMESTAMP)");
+    // An invalid literal is rejected at bind time, on an empty table too.
+    for sql in [
+        "SELECT COALESCE(d, 'never') FROM dt",
+        "SELECT CASE WHEN id > 0 THEN 'abc' ELSE d END FROM dt",
+        "SELECT id FROM (SELECT id, COALESCE(d, 'zzz') AS z FROM dt) q ORDER BY z",
+        "SELECT COALESCE(d, 'never') FROM dt UNION SELECT d FROM dt",
+        "SELECT d FROM dt UNION SELECT 'never'",
+        "SELECT id FROM dt WHERE d = 'never'",
+        "SELECT id FROM dt WHERE d IN ('2024-01-01', 'never')",
+        "SELECT COALESCE(ts, 'x') FROM dt",
+    ] {
+        bad_literal(&mut e, sql);
+    }
+    // A non-literal character expression never mixes with a date kind.
+    for sql in [
+        "SELECT COALESCE(d, s) FROM dt",
+        "SELECT CASE WHEN id > 0 THEN s ELSE d END FROM dt",
+        "SELECT d FROM dt UNION SELECT s FROM dt",
+        "SELECT COALESCE(d, UPPER('2024-01-01')) FROM dt",
+    ] {
+        mismatch(&mut e, sql);
+    }
+    exec(&mut e, "INSERT INTO dt VALUES (1, '2024-01-02', 'x', NULL), (2, NULL, 'y', NULL)");
+    bad_literal(&mut e, "SELECT COALESCE(d, 'never') FROM dt");
+    // A valid literal takes the date kind: every value of the column is a DATE.
+    let r = dates(&mut e, "SELECT id, COALESCE(d, '2024-01-01') FROM dt ORDER BY id");
+    assert_eq!(r.len(), 2);
+    assert!(r.iter().all(|row| matches!(row[1], Value::Date(_))), "{r:?}");
+    let r = dates(&mut e, "SELECT CASE WHEN id = 1 THEN d ELSE '2023-05-06' END FROM dt ORDER BY id");
+    assert!(r.iter().all(|row| matches!(row[0], Value::Date(_))), "{r:?}");
+    // A converted derived column compares as a DATE.
+    assert_eq!(
+        q(&mut e, "SELECT id FROM (SELECT id, COALESCE(d, '2023-12-31') AS z FROM dt) q WHERE z > '2024-01-01'"),
+        table(&[&["1"]])
+    );
+    // Set operations use the same rule as CASE / COALESCE.
+    let r = dates(&mut e, "SELECT d FROM dt WHERE id = 1 UNION SELECT '2024-01-01'");
+    assert_eq!(r.len(), 2);
+    assert!(r.iter().all(|row| matches!(row[0], Value::Date(_))), "{r:?}");
+    let r = dates(&mut e, "SELECT COALESCE(d, '2024-01-02') FROM dt UNION SELECT d FROM dt WHERE id = 1");
+    assert_eq!(r, vec![vec![Value::Date(19724)]]);
+    let r = dates(&mut e, "SELECT '2024-01-02' UNION SELECT d FROM dt WHERE id = 1");
+    assert_eq!(r, vec![vec![Value::Date(19724)]]);
+    // Without a date kind a character literal stays character.
+    assert_eq!(dates(&mut e, "SELECT COALESCE(NULL, 'never')"), vec![vec![Value::Text("never".into())]]);
+    assert_eq!(q(&mut e, "SELECT 'a' UNION SELECT 'b' ORDER BY 1"), table(&[&["a"], &["b"]]));
+    // A view keeps the conversion.
+    exec(&mut e, "CREATE VIEW dv AS SELECT id, COALESCE(d, '2024-01-01') AS z FROM dt");
+    let r = dates(&mut e, "SELECT z FROM dv ORDER BY id");
+    assert!(r.iter().all(|row| matches!(row[0], Value::Date(_))), "{r:?}");
+    // DML: the literal is converted before any row is touched.
+    bad_literal(&mut e, "UPDATE dt SET s = 'z' WHERE COALESCE(d, 'never') > '2024-01-01'");
+    exec(&mut e, "UPDATE dt SET d = COALESCE(d, '2020-02-02')");
+    assert_eq!(q(&mut e, "SELECT d FROM dt ORDER BY id"), table(&[&["2024-01-02"], &["2020-02-02"]]));
+}
+
+// ---- fix round 1: expression identity keeps the literal's representation ------------
+
+#[test]
+fn decimal_literal_scale_is_part_of_expression_identity() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE dx (x DECIMAL(5,2))");
+    exec(&mut e, "INSERT INTO dx VALUES (1.25), (2.50)");
+    // Two aggregates differing only in a literal's scale are distinct.
+    assert_eq!(q(&mut e, "SELECT SUM(x * 1.0), SUM(x * 1.00) FROM dx"), table(&[&["3.750", "3.7500"]]));
+    // GROUP BY x + 1.00 does not cover the select-list expression x + 1.0.
+    assert_eq!(err(&mut e, "SELECT x + 1.0 FROM dx GROUP BY x + 1.00").sqlstate(), "42803");
+    assert_eq!(q(&mut e, "SELECT x + 1.0 FROM dx GROUP BY x + 1.0 ORDER BY 1"), table(&[&["2.25"], &["3.50"]]));
+    // SQL value equality stays numeric.
+    assert_eq!(q(&mut e, "SELECT 1.0 = 1.00"), table(&[&["true"]]));
+    assert_eq!(q(&mut e, "SELECT 1.0 UNION SELECT 1.00").len(), 1);
+    exec(&mut e, "INSERT INTO dx VALUES (1.250)");
+    assert_eq!(q(&mut e, "SELECT COUNT(DISTINCT x) FROM dx"), table(&[&["2"]]));
+    assert_eq!(q(&mut e, "SELECT x, COUNT(*) FROM dx GROUP BY x ORDER BY x"), table(&[&["1.25", "2"], &["2.50", "1"]]));
+}
+
+// ---- fix round 1: INSERT / UPDATE assignments are category-checked ------------------
+
+#[test]
+fn assignments_must_match_the_column_category() {
+    let (_dir, mut e) = engine();
+    typed_table(&mut e);
+    // Empty table: still rejected.
+    for sql in [
+        "UPDATE t SET d = s",
+        "UPDATE t SET v = b",
+        "UPDATE t SET b = v",
+        "UPDATE t SET d = v",
+        "UPDATE t SET v = d",
+        "UPDATE t SET x = CASE WHEN id > 0 THEN b END",
+        "INSERT INTO t (id, v) VALUES (1, TRUE)",
+        "INSERT INTO t (id, d) VALUES (1, 5)",
+        "INSERT INTO t (id, d) VALUES (1, UPPER('2024-01-02'))",
+        "INSERT INTO t (id, b) VALUES (1, 2.5)",
+        "INSERT INTO t VALUES (1, 0, 'a', 7, NULL, NULL, NULL)",
+        "INSERT INTO t (id, v) VALUES (1, 1), (2, FALSE)",
+    ] {
+        mismatch(&mut e, sql);
+    }
+    assert!(q(&mut e, "SELECT id FROM t").is_empty());
+    fill(&mut e);
+    mismatch(&mut e, "UPDATE t SET d = s");
+    mismatch(&mut e, "UPDATE t SET v = b WHERE id = 3");
+    assert_eq!(q(&mut e, "SELECT v, d FROM t WHERE id = 1"), table(&[&["0", "2024-01-02"]]));
+    // Compatible assignments, NULL / DEFAULT and the legacy literal coercions still work.
+    exec(&mut e, "UPDATE t SET x = v, v = NULL, c = s WHERE id = 2");
+    assert_eq!(q(&mut e, "SELECT x, v, c FROM t WHERE id = 2"), table(&[&["5.00", "NULL", "b  "]]));
+    exec(&mut e, "INSERT INTO t (id, v, x, d) VALUES (4, '42', '3.335', '2024-05-06')");
+    assert_eq!(q(&mut e, "SELECT v, x, d FROM t WHERE id = 4"), table(&[&["42", "3.34", "2024-05-06"]]));
+    assert_eq!(err(&mut e, "INSERT INTO t (id, v) VALUES (5, 'x')").sqlstate(), "22018");
+    bad_literal(&mut e, "INSERT INTO t (id, d) VALUES (5, 'never')");
 }

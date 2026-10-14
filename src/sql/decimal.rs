@@ -9,7 +9,8 @@ use std::fmt;
 /// `1.0 == 1.00` (as in SQL), and equal values hash alike. The stored scale is
 /// still part of the value's representation, observable through
 /// [`Decimal::scale`] and `Display` ("1.00"); use [`Decimal::same_repr`] to
-/// compare representations.
+/// compare representations (as `Value`'s `==`, and thus expression-tree
+/// identity, does: `x * 1.0` and `x * 1.00` are different expressions).
 #[derive(Debug, Clone, Copy)]
 pub struct Decimal {
     mantissa: i128,

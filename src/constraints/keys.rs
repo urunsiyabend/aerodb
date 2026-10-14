@@ -450,16 +450,19 @@ pub fn check_removed_keys(
 /// RESTRICT` foreign keys referencing `table`. `changes` are the parent rows
 /// leaving their key: (old image, new image), the new image `None` for a
 /// DELETE. A changed (UPDATE: old key not equal to the new key) or deleted
-/// non-NULL referenced key that any child row visible at statement start
-/// references is a violation — regardless of what the rest of the statement
-/// does (another row re-providing the key, or the referencing row being
-/// deleted or updated by the same statement). NO ACTION, by contrast, is
-/// checked against the statement's end state ([`check_removed_keys`]).
+/// non-NULL referenced key is a violation if a child row still references
+/// it after the statement's own changes to the *referencing* rows: children
+/// the statement deletes, or updates to point elsewhere, do not count
+/// (`statement` holds the statement's removed old versions and new images);
+/// other parent rows re-providing the key do not help (unlike NO ACTION,
+/// which is checked against the statement's end state by
+/// [`check_removed_keys`]).
 pub fn check_restrict(
     catalog: &Catalog,
     table: &TableInfo,
     changes: &[(RowData, Option<RowData>)],
     snapshot: &Snapshot,
+    statement: &Pending,
 ) -> DbResult<()> {
     if changes.is_empty() {
         return Ok(());
@@ -470,7 +473,9 @@ pub fn check_restrict(
         for fk in child.fks.iter().filter(|fk| fk.parent_table.value == table.name) {
             let parent_idx = positions(table, &fk.parent_columns)?;
             let child_idx = positions(child, &fk.columns)?;
-            let mut child_rows: Option<Vec<Row>> = None;
+            // Child references after the statement's own changes to the
+            // child rows: untouched rows plus new images of updated ones.
+            let mut child_keys: Option<Vec<Vec<ColumnValue>>> = None;
             for (old, new) in changes {
                 let action = if new.is_some() { &fk.on_update } else { &fk.on_delete };
                 if *action != Some(Action::Restrict) {
@@ -485,11 +490,18 @@ pub fn check_restrict(
                         continue;
                     }
                 }
-                let rows = match &mut child_rows {
-                    Some(r) => r,
-                    slot => slot.insert(visible_rows(catalog, child, snapshot, &Pending::new())?),
+                let refs = match &mut child_keys {
+                    Some(k) => k,
+                    slot => {
+                        let mut keys: Vec<Vec<ColumnValue>> = visible_rows(catalog, child, snapshot, statement)?
+                            .iter()
+                            .map(|r| key_of(&r.data, &child_idx))
+                            .collect();
+                        keys.extend(statement.added_rows(&child.name).map(|d| key_of(d, &child_idx)));
+                        slot.insert(keys)
+                    }
                 };
-                if rows.iter().any(|r| key_values_equal(&key_of(&r.data, &child_idx), &key)) {
+                if refs.iter().any(|k| key_values_equal(k, &key)) {
                     let (what, event) = if new.is_some() { ("update", "UPDATE") } else { ("delete", "DELETE") };
                     return Err(DbError::ForeignKeyViolation(format!(
                         "{} on table \"{}\" violates foreign key constraint \"{}\" on table \"{}\" \
@@ -510,8 +522,8 @@ pub fn check_restrict(
 }
 
 /// Plan a DELETE of `rows` from `table`: follow ON DELETE CASCADE references
-/// recursively, then check ON DELETE RESTRICT references immediately
-/// ([`check_restrict`]: any reference visible at statement start) and every
+/// recursively, then check ON DELETE RESTRICT references ([`check_restrict`]:
+/// any reference by a child row this statement does not delete) and every
 /// other reference to the deleted keys (NO ACTION) against the final set of
 /// deleted rows. Returns the rows to delete per table, `table` first.
 pub fn plan_delete(
@@ -546,7 +558,7 @@ pub fn plan_delete(
     }
     for (t, batch) in &batches {
         let changes: Vec<(RowData, Option<RowData>)> = batch.iter().map(|r| (r.data.clone(), None)).collect();
-        check_restrict(catalog, t, &changes, snapshot)?;
+        check_restrict(catalog, t, &changes, snapshot, &pending)?;
     }
     for (t, batch) in &batches {
         let data: Vec<RowData> = batch.iter().map(|r| r.data.clone()).collect();

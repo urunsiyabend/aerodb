@@ -102,7 +102,7 @@ fn resolve_column(info: &TableInfo, ident: &Ident) -> DbResult<usize> {
 }
 
 /// Resolve INSERT/UPDATE target columns; a column may be named only once.
-fn resolve_targets<'a>(info: &TableInfo, idents: impl Iterator<Item = &'a Ident>) -> DbResult<Vec<usize>> {
+pub(crate) fn resolve_targets<'a>(info: &TableInfo, idents: impl Iterator<Item = &'a Ident>) -> DbResult<Vec<usize>> {
     let mut out: Vec<usize> = Vec::new();
     for ident in idents {
         let idx = resolve_column(info, ident)?;
@@ -304,16 +304,8 @@ pub fn execute_update(
     let plan = keys::plan_update(catalog, &info, ops, &snapshot)?;
     ensure_rows_fit(plan.iter().flat_map(|(_, ops)| ops.iter().map(|(_, new)| new)))?;
 
-    // ON UPDATE RESTRICT is immediate: a changed key referenced at statement
-    // start is a violation even if the statement re-provides it.
-    for (table, ops) in &plan {
-        let changes: Vec<(RowData, Option<RowData>)> =
-            ops.iter().map(|(old, new)| (old.data.clone(), Some(new.clone()))).collect();
-        keys::check_restrict(catalog, table, &changes, &snapshot)?;
-    }
-
-    // Constraint checks against the statement's final state: every old
-    // version (direct and cascaded) is gone and every new image is present.
+    // The statement's overlay: every old version (direct and cascaded) is
+    // gone and every new image is present.
     let mut pending = Pending::new();
     for (table, ops) in &plan {
         for (old, new) in ops {
@@ -321,6 +313,17 @@ pub fn execute_update(
             pending.add(&table.name, new.clone());
         }
     }
+
+    // ON UPDATE RESTRICT: a changed key still referenced by a child row the
+    // statement does not re-point is a violation, even if another row of the
+    // statement re-provides the key.
+    for (table, ops) in &plan {
+        let changes: Vec<(RowData, Option<RowData>)> =
+            ops.iter().map(|(old, new)| (old.data.clone(), Some(new.clone()))).collect();
+        keys::check_restrict(catalog, table, &changes, &snapshot, &pending)?;
+    }
+
+    // Constraint checks against the statement's final state.
     for (table, ops) in &plan {
         let images: Vec<RowData> = ops.iter().map(|(_, new)| new.clone()).collect();
         keys::check_new_rows(catalog, table, &snapshot, &images, &pending)?;
@@ -645,7 +648,8 @@ pub fn execute_select_with_indexes(
     let info = table_info(catalog, table_name)?;
     let snapshot = read_snapshot(catalog);
     let scope = table_scope(&info);
-    if let Some(pred) = &selection {
+    let mut selection = selection;
+    if let Some(pred) = &mut selection {
         crate::execution::bind::bind_predicate(catalog, &scope, pred, "WHERE")?;
     }
 
@@ -723,9 +727,10 @@ pub fn execute_select_with_indexes(
 
 pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> {
     // Static binding of DML expressions before any row is touched (queries
-    // are bound by `execute_query`).
+    // are bound by `execute_query`); the bound form is what runs.
+    let mut stmt = stmt;
     if !matches!(stmt, Statement::Query(_)) {
-        crate::execution::bind::bind_statement(catalog, &stmt)?;
+        crate::execution::bind::bind_statement(catalog, &mut stmt)?;
     }
     match stmt {
         Statement::CreateTable {

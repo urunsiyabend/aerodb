@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 
 use super::{
-    IsolationLevel, Snapshot, Transaction, TransactionId, TransactionMode,
+    IsolationLevel, Snapshot, Transaction, TransactionId, TransactionMode, TransactionStatus,
     statement_requires_transaction,
 };
 
@@ -157,30 +157,47 @@ impl TransactionManager {
         Ok(id)
     }
 
+    /// The error for an operation on `tx_id` that is not a live detached
+    /// transaction: it already committed or aborted (a reused, copied
+    /// handle), or never existed. SQLSTATE 25P01.
+    fn not_active(&self, catalog: &Catalog, tx_id: TransactionId) -> DbError {
+        let status = catalog.pager.with_transaction_table(|t| t.get(&tx_id).cloned());
+        DbError::NoActiveTransaction(match status {
+            Some(TransactionStatus::Committed(_)) => format!("transaction {} already committed", tx_id),
+            Some(TransactionStatus::Aborted) => format!("transaction {} already aborted", tx_id),
+            _ => format!("transaction {} is not active", tx_id),
+        })
+    }
+
+    fn is_aborted(catalog: &Catalog, tx_id: TransactionId) -> bool {
+        catalog
+            .pager
+            .with_transaction_table(|t| matches!(t.get(&tx_id), Some(TransactionStatus::Aborted)))
+    }
+
     /// Run `f` with transaction `tx_id` installed in the pager, then detach it
-    /// again. Panics if `tx_id` is not a live detached transaction.
-    pub fn run_with<F, R>(&mut self, catalog: &mut Catalog, tx_id: TransactionId, f: F) -> R
+    /// again. A `tx_id` that is not a live detached transaction is refused
+    /// with `NoActiveTransaction` (25P01) without running `f`.
+    pub fn run_with<F, R>(&mut self, catalog: &mut Catalog, tx_id: TransactionId, f: F) -> DbResult<R>
     where
         F: FnOnce(&mut Catalog) -> R,
     {
-        let transaction = self
-            .detached
-            .remove(&tx_id)
-            .expect("run_with called for a live transaction");
+        let Some(transaction) = self.detached.remove(&tx_id) else {
+            return Err(self.not_active(catalog, tx_id));
+        };
         catalog.pager.install_transaction(transaction);
         let result = f(catalog);
-        let transaction = catalog
-            .pager
-            .uninstall_transaction()
-            .expect("transaction still installed");
-        self.detached.insert(tx_id, transaction);
-        result
+        if let Some(transaction) = catalog.pager.uninstall_transaction() {
+            self.detached.insert(tx_id, transaction);
+        }
+        Ok(result)
     }
 
     /// Run one statement `f` of detached transaction `tx_id` under the
     /// failed-transaction policy: a transaction with an earlier failed
     /// statement refuses it with `InFailedTransaction`; an error marks the
-    /// transaction failed (its partial effects can then never commit).
+    /// transaction failed (its partial effects can then never commit). An
+    /// ended or unknown transaction is refused with `NoActiveTransaction`.
     pub fn run_statement<F, R>(&mut self, catalog: &mut Catalog, tx_id: TransactionId, f: F) -> DbResult<R>
     where
         F: FnOnce(&mut Catalog) -> DbResult<R>,
@@ -188,7 +205,7 @@ impl TransactionManager {
         if self.failed_detached.contains(&tx_id) {
             return Err(DbError::InFailedTransaction);
         }
-        let result = self.run_with(catalog, tx_id, f);
+        let result = self.run_with(catalog, tx_id, f)?;
         if result.is_err() {
             self.failed_detached.insert(tx_id);
         }
@@ -199,55 +216,94 @@ impl TransactionManager {
     /// conflicts (first-committer-wins). On conflict the transaction is aborted
     /// and `WriteConflict` returned. A failed transaction (see
     /// [`TransactionManager::run_statement`]) is rolled back instead and
-    /// `InFailedTransaction` returned.
+    /// `InFailedTransaction` returned. An ended or unknown transaction is
+    /// refused with `NoActiveTransaction` (25P01).
     pub fn commit_detached(
         &mut self,
         catalog: &mut Catalog,
         tx_id: TransactionId,
     ) -> DbResult<()> {
         if self.failed_detached.contains(&tx_id) {
-            // A rollback failure is reported (and the transaction stays
-            // failed and live), never swallowed.
+            // A rollback failure is reported, never swallowed.
             self.abort_detached(catalog, tx_id)?;
             return Err(DbError::InFailedTransaction);
         }
-        let transaction = self
-            .detached
-            .remove(&tx_id)
-            .expect("commit_detached called for a live transaction");
+        let Some(transaction) = self.detached.remove(&tx_id) else {
+            return Err(self.not_active(catalog, tx_id));
+        };
         catalog.pager.install_transaction(transaction);
 
         if let Some(conflict_key) = self.first_conflicting_key(catalog) {
             // Loser of first-committer-wins: abort and report the conflict.
-            self.commit_cleanup_after_abort(catalog);
+            if let Err(e) = self.abort_installed(catalog, tx_id) {
+                error!("rollback of conflicting transaction {} failed: {}", tx_id, e);
+            }
             return Err(DbError::WriteConflict(conflict_key));
         }
 
-        self.commit(catalog)?;
-        Ok(())
-    }
-
-    /// Abort detached transaction `tx_id`. If the rollback fails, the
-    /// transaction is detached again (so it can still be aborted later), keeps
-    /// its failed state, and the error is returned.
-    pub fn abort_detached(&mut self, catalog: &mut Catalog, tx_id: TransactionId) -> io::Result<()> {
-        let transaction = self
-            .detached
-            .remove(&tx_id)
-            .expect("abort_detached called for a live transaction");
-        catalog.pager.install_transaction(transaction);
-        let rollback = self.rollback(catalog);
-        if rollback.is_err() {
+        let result = self.commit(catalog);
+        if result.is_err() {
+            // Never leave a transaction in the execution slot: if it is still
+            // there (the commit failed before ending it), keep it live but
+            // failed, so it can only be aborted.
             if let Some(transaction) = catalog.pager.uninstall_transaction() {
                 self.detached.insert(tx_id, transaction);
+                self.failed_detached.insert(tx_id);
             }
         }
-        let mut failed = self.failed_detached.contains(&tx_id);
-        let result = settle_failed(&mut failed, rollback);
-        if !failed {
-            self.failed_detached.remove(&tx_id);
-        }
         result
+    }
+
+    /// Abort detached transaction `tx_id`. Aborting an already aborted
+    /// transaction is a no-op (`Ok`); a committed or unknown one is refused
+    /// with `NoActiveTransaction` (25P01).
+    ///
+    /// If the rollback fails, the error is returned and the state stays
+    /// consistent: when the failure happened before the pager took the
+    /// transaction, it remains live (detached) and is marked failed, so it
+    /// can never commit and a later abort retries; once the pager has taken
+    /// it, it is aborted (status recorded in the shared table, so its versions
+    /// are invisible; a reopen treats an unfinished transaction as aborted)
+    /// and is dropped from the live set, so a repeated abort is a no-op.
+    pub fn abort_detached(&mut self, catalog: &mut Catalog, tx_id: TransactionId) -> DbResult<()> {
+        let Some(transaction) = self.detached.remove(&tx_id) else {
+            if Self::is_aborted(catalog, tx_id) {
+                self.failed_detached.remove(&tx_id);
+                return Ok(());
+            }
+            return Err(self.not_active(catalog, tx_id));
+        };
+        catalog.pager.install_transaction(transaction);
+        self.abort_installed(catalog, tx_id).map_err(DbError::from)
+    }
+
+    /// Roll back the installed transaction `tx_id` (see
+    /// [`TransactionManager::abort_detached`] for the failure handling).
+    fn abort_installed(&mut self, catalog: &mut Catalog, tx_id: TransactionId) -> io::Result<()> {
+        match self.rollback(catalog) {
+            Ok(()) => {
+                self.failed_detached.remove(&tx_id);
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(transaction) = catalog.pager.uninstall_transaction() {
+                    // Not taken: still live; it must never commit now.
+                    self.detached.insert(tx_id, transaction);
+                    self.failed_detached.insert(tx_id);
+                } else {
+                    // Taken and marked aborted: the transaction is over.
+                    // Finish the in-memory side of the rollback as far as
+                    // possible (best effort; the I/O error is what we report).
+                    self.active.remove(&tx_id);
+                    self.failed_detached.remove(&tx_id);
+                    if let Err(reload) = catalog.reload_tables() {
+                        error!("reloading the catalog after a failed rollback of {}: {}", tx_id, reload);
+                    }
+                    catalog.restore_pre_tx_indexes();
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Re-check every recorded write intent of the installed transaction against
@@ -267,11 +323,6 @@ impl TransactionManager {
             }
         }
         None
-    }
-
-    /// Abort the installed transaction as part of losing a commit conflict.
-    fn commit_cleanup_after_abort(&mut self, catalog: &mut Catalog) {
-        let _ = self.rollback(catalog);
     }
 
     pub fn execute<F>(
@@ -419,6 +470,82 @@ fn commit_failure(original: DbError, rollback: io::Result<()>) -> DbError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution::query::execute_query;
+    use crate::execution::runtime::handle_statement;
+    use crate::sql::ast::Statement;
+    use crate::sql::parser::parse_sql;
+    use crate::storage::pager::{Pager, rollback_fault};
+
+    fn exec(m: &mut TransactionManager, c: &mut Catalog, tx: TransactionId, sql: &str) -> DbResult<()> {
+        let stmt = parse_sql(sql).unwrap();
+        m.run_statement(c, tx, |c| handle_statement(c, stmt))
+    }
+
+    fn count(m: &mut TransactionManager, c: &mut Catalog) -> usize {
+        let tx = m.begin_detached(c, None, IsolationLevel::Snapshot).unwrap();
+        let Statement::Query(q) = parse_sql("SELECT id FROM t").unwrap() else { unreachable!() };
+        let n = m.run_statement(c, tx, |c| execute_query(c, &q, None)).unwrap().rows.len();
+        m.commit_detached(c, tx).unwrap();
+        n
+    }
+
+    #[test]
+    fn failed_detached_rollbacks_leave_a_consistent_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        let mut c = Catalog::open(Pager::new(path.to_str().unwrap()).unwrap()).unwrap();
+        let mut m = TransactionManager::new();
+        let begin = |m: &mut TransactionManager, c: &mut Catalog| m.begin_detached(c, None, IsolationLevel::Snapshot).unwrap();
+        let tx = begin(&mut m, &mut c);
+        exec(&mut m, &mut c, tx, "CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        m.commit_detached(&mut c, tx).unwrap();
+
+        // 1. The pager took the transaction (and marked it aborted), then
+        //    failed: the transaction is over; aborting again is a no-op and
+        //    every other use of the handle is refused (no panic).
+        let tx = begin(&mut m, &mut c);
+        exec(&mut m, &mut c, tx, "INSERT INTO t VALUES (1)").unwrap();
+        rollback_fault::arm(rollback_fault::AFTER_TAKE);
+        assert_eq!(m.abort_detached(&mut c, tx).unwrap_err().sqlstate(), "58030");
+        assert!(!m.active.contains(&tx) && !m.detached.contains_key(&tx) && !m.failed_detached.contains(&tx));
+        assert!(!c.transaction_active());
+        m.abort_detached(&mut c, tx).unwrap();
+        assert_eq!(m.commit_detached(&mut c, tx).unwrap_err().sqlstate(), "25P01");
+        assert_eq!(exec(&mut m, &mut c, tx, "INSERT INTO t VALUES (2)").unwrap_err().sqlstate(), "25P01");
+        assert_eq!(count(&mut m, &mut c), 0);
+
+        // 2. COMMIT of a failed transaction whose rollback fails before the
+        //    pager took it: still live and failed; a retried COMMIT rolls it
+        //    back (25P02), a third one is refused (25P01).
+        let tx = begin(&mut m, &mut c);
+        exec(&mut m, &mut c, tx, "INSERT INTO t VALUES (3)").unwrap();
+        assert!(exec(&mut m, &mut c, tx, "INSERT INTO t VALUES (3)").is_err());
+        rollback_fault::arm(rollback_fault::BEFORE_TAKE);
+        assert_eq!(m.commit_detached(&mut c, tx).unwrap_err().sqlstate(), "58030");
+        assert!(m.detached.contains_key(&tx) && m.failed_detached.contains(&tx));
+        assert!(!c.transaction_active(), "the execution slot is free again");
+        assert_eq!(exec(&mut m, &mut c, tx, "INSERT INTO t VALUES (4)").unwrap_err().sqlstate(), "25P02");
+        assert_eq!(m.commit_detached(&mut c, tx).unwrap_err().sqlstate(), "25P02");
+        assert_eq!(m.commit_detached(&mut c, tx).unwrap_err().sqlstate(), "25P01");
+        m.abort_detached(&mut c, tx).unwrap();
+        assert_eq!(count(&mut m, &mut c), 0);
+
+        // 3. A plain ABORT failing before the take: the transaction stays
+        //    live but can never commit any more.
+        let tx = begin(&mut m, &mut c);
+        exec(&mut m, &mut c, tx, "INSERT INTO t VALUES (5)").unwrap();
+        rollback_fault::arm(rollback_fault::BEFORE_TAKE);
+        assert!(m.abort_detached(&mut c, tx).is_err());
+        assert_eq!(m.commit_detached(&mut c, tx).unwrap_err().sqlstate(), "25P02");
+        assert_eq!(count(&mut m, &mut c), 0);
+
+        // The manager still works normally.
+        let tx = begin(&mut m, &mut c);
+        exec(&mut m, &mut c, tx, "INSERT INTO t VALUES (6)").unwrap();
+        m.commit_detached(&mut c, tx).unwrap();
+        assert_eq!(count(&mut m, &mut c), 1);
+        assert!(m.active.is_empty() && m.detached.is_empty() && m.failed_detached.is_empty());
+    }
 
     #[test]
     fn failed_flag_is_cleared_only_after_a_successful_rollback() {

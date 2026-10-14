@@ -44,21 +44,39 @@ impl TableInfo {
     /// Give an unnamed PRIMARY KEY / FOREIGN KEY its deterministic default
     /// name (`{table}_pkey`, `{table}_{cols}_fkey`). Used for tables created
     /// through the raw catalog API and for catalog rows written before
-    /// constraint names were persisted.
+    /// constraint names were persisted. A default that is already taken by
+    /// another constraint of the table (e.g. a legacy UNIQUE named
+    /// `{table}_pkey`, or two unnamed FKs over the same columns) gets the
+    /// first free suffix `_1`, `_2`, ...; the result is deterministic for a
+    /// given row.
     pub fn fill_default_constraint_names(&mut self) {
-        if self.primary_key.as_ref().is_some_and(|pk| !pk.is_empty()) && self.primary_key_name.is_none() {
-            self.primary_key_name = Some(crate::constraints::keys::default_pk_name(&self.name));
-        }
-        let fks = std::mem::take(&mut self.fks);
-        self.fks = fks
-            .into_iter()
-            .map(|mut fk| {
-                if fk.name.is_none() {
-                    fk.name = Some(crate::constraints::keys::fk_name(self, &fk));
-                }
-                fk
-            })
+        let mut used: std::collections::HashSet<String> = self
+            .uniques
+            .iter()
+            .map(|u| u.name.clone())
+            .chain(self.checks.iter().map(|c| c.name.clone()))
+            .chain(self.primary_key_name.clone())
+            .chain(self.fks.iter().filter_map(|fk| fk.name.clone()))
             .collect();
+        let mut claim = |base: String| -> String {
+            let name = if used.contains(&base) {
+                (1..).map(|n| format!("{}_{}", base, n)).find(|c| !used.contains(c)).expect("unbounded")
+            } else {
+                base
+            };
+            used.insert(name.clone());
+            name
+        };
+        if self.primary_key.as_ref().is_some_and(|pk| !pk.is_empty()) && self.primary_key_name.is_none() {
+            self.primary_key_name = Some(claim(crate::constraints::keys::default_pk_name(&self.name)));
+        }
+        let table = self.name.clone();
+        for fk in &mut self.fks {
+            if fk.name.is_none() {
+                let cols: Vec<String> = fk.columns.iter().map(|c| c.value.clone()).collect();
+                fk.name = Some(claim(crate::constraints::keys::default_fk_name(&table, &cols)));
+            }
+        }
     }
 }
 
@@ -1709,6 +1727,40 @@ mod tests {
                 expr: crate::sql::parser::parse_expression_sql("\"a\" > 0 AND \"b\" <> 'x'").unwrap(),
             }],
         }
+    }
+
+    #[test]
+    fn default_constraint_names_never_collide_with_existing_ones() {
+        // A legacy row whose UNIQUE/CHECK names already use the default PK/FK
+        // names (and two unnamed FKs over the same column).
+        let mut info = constrained_table();
+        info.primary_key_name = None;
+        info.fks[0].name = None;
+        let second = info.fks[0].clone();
+        info.fks.push(second);
+        info.uniques[0].name = "t_pkey".into();
+        info.checks[0].name = "t_a_fkey".into();
+        info.checks.push(CheckConstraint { name: "t_pkey_1".into(), expr: info.checks[0].expr.clone() });
+        info.fill_default_constraint_names();
+        assert_eq!(info.primary_key_name.as_deref(), Some("t_pkey_2"));
+        assert_eq!(info.fks[0].name.as_deref(), Some("t_a_fkey_1"));
+        assert_eq!(info.fks[1].name.as_deref(), Some("t_a_fkey_2"));
+        // Deterministic: the same row always decodes to the same names.
+        let mut again = constrained_table();
+        again.primary_key_name = None;
+        again.fks[0].name = None;
+        again.fks.push(again.fks[0].clone());
+        again.uniques[0].name = "t_pkey".into();
+        again.checks[0].name = "t_a_fkey".into();
+        again.checks.push(CheckConstraint { name: "t_pkey_1".into(), expr: again.checks[0].expr.clone() });
+        again.fill_default_constraint_names();
+        assert_eq!(again.fks, info.fks);
+        assert_eq!(again.primary_key_name, info.primary_key_name);
+        // Given names are kept as they are.
+        let mut named = constrained_table();
+        named.fill_default_constraint_names();
+        assert_eq!(named.primary_key_name.as_deref(), Some("t_pk"));
+        assert_eq!(named.fks[0].name.as_deref(), Some("t_fk"));
     }
 
     #[test]

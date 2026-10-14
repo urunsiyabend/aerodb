@@ -33,10 +33,12 @@ pub struct QueryResult {
 /// Execute `query`, optionally correlated with an outer environment. The
 /// whole query (subqueries, views and FROM-subqueries included) is first
 /// bound statically ([`crate::execution::bind`]), so type-category errors
-/// are reported before any row is read.
+/// are reported before any row is read; the bound form (character literals
+/// standing for date/time values converted) is what runs.
 pub fn execute_query(catalog: &mut Catalog, query: &Query, outer: Option<&Env>) -> DbResult<QueryResult> {
-    crate::execution::bind::bind_query(catalog, query, outer)?;
-    run_query(catalog, query, outer)
+    let mut bound = query.clone();
+    crate::execution::bind::bind_query(catalog, &mut bound, outer)?;
+    run_query(catalog, &bound, outer)
 }
 
 /// Shared-borrow form of [`execute_query`] used by the evaluator for
@@ -147,8 +149,10 @@ fn load_table_ref(catalog: &Catalog, tref: &TableRef, outer: Option<&Env>) -> Db
             }
             Relation::View(view) => {
                 // A view is its stored query, run through this same executor
-                // (uncorrelated: a view never sees the referencing query's scope).
-                let r = run_query(catalog, &view.query, None)?;
+                // (uncorrelated: a view never sees the referencing query's scope),
+                // in its bound form.
+                let query = crate::execution::bind::bound_view_query(catalog, &view.query)?;
+                let r = run_query(catalog, &query, None)?;
                 if r.columns.len() != view.columns.len() {
                     return Err(DbError::ColumnNotFound(format!(
                         "view \"{}\" defines {} columns but its query now returns {}",

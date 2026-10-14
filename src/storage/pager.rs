@@ -756,6 +756,8 @@ impl Pager {
     /// pages among `catalog_pages` (the non-root pages of the catalog trees,
     /// once they outgrow pages 1 and 2) to their committed on-disk images.
     pub fn rollback_transaction_reverting(&self, catalog_pages: &[u32]) -> io::Result<()> {
+        #[cfg(test)]
+        rollback_fault::check(rollback_fault::BEFORE_TAKE)?;
         let Some(transaction) = self.transaction().take() else {
             return Ok(());
         };
@@ -770,6 +772,10 @@ impl Pager {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(transaction_id, TransactionStatus::Aborted);
+        // From here on a failure leaves the transaction taken out of the
+        // execution slot and aborted in the in-memory status table.
+        #[cfg(test)]
+        rollback_fault::check(rollback_fault::AFTER_TAKE)?;
         {
             let mut io = self.io();
             io.wal
@@ -849,6 +855,38 @@ impl Pager {
             )
         };
         self.persist_meta(next_transaction_id, next_commit_ts, frozen_xid)
+    }
+}
+
+/// Test-only fault injection for [`Pager::rollback_transaction_reverting`]:
+/// the next rollback on this thread fails at the armed point.
+#[cfg(test)]
+pub(crate) mod rollback_fault {
+    use std::cell::Cell;
+    use std::io;
+
+    /// Fail before the transaction is taken out of the execution slot.
+    pub(crate) const BEFORE_TAKE: u8 = 1;
+    /// Fail after it was taken and marked aborted, before any I/O.
+    pub(crate) const AFTER_TAKE: u8 = 2;
+
+    thread_local! {
+        static ARMED: Cell<u8> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn arm(point: u8) {
+        ARMED.with(|a| a.set(point));
+    }
+
+    pub(super) fn check(point: u8) -> io::Result<()> {
+        ARMED.with(|a| {
+            if a.get() == point {
+                a.set(0);
+                Err(io::Error::other(format!("injected rollback failure (point {point})")))
+            } else {
+                Ok(())
+            }
+        })
     }
 }
 

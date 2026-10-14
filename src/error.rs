@@ -73,6 +73,11 @@ pub enum DbError {
     /// A row image whose serialized form cannot fit in one B-tree leaf page.
     #[error("row is too large for a page: {0}")]
     RowTooLarge(String),
+    /// A transaction handle whose transaction already ended (committed or
+    /// aborted) or never existed, e.g. a `Database::commit` repeated on a
+    /// copied `TxHandle`.
+    #[error("no active transaction: {0}")]
+    NoActiveTransaction(String),
 }
 
 impl DbError {
@@ -111,6 +116,7 @@ impl DbError {
             DbError::WrongObjectType(_) => "42809",
             DbError::DuplicateConstraint { .. } => "42710",
             DbError::RowTooLarge(_) => "54000",
+            DbError::NoActiveTransaction(_) => "25P01",
         }
     }
 }

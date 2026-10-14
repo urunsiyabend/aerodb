@@ -38,13 +38,13 @@ impl<'a> Constraint for ForeignKeyConstraint<'a> {
         row: &RowData,
         snapshot: &Snapshot,
     ) -> DbResult<()> {
-        check_restrict(catalog, table, &[(row.clone(), None)], snapshot)?;
         let mut pending = Pending::new();
         for r in visible_rows(catalog, table, snapshot, &Pending::new())? {
             if r.data == *row {
                 pending.remove(&table.name, &r);
             }
         }
+        check_restrict(catalog, table, &[(row.clone(), None)], snapshot, &pending)?;
         check_removed_keys(catalog, table, std::slice::from_ref(row), snapshot, &pending, Removal::Delete)
     }
 }

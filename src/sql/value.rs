@@ -7,7 +7,16 @@ use crate::storage::row::{
 use std::cmp::Ordering;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq)]
+/// A typed SQL value.
+///
+/// `==` is *representation* equality: same variant and same payload, with
+/// DECIMALs compared by [`Decimal::same_repr`] (`1.0 != 1.00`). It is the
+/// identity of a literal inside an expression tree (aggregate lookup, GROUP
+/// BY matching) and of a result value in tests. SQL value comparison —
+/// numeric across Int/Decimal/Double and scales, PAD SPACE for CHAR, text
+/// against temporal kinds — is [`Value::compare`]; DISTINCT / GROUP BY / set
+/// operation keys use `execution::query::key_of`.
+#[derive(Debug, Clone)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -21,6 +30,24 @@ pub enum Value {
     Timestamp(i64),
     Time(i32),
     Year(u16),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, o: &Self) -> bool {
+        match (self, o) {
+            (Value::Null, Value::Null) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Decimal(a), Value::Decimal(b)) => a.same_repr(b),
+            (Value::Double(a), Value::Double(b)) => a == b,
+            (Value::Text(a), Value::Text(b)) | (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::Date(a), Value::Date(b)) => a == b,
+            (Value::DateTime(a), Value::DateTime(b)) | (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
+            (Value::Time(a), Value::Time(b)) => a == b,
+            (Value::Year(a), Value::Year(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

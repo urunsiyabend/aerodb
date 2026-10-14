@@ -16,25 +16,35 @@
 //!
 //! | construct | rule |
 //! |---|---|
-//! | `=` `<>` `<` `<=` `>` `>=`, IN list / IN subquery, BETWEEN, simple CASE operand vs WHEN, NULLIF | operands comparable: same category, or a character *literal* against a date/time kind (implicit literal coercion, e.g. `d = '2024-01-02'`) |
-//! | CASE THEN/ELSE, COALESCE arguments | one common category (same rule; numeric kinds widen INTEGER < DECIMAL < DOUBLE) |
+//! | `=` `<>` `<` `<=` `>` `>=`, IN list / IN subquery, BETWEEN, simple CASE operand vs WHEN, NULLIF | operands comparable: same category, or a character *literal* against a date/time kind (implicit literal coercion, below) |
+//! | CASE THEN/ELSE, COALESCE arguments, UNION / EXCEPT / INTERSECT columns | one common category (same rule; numeric kinds widen INTEGER < DECIMAL < DOUBLE) |
 //! | `+ - * / %`, unary `+ -`, SUM, AVG, ABS | numeric |
 //! | `& \| ^` | integer kinds |
 //! | AND, OR, NOT, IS [NOT] TRUE/FALSE/UNKNOWN, searched CASE WHEN, WHERE, HAVING, JOIN ON, CHECK | boolean |
 //! | LIKE operand, pattern and ESCAPE; UPPER, LOWER, CHAR_LENGTH | character |
 //! | `\|\|` | any (renders text) |
 //! | CAST | only conversions the evaluator can perform for some value (e.g. no BOOLEAN to DATE) |
-//! | UNION / EXCEPT / INTERSECT columns | same category |
+//! | INSERT VALUES / UPDATE SET value vs its target column | same category as the column; a character literal may also be assigned to a numeric or date/time column (converted per value, e.g. `'42'`, `'2024-01-02'`) |
+//!
+//! **Implicit literal coercion.** A character *literal* (a string constant,
+//! or a CASE / COALESCE whose results are all string constants or NULL)
+//! matched against a date/time kind is converted to that kind once, at bind
+//! time, in the statement that is then executed: `COALESCE(d, '2024-01-01')`
+//! yields DATE values, `SELECT d ... UNION SELECT '2024-01-01'` a DATE
+//! column, and a literal that is not a valid value of the kind (`COALESCE(d,
+//! 'never')`) fails with 22018 before any row is read, whatever the data. A
+//! non-literal character expression (a TEXT column, `UPPER(..)`, ...) never
+//! mixes with a date/time kind (42804).
 //!
 //! This is a bounded, fail-closed policy for the engine's own type system,
-//! not the full SQL-standard type-derivation algorithm. Assignment coercion
-//! of INSERT/UPDATE values to column types is unchanged (checked per value).
+//! not the full SQL-standard type-derivation algorithm.
 
 use crate::catalog::{Catalog, Relation};
 use crate::error::{DbError, DbResult};
 use crate::execution::eval::{Env, Scope, display_column};
 use crate::sql::ast::{
-    AggFunc, BinaryOp, Expr, Ident, Query, Select, SelectItem, SetExpr, Statement, TableRef, UnaryOp,
+    AggFunc, BinaryOp, Expr, Ident, OrderByItem, Query, Select, SelectItem, SetExpr, Statement, TableRef,
+    UnaryOp,
 };
 use crate::sql::value::{SqlType, Value};
 
@@ -69,8 +79,8 @@ impl Category {
     }
 }
 
-/// Static type of a bound expression. `text_literal` marks a string literal,
-/// which may stand for a date/time value (implicit literal coercion).
+/// Static type of a bound expression. `text_literal` marks a character
+/// literal (see the module doc), which may stand for a date/time value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bound {
     pub ty: SqlType,
@@ -97,6 +107,12 @@ impl Bound {
     fn type_name(&self) -> String {
         if self.ty == SqlType::Null { "unknown".into() } else { self.ty.name() }
     }
+
+    /// The date/time type a character literal bound as `self` must be
+    /// converted to when matched against `other`.
+    fn literal_target(&self, other: &Bound) -> Option<SqlType> {
+        (self.text_literal && other.category().is_temporal()).then_some(other.ty)
+    }
 }
 
 fn mismatch(msg: String) -> DbError {
@@ -122,8 +138,10 @@ fn comparable(a: &Bound, b: &Bound) -> bool {
         || (cb.is_temporal() && a.text_literal)
 }
 
-/// Common type of two alternatives (CASE results, COALESCE arguments) or of
-/// two compared operands; `what` names the construct in the error.
+/// Common type of two alternatives (CASE results, COALESCE arguments,
+/// set-operation columns) or of two compared operands; `what` names the
+/// construct in the error. A character literal next to a date/time kind
+/// takes that kind (the caller converts the literal with [`coerce`]).
 fn unify(a: Bound, b: Bound, what: &str) -> DbResult<Bound> {
     if !comparable(&a, &b) {
         return Err(mismatch(format!("{} types {} and {} cannot be matched", what, a.type_name(), b.type_name())));
@@ -137,10 +155,42 @@ fn unify(a: Bound, b: Bound, what: &str) -> DbResult<Bound> {
             ty: if a.ty == b.ty { a.ty } else { SqlType::Text },
             text_literal: a.text_literal && b.text_literal,
         },
-        // A character literal next to a date/time kind takes that kind.
-        (Category::Character, _) => b,
-        _ => a,
+        (Category::Character, _) => Bound::of(b.ty),
+        _ => Bound::of(a.ty),
     })
+}
+
+/// Convert the character literal(s) of `e` — a string constant, or the
+/// results of a CASE / COALESCE made of string constants and NULLs — to the
+/// date/time type `ty`. An invalid literal fails here (22018), at bind time.
+fn coerce(e: &mut Expr, ty: &SqlType) -> DbResult<()> {
+    match e {
+        Expr::Literal(v @ Value::Text(_)) => *v = v.cast_to(ty)?,
+        Expr::Function { name, args } if name.as_str() == "COALESCE" => {
+            for a in args {
+                coerce(a, ty)?;
+            }
+        }
+        Expr::Case { whens, else_result, .. } => {
+            for (_, then) in whens {
+                coerce(then, ty)?;
+            }
+            if let Some(e) = else_result {
+                coerce(e, ty)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Convert `e` (bound as `b`) to `target` if it is a character literal and
+/// `target` is a date/time kind.
+fn coerce_to(e: &mut Expr, b: &Bound, target: &Bound) -> DbResult<()> {
+    match b.literal_target(target) {
+        Some(ty) => coerce(e, &ty),
+        None => Ok(()),
+    }
 }
 
 fn require(b: &Bound, ok: impl Fn(Category) -> bool, what: &str, expected: &str) -> DbResult<()> {
@@ -220,17 +270,17 @@ impl Binder<'_> {
 
     // ---- queries ------------------------------------------------------------
 
-    fn query(&self, q: &Query, outer: &[Scope]) -> DbResult<Vec<OutColumn>> {
-        match &q.body {
-            SetExpr::Select(sel) => self.select(sel, &q.order_by, outer),
+    fn query(&self, q: &mut Query, outer: &[Scope]) -> DbResult<Vec<OutColumn>> {
+        match &mut q.body {
+            SetExpr::Select(sel) => self.select(sel, &mut q.order_by, outer),
             // A set operation's ORDER BY names output columns only.
             body => self.set_expr(body, outer),
         }
     }
 
-    fn set_expr(&self, body: &SetExpr, outer: &[Scope]) -> DbResult<Vec<OutColumn>> {
+    fn set_expr(&self, body: &mut SetExpr, outer: &[Scope]) -> DbResult<Vec<OutColumn>> {
         match body {
-            SetExpr::Select(sel) => self.select(sel, &[], outer),
+            SetExpr::Select(sel) => self.select(sel, &mut [], outer),
             SetExpr::SetOp { op, left, right, .. } => {
                 let l = self.set_expr(left, outer)?;
                 let r = self.set_expr(right, outer)?;
@@ -241,26 +291,63 @@ impl Binder<'_> {
                     )));
                 }
                 let mut out = Vec::with_capacity(l.len());
+                let mut left_targets = Vec::with_capacity(l.len());
+                let mut right_targets = Vec::with_capacity(l.len());
                 for (lc, rc) in l.into_iter().zip(r) {
-                    let (cl, cr) = (lc.bound.category(), rc.bound.category());
-                    if cl != Category::Unknown && cr != Category::Unknown && cl != cr {
-                        return Err(mismatch(format!(
-                            "{} types {} and {} cannot be matched",
-                            op.as_str(),
-                            lc.bound.type_name(),
-                            rc.bound.type_name()
-                        )));
-                    }
-                    let ty = if cl == Category::Unknown { rc.bound.ty } else { widen(lc.bound.ty, rc.bound.ty) };
-                    out.push(OutColumn { name: lc.name, bound: Bound::of(ty), order_name: lc.order_name });
+                    let bound = unify(lc.bound, rc.bound, op.as_str())?;
+                    left_targets.push(lc.bound.literal_target(&rc.bound));
+                    right_targets.push(rc.bound.literal_target(&lc.bound));
+                    out.push(OutColumn { name: lc.name, bound, order_name: lc.order_name });
+                }
+                if left_targets.iter().any(Option::is_some) {
+                    self.coerce_output(left, &left_targets, outer)?;
+                }
+                if right_targets.iter().any(Option::is_some) {
+                    self.coerce_output(right, &right_targets, outer)?;
                 }
                 Ok(out)
             }
         }
     }
 
+    /// Convert the character-literal output columns of `body` that a set
+    /// operation (or IN subquery) matches against a date/time kind:
+    /// `targets[i]` is the type for output column `i`.
+    fn coerce_output(&self, body: &mut SetExpr, targets: &[Option<SqlType>], outer: &[Scope]) -> DbResult<()> {
+        match body {
+            SetExpr::SetOp { left, right, .. } => {
+                self.coerce_output(left, targets, outer)?;
+                self.coerce_output(right, targets, outer)
+            }
+            SetExpr::Select(sel) => {
+                // Output position of each select-list item (wildcards expand
+                // to the columns of the FROM scope).
+                let has_wildcard = sel.projection.iter().any(|i| !matches!(i, SelectItem::Expr { .. }));
+                let scope = if has_wildcard { Some(self.from_scope(sel, outer)?) } else { None };
+                let mut pos = 0;
+                for item in &mut sel.projection {
+                    match item {
+                        SelectItem::Expr { expr, .. } => {
+                            if let Some(Some(ty)) = targets.get(pos) {
+                                coerce(expr, ty)?;
+                            }
+                            pos += 1;
+                        }
+                        SelectItem::Wildcard => pos += scope.as_ref().map_or(0, |s| s.columns.len()),
+                        SelectItem::QualifiedWildcard(q) => {
+                            pos += scope.as_ref().map_or(0, |s| {
+                                s.columns.iter().filter(|c| c.qualifier.as_deref().is_some_and(|cq| q.matches(cq))).count()
+                            })
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Columns one FROM item exposes.
-    fn table_ref(&self, tref: &TableRef, outer: &[Scope]) -> DbResult<Scope> {
+    fn table_ref(&self, tref: &mut TableRef, outer: &[Scope]) -> DbResult<Scope> {
         let catalog = self.catalog()?;
         let mut scope = Scope::new();
         match tref {
@@ -272,7 +359,9 @@ impl Binder<'_> {
                     }
                 }
                 Relation::View(view) => {
-                    let cols = self.query(&view.query, &[])?;
+                    // The stored query is bound (and coerced) again each
+                    // time it runs; see `bound_view_query`.
+                    let cols = self.query(&mut view.query.clone(), &[])?;
                     if cols.len() != view.columns.len() {
                         return Err(DbError::ColumnNotFound(format!(
                             "view \"{}\" defines {} columns but its query now returns {}",
@@ -296,33 +385,39 @@ impl Binder<'_> {
         Ok(scope)
     }
 
-    fn select(&self, sel: &Select, order_by: &[crate::sql::ast::OrderByItem], outer: &[Scope]) -> DbResult<Vec<OutColumn>> {
+    /// The scope of a SELECT's FROM items and joins (ON predicates bound).
+    fn from_scope(&self, sel: &mut Select, outer: &[Scope]) -> DbResult<Scope> {
         let mut scope = Scope::new();
-        for tref in &sel.from {
+        for tref in &mut sel.from {
             let part = self.table_ref(tref, outer)?;
             scope.extend(&part);
         }
-        for join in &sel.joins {
-            let part = self.table_ref(&join.table, outer)?;
+        for join in &mut sel.joins {
+            let part = self.table_ref(&mut join.table, outer)?;
             scope.extend(&part);
-            if let Some(p) = &join.predicate {
+            if let Some(p) = &mut join.predicate {
                 require_boolean(&self.expr(p, &scope, outer)?, "JOIN ... ON")?;
             }
         }
-        if let Some(w) = &sel.selection {
+        Ok(scope)
+    }
+
+    fn select(&self, sel: &mut Select, order_by: &mut [OrderByItem], outer: &[Scope]) -> DbResult<Vec<OutColumn>> {
+        let scope = self.from_scope(sel, outer)?;
+        if let Some(w) = &mut sel.selection {
             require_boolean(&self.expr(w, &scope, outer)?, "WHERE")?;
         }
-        for g in &sel.group_by {
+        for g in &mut sel.group_by {
             // An integer literal is a select-list ordinal.
             if !matches!(g, Expr::Literal(Value::Int(_))) {
                 self.expr(g, &scope, outer)?;
             }
         }
-        if let Some(h) = &sel.having {
+        if let Some(h) = &mut sel.having {
             require_boolean(&self.expr(h, &scope, outer)?, "HAVING")?;
         }
         let mut out = Vec::new();
-        for item in &sel.projection {
+        for item in &mut sel.projection {
             match item {
                 SelectItem::Wildcard => {
                     for c in &scope.columns {
@@ -357,20 +452,20 @@ impl Binder<'_> {
                 _ => false,
             };
             if !by_output {
-                self.expr(&o.expr, &scope, outer)?;
+                self.expr(&mut o.expr, &scope, outer)?;
             }
         }
         Ok(out)
     }
 
     /// Bind a subquery nested in an expression of `scope`.
-    fn subquery(&self, q: &Query, scope: &Scope, outer: &[Scope]) -> DbResult<Vec<OutColumn>> {
+    fn subquery(&self, q: &mut Query, scope: &Scope, outer: &[Scope]) -> DbResult<Vec<OutColumn>> {
         let mut chain = outer.to_vec();
         chain.push(scope.clone());
         self.query(q, &chain)
     }
 
-    fn single_column(&self, q: &Query, scope: &Scope, outer: &[Scope]) -> DbResult<Bound> {
+    fn single_column(&self, q: &mut Query, scope: &Scope, outer: &[Scope]) -> DbResult<Bound> {
         let cols = self.subquery(q, scope, outer)?;
         if cols.len() != 1 {
             return Err(DbError::Syntax("subquery has too many columns".into()));
@@ -392,13 +487,35 @@ impl Binder<'_> {
         Err(DbError::ColumnNotFound(display_column(table.map(Ident::as_str), name)))
     }
 
-    fn expr(&self, e: &Expr, scope: &Scope, outer: &[Scope]) -> DbResult<Bound> {
-        let bind = |x: &Expr| self.expr(x, scope, outer);
+    /// Bind `exprs` as alternatives of one construct: unify them, then
+    /// convert character literals among them to a date/time result type.
+    fn alternatives<'e>(
+        &self,
+        exprs: impl IntoIterator<Item = &'e mut Expr>,
+        start: Bound,
+        what: &str,
+        scope: &Scope,
+        outer: &[Scope],
+    ) -> DbResult<Bound> {
+        let mut bound: Vec<(&'e mut Expr, Bound)> = Vec::new();
+        let mut acc = start;
+        for e in exprs {
+            let b = self.expr(e, scope, outer)?;
+            acc = unify(acc, b, what)?;
+            bound.push((e, b));
+        }
+        for (e, b) in bound {
+            coerce_to(e, &b, &acc)?;
+        }
+        Ok(acc)
+    }
+
+    fn expr(&self, e: &mut Expr, scope: &Scope, outer: &[Scope]) -> DbResult<Bound> {
         match e {
             Expr::Literal(v) => Ok(Bound { ty: v.sql_type(), text_literal: matches!(v, Value::Text(_)) }),
             Expr::Column { table, name } => self.column(table.as_ref(), name, scope, outer),
             Expr::Unary { op, expr } => {
-                let b = bind(expr)?;
+                let b = self.expr(expr, scope, outer)?;
                 match op {
                     UnaryOp::Not => {
                         require_boolean(&b, "NOT")?;
@@ -411,7 +528,8 @@ impl Binder<'_> {
                 }
             }
             Expr::Binary { op, left, right } => {
-                let (l, r) = (bind(left)?, bind(right)?);
+                let l = self.expr(left, scope, outer)?;
+                let r = self.expr(right, scope, outer)?;
                 match op {
                     BinaryOp::And | BinaryOp::Or => {
                         require_boolean(&l, op.symbol())?;
@@ -427,6 +545,8 @@ impl Binder<'_> {
                                 r.type_name()
                             )));
                         }
+                        coerce_to(left, &l, &r)?;
+                        coerce_to(right, &r, &l)?;
                         Ok(Bound::boolean())
                     }
                     BinaryOp::Concat => Ok(Bound::of(SqlType::Text)),
@@ -451,24 +571,27 @@ impl Binder<'_> {
                 }
             }
             Expr::IsNull { expr, .. } => {
-                bind(expr)?;
+                self.expr(expr, scope, outer)?;
                 Ok(Bound::boolean())
             }
             Expr::IsTruth { expr, .. } => {
-                require_boolean(&bind(expr)?, "IS TRUE / FALSE / UNKNOWN")?;
+                require_boolean(&self.expr(expr, scope, outer)?, "IS TRUE / FALSE / UNKNOWN")?;
                 Ok(Bound::boolean())
             }
             Expr::InList { expr, list, .. } => {
-                let mut acc = bind(expr)?;
-                for item in list {
-                    acc = unify(acc, bind(item)?, "IN")?;
-                }
+                self.alternatives(std::iter::once(&mut **expr).chain(list.iter_mut()), Bound::unknown(), "IN", scope, outer)?;
                 Ok(Bound::boolean())
             }
             Expr::InSubquery { expr, query, .. } => {
-                let left = bind(expr)?;
+                let left = self.expr(expr, scope, outer)?;
                 let col = self.single_column(query, scope, outer)?;
                 unify(left, col, "IN")?;
+                coerce_to(expr, &left, &col)?;
+                if let Some(ty) = col.literal_target(&left) {
+                    let mut chain = outer.to_vec();
+                    chain.push(scope.clone());
+                    self.coerce_output(&mut query.body, &[Some(ty)], &chain)?;
+                }
                 Ok(Bound::boolean())
             }
             Expr::Exists { query, .. } => {
@@ -476,58 +599,68 @@ impl Binder<'_> {
                 Ok(Bound::boolean())
             }
             Expr::Between { expr, low, high, .. } => {
-                let acc = unify(bind(expr)?, bind(low)?, "BETWEEN")?;
-                unify(acc, bind(high)?, "BETWEEN")?;
+                self.alternatives(
+                    [&mut **expr, &mut **low, &mut **high],
+                    Bound::unknown(),
+                    "BETWEEN",
+                    scope,
+                    outer,
+                )?;
                 Ok(Bound::boolean())
             }
             Expr::Like { expr, pattern, escape, .. } => {
-                require_character(&bind(expr)?, "LIKE")?;
-                require_character(&bind(pattern)?, "LIKE pattern")?;
+                require_character(&self.expr(expr, scope, outer)?, "LIKE")?;
+                require_character(&self.expr(pattern, scope, outer)?, "LIKE pattern")?;
                 if let Some(esc) = escape {
-                    require_character(&bind(esc)?, "LIKE ESCAPE")?;
+                    require_character(&self.expr(esc, scope, outer)?, "LIKE ESCAPE")?;
                 }
                 Ok(Bound::boolean())
             }
             Expr::Case { operand, whens, else_result } => {
-                let mut op = match operand {
-                    Some(o) => Some(bind(o)?),
-                    None => None,
-                };
-                let mut result = Bound::unknown();
-                for (cond, then) in whens {
-                    let c = bind(cond)?;
-                    match op {
-                        Some(o) => op = Some(unify(o, c, "CASE/WHEN")?),
-                        None => require_boolean(&c, "CASE WHEN")?,
+                let mut results: Vec<&mut Expr> = Vec::with_capacity(whens.len() + 1);
+                let mut conds: Vec<&mut Expr> = Vec::with_capacity(whens.len());
+                for (cond, then) in whens.iter_mut() {
+                    conds.push(cond);
+                    results.push(then);
+                }
+                match operand {
+                    // Simple CASE: the operand and every WHEN value are compared.
+                    Some(o) => {
+                        self.alternatives(std::iter::once(&mut **o).chain(conds), Bound::unknown(), "CASE/WHEN", scope, outer)?;
                     }
-                    result = unify(result, bind(then)?, "CASE")?;
+                    None => {
+                        for c in conds {
+                            require_boolean(&self.expr(c, scope, outer)?, "CASE WHEN")?;
+                        }
+                    }
                 }
                 if let Some(e) = else_result {
-                    result = unify(result, bind(e)?, "CASE")?;
+                    results.push(&mut **e);
                 }
-                Ok(result)
+                self.alternatives(results, Bound::unknown(), "CASE", scope, outer)
             }
             Expr::Cast { expr, ty } => {
-                let from = bind(expr)?;
+                let from = self.expr(expr, scope, outer)?;
                 if !cast_allowed(&from, ty) {
                     return Err(mismatch(format!("cannot cast {} to {}", from.type_name(), ty.name())));
                 }
                 Ok(Bound::of(*ty))
             }
             Expr::Function { name, args } => {
-                let bound = args.iter().map(&bind).collect::<DbResult<Vec<_>>>()?;
+                if name.as_str() == "COALESCE" {
+                    return self.alternatives(args.iter_mut(), Bound::unknown(), "COALESCE", scope, outer);
+                }
+                if name.as_str() == "NULLIF" && args.len() == 2 {
+                    let a = self.expr(&mut args[0], scope, outer)?;
+                    let b = self.expr(&mut args[1], scope, outer)?;
+                    unify(a, b, "NULLIF")?;
+                    coerce_to(&mut args[0], &a, &b)?;
+                    coerce_to(&mut args[1], &b, &a)?;
+                    // The result is the first argument (converted if it was a literal).
+                    return Ok(Bound::of(if a.literal_target(&b).is_some() { b.ty } else { a.ty }));
+                }
+                let bound = args.iter_mut().map(|a| self.expr(a, scope, outer)).collect::<DbResult<Vec<_>>>()?;
                 match name.as_str() {
-                    "COALESCE" => {
-                        let mut acc = Bound::unknown();
-                        for b in bound {
-                            acc = unify(acc, b, "COALESCE")?;
-                        }
-                        Ok(acc)
-                    }
-                    "NULLIF" if bound.len() == 2 => {
-                        unify(bound[0], bound[1], "NULLIF")?;
-                        Ok(Bound::of(bound[0].ty))
-                    }
                     "UPPER" | "LOWER" if bound.len() == 1 => {
                         require_character(&bound[0], name)?;
                         Ok(Bound::of(SqlType::Text))
@@ -549,7 +682,7 @@ impl Binder<'_> {
                 let Some(arg) = arg else {
                     return Ok(Bound::of(SqlType::Integer));
                 };
-                let b = bind(arg)?;
+                let b = self.expr(arg, scope, outer)?;
                 match func {
                     AggFunc::Count => Ok(Bound::of(SqlType::Integer)),
                     AggFunc::Sum => {
@@ -571,6 +704,27 @@ impl Binder<'_> {
             Expr::Default => Ok(Bound::unknown()),
         }
     }
+
+    /// Bind a value assigned to a column of type `col` (INSERT VALUES,
+    /// UPDATE SET): same category, or a character literal (converted at bind
+    /// time for a date/time column; per value for a numeric one, as before).
+    fn assignment(&self, e: &mut Expr, col: SqlType, column: &str, scope: &Scope) -> DbResult<()> {
+        let b = self.expr(e, scope, &[])?;
+        let target = Bound::of(col);
+        let (cb, ct) = (b.category(), target.category());
+        let ok = cb == Category::Unknown
+            || cb == ct
+            || (b.text_literal && (ct == Category::Numeric || ct.is_temporal()));
+        if !ok {
+            return Err(mismatch(format!(
+                "column \"{}\" is of type {} but expression is of type {}",
+                column,
+                col.name(),
+                b.type_name()
+            )));
+        }
+        coerce_to(e, &b, &target)
+    }
 }
 
 /// The scopes of `env` and its correlation chain, outermost first.
@@ -585,47 +739,75 @@ fn env_scopes(env: Option<&Env>) -> Vec<Scope> {
     chain
 }
 
-/// Bind a query (optionally correlated with `outer`) before it is executed.
-pub fn bind_query(catalog: &Catalog, query: &Query, outer: Option<&Env>) -> DbResult<()> {
+/// Bind a query (optionally correlated with `outer`) before it is executed,
+/// converting its character literals that stand for date/time values (the
+/// query is modified in place; execute the bound form).
+pub fn bind_query(catalog: &Catalog, query: &mut Query, outer: Option<&Env>) -> DbResult<()> {
     Binder { catalog: Some(catalog) }.query(query, &env_scopes(outer)).map(|_| ())
 }
 
+/// A view's stored query, bound for execution (see [`bind_query`]).
+pub fn bound_view_query(catalog: &Catalog, query: &Query) -> DbResult<Query> {
+    let mut q = query.clone();
+    bind_query(catalog, &mut q, None)?;
+    Ok(q)
+}
+
 /// Bind a row predicate over `scope` (WHERE of UPDATE/DELETE, index scans):
-/// it must be BOOLEAN.
-pub fn bind_predicate(catalog: &Catalog, scope: &Scope, expr: &Expr, what: &str) -> DbResult<()> {
+/// it must be BOOLEAN. Modified in place like [`bind_query`].
+pub fn bind_predicate(catalog: &Catalog, scope: &Scope, expr: &mut Expr, what: &str) -> DbResult<()> {
     let b = Binder { catalog: Some(catalog) }.expr(expr, scope, &[])?;
     require_boolean(&b, what)
 }
 
 /// Bind a CHECK constraint expression over the table's columns: it must be
-/// BOOLEAN (CHECK expressions never contain subqueries).
+/// BOOLEAN (CHECK expressions never contain subqueries). The stored
+/// expression is left as written (it is bound on a copy).
 pub fn bind_check(scope: &Scope, expr: &Expr) -> DbResult<()> {
-    let b = Binder { catalog: None }.expr(expr, scope, &[])?;
+    let b = Binder { catalog: None }.expr(&mut expr.clone(), scope, &[])?;
     require_boolean(&b, "CHECK")
 }
 
-/// Bind every expression of a DML statement (INSERT values, UPDATE SET and
-/// WHERE, DELETE WHERE) before it touches any row, and the DEFAULT
-/// expressions of CREATE TABLE / ALTER TABLE ADD COLUMN. Queries are bound by
-/// [`crate::execution::query::execute_query`]; CHECK constraints at CREATE
-/// TABLE / ALTER TABLE by `keys::resolve_table_constraints`.
-pub fn bind_statement(catalog: &Catalog, stmt: &Statement) -> DbResult<()> {
+/// Bind every expression of a statement before it touches any row: queries,
+/// INSERT values and UPDATE SET values (each against its target column),
+/// UPDATE / DELETE WHERE — modified in place like [`bind_query`] — and the
+/// DEFAULT expressions of CREATE TABLE / ALTER TABLE ADD COLUMN (bound on a
+/// copy: the stored default stays as written). CHECK constraints are bound by
+/// `keys::resolve_table_constraints`.
+pub fn bind_statement(catalog: &Catalog, stmt: &mut Statement) -> DbResult<()> {
     let binder = Binder { catalog: Some(catalog) };
     match stmt {
         Statement::Query(q) => binder.query(q, &[]).map(|_| ()),
-        Statement::Insert { rows, .. } => {
+        Statement::Insert { table_name, columns, rows } => {
+            let info = catalog.resolve_table(table_name)?;
+            let targets: Vec<usize> = match columns {
+                Some(cols) => crate::execution::runtime::resolve_targets(info, cols.iter())?,
+                None => (0..info.columns.len()).collect(),
+            };
             let empty = Scope::new();
             for row in rows {
-                for e in row {
-                    binder.expr(e, &empty, &[])?;
+                // A row of the wrong width is reported by the executor.
+                for (i, e) in row.iter_mut().enumerate() {
+                    match targets.get(i) {
+                        Some(&t) => {
+                            let (name, ty) = &info.columns[t];
+                            binder.assignment(e, SqlType::from_column_type(ty), name, &empty)?;
+                        }
+                        None => {
+                            binder.expr(e, &empty, &[])?;
+                        }
+                    }
                 }
             }
             Ok(())
         }
         Statement::Update { table_name, assignments, selection } => {
-            let scope = crate::constraints::keys::table_scope(catalog.resolve_table(table_name)?);
-            for (_, e) in assignments {
-                binder.expr(e, &scope, &[])?;
+            let info = catalog.resolve_table(table_name)?;
+            let scope = crate::constraints::keys::table_scope(info);
+            let targets = crate::execution::runtime::resolve_targets(info, assignments.iter().map(|(c, _)| c))?;
+            for ((_, e), t) in assignments.iter_mut().zip(targets) {
+                let (name, ty) = &info.columns[t];
+                binder.assignment(e, SqlType::from_column_type(ty), name, &scope)?;
             }
             if let Some(w) = selection {
                 require_boolean(&binder.expr(w, &scope, &[])?, "WHERE")?;
@@ -643,13 +825,13 @@ pub fn bind_statement(catalog: &Catalog, stmt: &Statement) -> DbResult<()> {
         Statement::CreateTable { columns, .. } => {
             let empty = Scope::new();
             for d in columns.iter().filter_map(|c| c.default_value.as_ref()) {
-                binder.expr(d, &empty, &[])?;
+                binder.expr(&mut d.clone(), &empty, &[])?;
             }
             Ok(())
         }
         Statement::AlterTableAddColumn { column, .. } => {
             if let Some(d) = &column.default_value {
-                binder.expr(d, &Scope::new(), &[])?;
+                binder.expr(&mut d.clone(), &Scope::new(), &[])?;
             }
             Ok(())
         }
