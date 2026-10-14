@@ -498,15 +498,14 @@ impl RowData {
                 }
                 0x0B => {
                     if offset + 17 > bytes.len() {
-                        return Err(io::Error::new(io::ErrorKind::Other, "EOF"));
+                        return Err(io::Error::other("EOF"));
                     }
                     let mantissa =
                         i128::from_le_bytes(bytes[offset..offset + 16].try_into().unwrap());
                     let scale = bytes[offset + 16];
                     offset += 17;
-                    let d = crate::sql::decimal::Decimal::new(mantissa, scale).map_err(|_| {
-                        io::Error::new(io::ErrorKind::Other, "Invalid decimal value")
-                    })?;
+                    let d = crate::sql::decimal::Decimal::new(mantissa, scale)
+                        .map_err(|_| io::Error::other("Invalid decimal value"))?;
                     cols.push(ColumnValue::Decimal(d));
                 }
                 _ => {

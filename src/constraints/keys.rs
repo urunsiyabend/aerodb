@@ -485,10 +485,10 @@ pub fn check_restrict(
                 if has_null(&key) {
                     continue;
                 }
-                if let Some(new) = new {
-                    if key_values_equal(&key, &key_of(new, &parent_idx)) {
-                        continue;
-                    }
+                if let Some(new) = new
+                    && key_values_equal(&key, &key_of(new, &parent_idx))
+                {
+                    continue;
                 }
                 let refs = match &mut child_keys {
                     Some(k) => k,

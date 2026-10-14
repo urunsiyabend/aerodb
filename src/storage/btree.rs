@@ -1111,10 +1111,10 @@ impl<'a> BTree<'a> {
         }
         let (keys, mut children) = self.read_all_from_internal(moved_root)?;
         let Some(slot) = children.iter().position(|&c| c == fixed) else {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("pin_root: page {} is not a child of the new root {}", fixed, moved_root),
-            ));
+            return Err(io::Error::other(format!(
+                "pin_root: page {} is not a child of the new root {}",
+                fixed, moved_root
+            )));
         };
 
         // 1) Move the old root's content (now a child) to a fresh page.

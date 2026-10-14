@@ -41,7 +41,7 @@ fn ensure_no_write_conflict(
 fn table_info(catalog: &Catalog, table_name: &str) -> DbResult<TableInfo> {
     catalog
         .get_table(table_name)
-        .map(Clone::clone)
+        .cloned()
         .map_err(|_| DbError::TableNotFound(table_name.to_string()))
 }
 
@@ -396,10 +396,8 @@ fn build_insert_row(
         let value = match supplied {
             Some(expr) if !matches!(expr, Expr::Default) => {
                 let v = crate::execution::eval::evaluate_constant(expr)?;
-                if auto {
-                    if let Value::Int(i) = v {
-                        catalog.update_sequence_current(&seq, i)?;
-                    }
+                if auto && let Value::Int(i) = v {
+                    catalog.update_sequence_current(&seq, i)?;
                 }
                 v
             }
@@ -571,10 +569,10 @@ fn alter_add_column(
         .chain(info.fks.iter().map(|fk| keys::fk_name(&info, fk)))
         .collect();
     for c in &constraints {
-        if let TableConstraint::Unique { name: Some(n), .. } | TableConstraint::Check { name: Some(n), .. } = c {
-            if used.contains(n) {
-                return Err(DbError::DuplicateConstraint { name: n.clone(), table: info.name.clone() });
-            }
+        if let TableConstraint::Unique { name: Some(n), .. } | TableConstraint::Check { name: Some(n), .. } = c
+            && used.contains(n)
+        {
+            return Err(DbError::DuplicateConstraint { name: n.clone(), table: info.name.clone() });
         }
     }
     let resolved = keys::resolve_table_constraints(catalog, &info.name, &columns, None, Vec::new(), constraints)?;
@@ -688,21 +686,20 @@ pub fn execute_select_with_indexes(
                     let hash = Catalog::hash_value(&val_cv);
                     let mut index_tree = BTree::open_root(&catalog.pager, index.root_page)?;
                     let mut candidate_keys = Vec::new();
-                    if let Some(row) = index_tree.find(hash)? {
-                        if let ColumnValue::Text(ref stored) = row.data.0[0] {
-                            if stored == &expected {
-                                candidate_keys = row
-                                    .data
-                                    .0
-                                    .iter()
-                                    .skip(1)
-                                    .filter_map(|val| match val {
-                                        ColumnValue::Integer(k) => Some(*k),
-                                        _ => None,
-                                    })
-                                    .collect();
-                            }
-                        }
+                    if let Some(row) = index_tree.find(hash)?
+                        && let ColumnValue::Text(ref stored) = row.data.0[0]
+                        && stored == &expected
+                    {
+                        candidate_keys = row
+                            .data
+                            .0
+                            .iter()
+                            .skip(1)
+                            .filter_map(|val| match val {
+                                ColumnValue::Integer(k) => Some(*k),
+                                _ => None,
+                            })
+                            .collect();
                     }
                     drop(index_tree);
                     let pred = selection.as_ref().expect("probe implies a predicate");

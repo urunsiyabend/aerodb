@@ -199,7 +199,7 @@ impl Decimal {
         if o.mantissa == 0 {
             return Err(DecimalError::DivisionByZero);
         }
-        let rs = (self.scale as u32 + 6).max(o.scale as u32).max(6).min(38);
+        let rs = (self.scale as u32 + 6).max(o.scale as u32).clamp(6, 38);
         // quotient mantissa at scale rs = m1 * 10^(rs + s2 - s1) / m2
         let exp = rs + o.scale as u32 - self.scale as u32;
         let a = self.mantissa.unsigned_abs();

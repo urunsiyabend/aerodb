@@ -243,9 +243,9 @@ impl Catalog {
     /// page 1: table and view rows are told apart by [`VIEW_ROW_TAG`].
     fn catalog_entries(pager: &Pager) -> io::Result<Vec<(i32, CatalogEntry)>> {
         let catalog_btree = BTree::open_root(pager, 1)?;
-        let mut cursor = catalog_btree.scan_all_rows();
+        let cursor = catalog_btree.scan_all_rows();
         let mut out = Vec::new();
-        while let Some(row) = cursor.next() {
+        for row in cursor {
             out.push((row.key, Self::decode_catalog_row(&row)?));
         }
         Ok(out)
@@ -273,8 +273,8 @@ impl Catalog {
     fn load_sequences(pager: &Pager) -> io::Result<HashMap<String, SequenceInfo>> {
         let mut sequences = HashMap::new();
         let seq_btree = BTree::open_root(pager, 2)?;
-        let mut cursor = seq_btree.scan_all_rows();
-        while let Some(row) = cursor.next() {
+        let cursor = seq_btree.scan_all_rows();
+        for row in cursor {
             let (name, current, start, inc) = Self::deserialize_sequence_row(&row)?;
             sequences.insert(
                 name.clone(),
@@ -1358,7 +1358,7 @@ impl Catalog {
                 Some(ColumnType::Varchar(_)) => {
                     let size = match values.get(idx) {
                         Some(ColumnValue::Integer(sz)) => *sz as usize,
-                        _ => return Err(io::Error::new(io::ErrorKind::Other, "varchar size")),
+                        _ => return Err(io::Error::other("varchar size")),
                     };
                     idx += 1;
                     ColumnType::Varchar(size)
@@ -1366,12 +1366,12 @@ impl Catalog {
                 Some(ColumnType::Decimal { .. }) => {
                     let precision = match values.get(idx) {
                         Some(ColumnValue::Integer(p)) => *p as u8,
-                        _ => return Err(io::Error::new(io::ErrorKind::Other, "decimal precision")),
+                        _ => return Err(io::Error::other("decimal precision")),
                     };
                     idx += 1;
                     let scale = match values.get(idx) {
                         Some(ColumnValue::Integer(sc)) => *sc as u8,
-                        _ => return Err(io::Error::new(io::ErrorKind::Other, "decimal scale")),
+                        _ => return Err(io::Error::other("decimal scale")),
                     };
                     idx += 1;
                     ColumnType::Decimal { precision, scale }

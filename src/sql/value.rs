@@ -206,7 +206,7 @@ fn round_f64_to_i64(f: f64) -> Result<i64, ValueError> {
         return Err(ValueError::InvalidCast("NaN cannot be cast to an integer".into()));
     }
     let r = f.round(); // half away from zero
-    if r >= -9_223_372_036_854_775_808.0 && r < 9_223_372_036_854_775_808.0 {
+    if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&r) {
         Ok(r as i64)
     } else {
         Err(ValueError::NumericOverflow)
@@ -398,11 +398,11 @@ impl Value {
             if let Some(o) = temporal_cmp(self, other) {
                 return Ok(Some(o));
             }
-        } else if is_temporal(other) {
-            if let Some(t) = text_of(self) {
-                let parsed = parse_text_like(t, other)?;
-                return Ok(temporal_cmp(&parsed, other));
-            }
+        } else if is_temporal(other)
+            && let Some(t) = text_of(self)
+        {
+            let parsed = parse_text_like(t, other)?;
+            return Ok(temporal_cmp(&parsed, other));
         }
         Err(ValueError::TypeMismatch(format!(
             "cannot compare {} with {}",

@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn failed_rollback_keeps_the_constraint_error() {
         let original = DbError::ForeignKeyViolation("p 1".into());
-        let rollback = Err(io::Error::new(io::ErrorKind::Other, "disk gone"));
+        let rollback = Err(io::Error::other("disk gone"));
         assert!(matches!(
             commit_failure(original, rollback),
             DbError::ForeignKeyViolation(ref m) if m == "p 1"

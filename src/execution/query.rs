@@ -676,10 +676,10 @@ fn expand_expr_wildcards(catalog: &Catalog, expr: &mut Expr) -> DbResult<()> {
     let rebuilt = expr.transform(&mut |e| {
         let expand = |q: &Query, failure: &mut Option<DbError>| -> Box<Query> {
             let mut q = q.clone();
-            if failure.is_none() {
-                if let Err(err) = expand_wildcards(catalog, &mut q) {
-                    *failure = Some(err);
-                }
+            if failure.is_none()
+                && let Err(err) = expand_wildcards(catalog, &mut q)
+            {
+                *failure = Some(err);
             }
             Box::new(q)
         };
@@ -1072,10 +1072,10 @@ fn run_select(
             }
             let rep: &[Value] = group.first().map(|r| r.as_slice()).unwrap_or(&null_row);
             let env = Env { scope: &scope, row: rep, aggregates: &agg_values, outer };
-            if let Some(h) = &sel.having {
-                if !eval_predicate(h, &env, &cx)? {
-                    continue;
-                }
+            if let Some(h) = &sel.having
+                && !eval_predicate(h, &env, &cx)?
+            {
+                continue;
             }
             produced.push(project(&env, rep)?);
         }
