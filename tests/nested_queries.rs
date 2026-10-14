@@ -8,8 +8,6 @@ fn parse_from_subquery() {
     } else { panic!("expected select"); }
 }
 
-// TODO: support subquery parsing in SELECT list
-
 use aerodb::{catalog::Catalog, storage::pager::Pager, execution::runtime::{execute_select_statement, format_header}};
 use aerodb::storage::row::ColumnType;
 use std::fs;

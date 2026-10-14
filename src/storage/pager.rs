@@ -510,6 +510,19 @@ impl Pager {
             .clone()
     }
 
+    /// Run `f` against the shared transaction-status table under its read lock.
+    /// Preferred over [`Pager::transaction_table`] on hot paths: the table holds
+    /// a status for every transaction since the last frozen-watermark advance,
+    /// so cloning it per point lookup costs O(transactions). Do not touch pages
+    /// inside `f` (lock order: `tx_table` before page latches is fine, but keep
+    /// the critical section to visibility checks).
+    pub(crate) fn with_transaction_table<R>(&self, f: impl FnOnce(&TransactionTable) -> R) -> R {
+        f(&self
+            .tx_table
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
     /// Allocate the next monotonic transaction id. The counter is made durable
     /// by [`Pager::persist_meta`] on commit, so ids never collide with
     /// `created_tx`/`deleted_tx` values already written by earlier sessions.

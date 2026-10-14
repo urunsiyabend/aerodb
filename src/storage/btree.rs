@@ -4,7 +4,9 @@ use crate::storage::page::{
 };
 use crate::storage::pager::{PageData, Pager};
 use crate::storage::row::{COMMITTED_BOOTSTRAP_TX, Row, RowData};
-use crate::storage::vacuum::{aborted_creator_is_removable, deleted_version_is_removable};
+use crate::storage::vacuum::{
+    aborted_creator_is_removable, aborted_deleter_is_clearable, deleted_version_is_removable,
+};
 use crate::transaction::{
     Snapshot, TransactionId, TransactionStatus, TransactionTable, is_visible,
 };
@@ -64,6 +66,13 @@ pub struct BTree<'a> {
     pager: &'a Pager,
 }
 
+/// Where one physical row version sits: its leaf page and position in it.
+#[derive(Debug, Clone, Copy)]
+struct LeafSlot {
+    page: u32,
+    index: usize,
+}
+
 impl<'a> BTree<'a> {
     /// Open or create a B-Tree. If the file is empty, initialize page 0 as a leaf root.
     /// Otherwise, simply reuse page 0 as the existing root (leaf or internal).
@@ -100,21 +109,14 @@ impl<'a> BTree<'a> {
 
     /// Return the newest version of `key` visible to `snapshot`.
     pub fn find_visible(&mut self, key: i32, snapshot: &Snapshot) -> io::Result<Option<Row>> {
-        let rows = self.collect_all_rows()?;
-        let tx_table = self.pager.transaction_table();
-        let mut visible = None;
-        for row in rows {
-            if row.key == key && Self::row_visible(&row, snapshot, &tx_table) {
-                if visible
-                    .as_ref()
-                    .map(|current: &Row| row.created_tx > current.created_tx)
-                    .unwrap_or(true)
-                {
-                    visible = Some(row);
-                }
-            }
-        }
-        Ok(visible)
+        let versions = self.key_versions(key)?;
+        Ok(self.pager.with_transaction_table(|tx_table| {
+            versions
+                .into_iter()
+                .map(|(_, row)| row)
+                .filter(|row| Self::row_visible(row, snapshot, tx_table))
+                .max_by_key(|row| row.created_tx)
+        }))
     }
 
     /// Return true when the logical key visible in `snapshot` has been changed
@@ -128,11 +130,7 @@ impl<'a> BTree<'a> {
         snapshot: &Snapshot,
     ) -> io::Result<bool> {
         let current_tx = snapshot.current_tx_id;
-        for row in self.collect_all_rows()? {
-            if row.key != key {
-                continue;
-            }
-
+        for (_, row) in self.key_versions(key)? {
             if row.created_tx != visible_created_tx
                 && Self::changed_after_snapshot(row.created_tx, snapshot)
                 && Some(row.created_tx) != current_tx
@@ -216,21 +214,7 @@ impl<'a> BTree<'a> {
     /// Mark the newest visible version of `key` as deleted without physically rebuilding the tree.
     pub fn mark_deleted(&mut self, key: i32, deleted_tx: TransactionId) -> io::Result<bool> {
         let snapshot = Snapshot::new(TransactionId::MAX, Vec::new());
-        let Some(target) = self.find_visible(key, &snapshot)? else {
-            return Ok(false);
-        };
-        let leaf_page = self.find_leaf_page(self.root_page, key)?;
-        let mut rows = self.read_all_rows_from_leaf(leaf_page)?;
-        let Some(row) = rows
-            .iter_mut()
-            .filter(|r| r.key == key && r.created_tx == target.created_tx)
-            .max_by_key(|r| r.created_tx)
-        else {
-            return Ok(false);
-        };
-        row.deleted_tx = Some(deleted_tx);
-        self.write_all_rows_to_leaf(leaf_page, &rows)?;
-        Ok(true)
+        self.mark_deleted_visible(key, &snapshot, deleted_tx)
     }
 
     /// Mark the version of `key` visible to `snapshot` as deleted.
@@ -240,21 +224,78 @@ impl<'a> BTree<'a> {
         snapshot: &Snapshot,
         deleted_tx: TransactionId,
     ) -> io::Result<bool> {
-        let Some(target) = self.find_visible(key, snapshot)? else {
+        let versions = self.key_versions(key)?;
+        let target = self.pager.with_transaction_table(|tx_table| {
+            versions
+                .into_iter()
+                .filter(|(_, row)| Self::row_visible(row, snapshot, tx_table))
+                .max_by_key(|(_, row)| row.created_tx)
+        });
+        let Some((slot, target)) = target else {
             return Ok(false);
         };
-        let leaf_page = self.find_leaf_page(self.root_page, key)?;
-        let mut rows = self.read_all_rows_from_leaf(leaf_page)?;
+        // Stamp the exact slot holding the visible version. A key's version chain
+        // can span several leaves, so the leaf `key` routes to for insertion is
+        // not necessarily where an older visible version lives; and versions
+        // written outside a transaction all carry the bootstrap `created_tx`, so
+        // (key, created_tx) alone does not identify one version. The slot stays
+        // valid between `key_versions` and this re-read only because DML on one
+        // table is serialized (the `Database` storage mutex); the key/created_tx
+        // re-check below is a guard, not a substitute for that.
+        let mut rows = self.read_all_rows_from_leaf(slot.page)?;
         let Some(row) = rows
-            .iter_mut()
+            .get_mut(slot.index)
             .filter(|r| r.key == key && r.created_tx == target.created_tx)
-            .max_by_key(|r| r.created_tx)
         else {
             return Ok(false);
         };
         row.deleted_tx = Some(deleted_tx);
+        let leaf_page = slot.page;
         self.write_all_rows_to_leaf(leaf_page, &rows)?;
         Ok(true)
+    }
+
+    /// Every physical version of `key`, paired with the slot holding it.
+    ///
+    /// Leaf splits cut by row count, not by key, so one key's versions can sit
+    /// on both sides of a separator equal to that key. The descent therefore
+    /// routes `key <= separator` to the left to reach the *first* leaf that may
+    /// hold the key, then follows the leaf chain until it sees a larger key.
+    /// This keeps a point lookup at O(height + versions of key) instead of a
+    /// scan of the whole tree.
+    fn key_versions(&self, key: i32) -> io::Result<Vec<(LeafSlot, Row)>> {
+        let mut page_num = self.root_page;
+        let mut data = loop {
+            let data = self.pager.read_page(page_num)?;
+            if get_node_type(&data) == NODE_LEAF {
+                break data;
+            }
+            page_num = Self::leftmost_child_for_key(&data, key);
+        };
+
+        let mut versions = Vec::new();
+        loop {
+            let mut past_key = false;
+            for (index, row) in Self::parse_leaf(&data)?.into_iter().enumerate() {
+                if row.key == key {
+                    versions.push((
+                        LeafSlot {
+                            page: page_num,
+                            index,
+                        },
+                        row,
+                    ));
+                } else if row.key > key {
+                    past_key = true;
+                }
+            }
+            let next = get_next_leaf(&data);
+            if past_key || next == 0 {
+                return Ok(versions);
+            }
+            page_num = next;
+            data = self.pager.read_page(page_num)?;
+        }
     }
 
     /// Descend from `page_num` to the leaf that owns `key`.
@@ -262,6 +303,7 @@ impl<'a> BTree<'a> {
     /// Iterative rather than recursive: each level's bytes are copied out under a
     /// latch that is released before stepping to the child, so only one page is
     /// latched at a time.
+    #[cfg(test)]
     fn find_leaf_page(&self, page_num: u32, key: i32) -> io::Result<u32> {
         let mut page_num = page_num;
         loop {
@@ -275,6 +317,18 @@ impl<'a> BTree<'a> {
 
     /// The child pointer an internal node's separators route `key` to.
     fn child_for_key(data: &PageData, key: i32) -> u32 {
+        Self::route(data, |separator| key < separator)
+    }
+
+    /// Like [`Self::child_for_key`], but sends a key equal to a separator to the
+    /// left child: the first leaf that may hold `key`, rather than the last.
+    fn leftmost_child_for_key(data: &PageData, key: i32) -> u32 {
+        Self::route(data, |separator| key <= separator)
+    }
+
+    /// Walk an internal node's separators and return the child left of the
+    /// first separator for which `goes_left` holds (or the rightmost child).
+    fn route(data: &PageData, goes_left: impl Fn(i32) -> bool) -> u32 {
         let cell_count = get_cell_count(data) as usize;
         let mut offset = HEADER_SIZE;
         let mut child_page = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
@@ -284,7 +338,7 @@ impl<'a> BTree<'a> {
             offset += 4;
             let right_child = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             offset += 4;
-            if key < key_i {
+            if goes_left(key_i) {
                 return child_page;
             }
             child_page = right_child;
@@ -339,15 +393,23 @@ impl<'a> BTree<'a> {
             let data = self.pager.read_page(page_num)?;
             let rows = Self::parse_leaf(&data)?;
             let before = rows.len();
+            let mut cleared_stamp = false;
             let kept: Vec<Row> = rows
                 .into_iter()
                 .filter(|row| {
                     !deleted_version_is_removable(row.deleted_tx, global_xmin, tx_table)
                         && !aborted_creator_is_removable(row.created_tx, tx_table)
                 })
+                .map(|mut row| {
+                    if aborted_deleter_is_clearable(row.deleted_tx, tx_table) {
+                        row.deleted_tx = None;
+                        cleared_stamp = true;
+                    }
+                    row
+                })
                 .collect();
             removed += before - kept.len();
-            if kept.len() != before {
+            if kept.len() != before || cleared_stamp {
                 self.write_all_rows_to_leaf(page_num, &kept)?;
             }
 
@@ -582,16 +644,23 @@ impl<'a> BTree<'a> {
         // Read all existing keys and child pointers from parent
         let (mut keys, mut children) = self.read_all_from_internal(parent_page)?;
 
-        // Find where separator_key belongs in `keys`, and insert new_page accordingly
-        // `children.len() = keys.len() + 1`. For insertion, find index i such that keys[i] > separator_key,
-        // then new children list is children[0..i+1] + [new_page] + children[i+1..].
-        let mut insert_idx = 0;
-        while insert_idx < keys.len() && separator_key > keys[insert_idx] {
-            insert_idx += 1;
-        }
-        // Now insert at insert_idx:
-        children.insert(insert_idx + 1, new_page);
-        keys.insert(insert_idx, separator_key);
+        // `new_page` is the right sibling split off `old_page`, so it goes directly
+        // after `old_page` with `separator_key` between them. Positioning by key
+        // comparison instead is wrong under MVCC: every UPDATE adds another
+        // version of the same logical key, so separators repeat, and a key search
+        // would land the new sibling *before* `old_page` among equal separators,
+        // misrouting later descents away from the leaf chain's order.
+        let Some(old_idx) = children.iter().position(|&child| child == old_page) else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "insert_in_parent: page {} is not a child of {}",
+                    old_page, parent_page
+                ),
+            ));
+        };
+        children.insert(old_idx + 1, new_page);
+        keys.insert(old_idx, separator_key);
 
         debug!(
             "  → Parent {} before write has {} keys and {} children.",
@@ -619,6 +688,12 @@ impl<'a> BTree<'a> {
                         "  → Internal overflow at page {}! Splitting internal node.",
                         parent_page
                     );
+                    // `split_internal` re-parents only the children that move to
+                    // the new right node. If `new_page` stays on the left it must
+                    // already point at `parent_page`, or its own next split will
+                    // not find its parent.
+                    self.pager
+                        .with_page_mut(new_page, |data| set_parent(data, parent_page))?;
                     return self.split_internal(parent_page, keys, children);
                 } else {
                     return Err(e);
@@ -1169,6 +1244,123 @@ mod tests {
                 .unwrap(),
             "a transaction's own write must not count as a conflict"
         );
+    }
+
+    /// Keys 1..=9 with one version each, except key 5 which gets versions
+    /// created by transactions 1..=60. The payload is large enough that key 5's
+    /// version chain spans several leaves.
+    fn tree_with_hot_key(pager: &Pager) -> BTree<'_> {
+        let mut btree = BTree::new(pager).unwrap();
+        let pad = "p".repeat(300);
+        for key in (1..=9).filter(|&k| k != 5) {
+            btree.insert_version(row_with_tx(key, &pad, 1)).unwrap();
+        }
+        for tx in 1..=60 {
+            btree
+                .insert_version(row_with_tx(5, &format!("{tx}{pad}"), tx))
+                .unwrap();
+        }
+        btree
+    }
+
+    #[test]
+    fn old_snapshot_finds_version_outside_routed_leaf() {
+        let file = NamedTempFile::new().unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = tree_with_hot_key(&pager);
+        let routed = btree.find_leaf_page(btree.root_page, 5).unwrap();
+        assert!(
+            btree
+                .read_all_rows_from_leaf(routed)
+                .unwrap()
+                .iter()
+                .all(|row| row.created_tx != 2),
+            "precondition: the version an old snapshot sees lives in an earlier leaf"
+        );
+
+        let snapshot = Snapshot::new_for_transaction(100, 3, vec![]);
+        let visible = btree.find_visible(5, &snapshot).unwrap().unwrap();
+        assert_eq!(visible.created_tx, 2);
+
+        let latest = Snapshot::new_for_transaction(100, 101, vec![]);
+        assert_eq!(btree.find_visible(5, &latest).unwrap().unwrap().created_tx, 60);
+        for key in (1..=9).filter(|&k| k != 5) {
+            assert_eq!(btree.find_visible(key, &latest).unwrap().unwrap().key, key);
+        }
+        assert!(btree.find_visible(10, &latest).unwrap().is_none());
+        assert!(btree.find_visible(0, &latest).unwrap().is_none());
+    }
+
+    #[test]
+    fn mark_deleted_visible_reaches_version_outside_routed_leaf() {
+        let file = NamedTempFile::new().unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = tree_with_hot_key(&pager);
+        let snapshot = Snapshot::new_for_transaction(100, 3, vec![]);
+
+        assert!(btree.mark_deleted_visible(5, &snapshot, 100).unwrap());
+        let stamped: Vec<_> = btree
+            .collect_all_rows()
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.deleted_tx == Some(100))
+            .map(|row| (row.key, row.created_tx))
+            .collect();
+        assert_eq!(stamped, vec![(5, 2)]);
+    }
+
+    #[test]
+    fn random_order_inserts_survive_internal_splits() {
+        // Random-order keys split interior children, so after an internal-node
+        // split the freshly split-off sibling can land in the *left* half. Its
+        // parent pointer must still be set, or its own next split cannot find
+        // its parent. Large payloads keep the tree three levels deep quickly.
+        let file = NamedTempFile::new().unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&pager).unwrap();
+        let pad = "r".repeat(1000);
+        let n: i32 = 3_000;
+        // Deterministic pseudo-random order: walk a full-period LCG over 0..2^14
+        // and keep the values below `n`.
+        let mut keys = Vec::with_capacity(n as usize);
+        let mut x: u32 = 1;
+        while keys.len() < n as usize {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345) & 0x3FFF;
+            if (x as i32) < n {
+                keys.push(x as i32);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        keys.retain(|k| seen.insert(*k));
+        for &key in &keys {
+            btree.insert_version(row_with_tx(key, &pad, 1)).unwrap();
+        }
+        let latest = Snapshot::new_for_transaction(100, 101, vec![]);
+        for &key in &keys {
+            assert!(
+                btree.find_visible(key, &latest).unwrap().is_some(),
+                "key {key} lost"
+            );
+        }
+        assert_eq!(btree.collect_all_rows().unwrap().len(), keys.len());
+    }
+
+    #[test]
+    fn repeated_delete_insert_outside_transaction_targets_live_version() {
+        // Catalog/sequence rows are rewritten outside any transaction, so every
+        // version shares the bootstrap created_tx. Each delete must stamp the
+        // live version, not an already-deleted twin.
+        let file = NamedTempFile::new().unwrap();
+        let pager = Pager::new(file.path().to_str().unwrap()).unwrap();
+        let mut btree = BTree::new(&pager).unwrap();
+        let value = |n: i32| RowData(vec![crate::storage::row::ColumnValue::Integer(n)]);
+        btree.insert(1, value(0)).unwrap();
+        for n in 1..=5 {
+            assert!(btree.delete(1).unwrap());
+            btree.insert(1, value(n)).unwrap();
+        }
+        let live = btree.find(1).unwrap().unwrap();
+        assert_eq!(live.data, value(5));
     }
 
     #[test]

@@ -39,3 +39,19 @@ pub fn aborted_creator_is_removable(
 ) -> bool {
     matches!(tx_table.get(&created_tx), Some(TransactionStatus::Aborted))
 }
+
+/// Returns true when a version's `deleted_tx` stamp belongs to a transaction
+/// that aborted (a rolled-back DELETE/UPDATE under logical abort).
+///
+/// Such a stamp hides nothing from any snapshot, so vacuum clears it. It *must*
+/// be cleared before the frozen watermark passes that transaction: once its clog
+/// status is reclaimed, an absent id reads as committed and the still-live
+/// version would disappear.
+pub fn aborted_deleter_is_clearable(
+    deleted_tx: Option<TransactionId>,
+    tx_table: &TransactionTable,
+) -> bool {
+    deleted_tx.is_some_and(|tx_id| {
+        matches!(tx_table.get(&tx_id), Some(TransactionStatus::Aborted))
+    })
+}

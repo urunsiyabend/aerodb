@@ -799,9 +799,10 @@ impl Catalog {
     /// remaining on-disk version needs it, and a single-table pass cannot know
     /// whether another table still holds versions created by those transactions.
     /// Sweeping all tables discharges that condition -- an aborted transaction's
-    /// versions are reclaimable immediately (the aborted-creator rule), so after a
-    /// full sweep no version below `global_xmin` depends on being able to tell an
-    /// aborted id from a frozen one.
+    /// versions are reclaimable immediately (the aborted-creator rule) and its
+    /// `deleted_tx` stamps on still-live versions are cleared (the
+    /// aborted-deleter rule), so after a full sweep no version below
+    /// `global_xmin` depends on being able to tell an aborted id from a frozen one.
     pub fn vacuum_all(&mut self, global_xmin: TransactionId) -> io::Result<VacuumReport> {
         let table_names: Vec<String> = self.all_tables().into_iter().map(|t| t.name).collect();
 

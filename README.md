@@ -33,7 +33,7 @@ single-session `Engine` API, or the thread-safe, multi-session `Database` API.
 - Logical rollback and explicit MVCC vacuum
 - A library API and an interactive command-line interface
 
-The current package version is `0.5.0`.
+The current package version is `0.5.1`. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Quick start
 
@@ -345,7 +345,12 @@ AeroDB separates logical isolation from physical storage:
 5. The WAL records page images and transaction state for crash recovery.
 6. The commit-status log preserves transaction outcomes after WAL truncation.
 7. Vacuum removes versions created by aborted transactions and versions deleted
-   below the oldest live snapshot boundary, then rebuilds affected indexes.
+   below the oldest live snapshot boundary, clears delete stamps left by
+   rolled-back transactions, then rebuilds affected indexes. An all-tables
+   vacuum also advances the frozen watermark and compacts the commit-status log.
+8. Point lookups descend to the first leaf that can hold a key and follow the
+   leaf chain across that key's version chain, so they cost O(tree height +
+   versions of the key) rather than a full scan.
 
 Reserved main-file pages:
 
@@ -367,8 +372,11 @@ For the implemented concurrency design and its invariants, see
   `SET TRANSACTION ISOLATION LEVEL` are not implemented.
 - Shared storage is process-local. Multiple `Database` transactions can run in
   one process, but cross-process coordination is not supported.
-- Physical storage operations are serialized by a coarse mutex rather than
-  per-page latches.
+- The pager latches pages individually, but the `Database` facade still
+  serializes operations behind one storage mutex, so readers and writers do not
+  yet run in parallel.
+- `UPDATE`/`DELETE ... WHERE` evaluate their predicate with a full table scan,
+  even for a primary-key equality.
 - Secondary-index metadata is currently kept in memory and is not rebuilt when
   the database is reopened; recreate indexes after opening a new process.
 - Secondary indexes currently optimize equality predicates only.
@@ -432,7 +440,8 @@ Issues and pull requests are welcome at
 ## Roadmap
 
 - Persist and reload secondary-index metadata
-- Replace the coarse storage mutex with finer-grained page latching
+- Split the `Database` storage mutex so per-page latching yields real
+  reader/writer parallelism
 - Make ordering and pagination consistent across all query paths
 - Add SQL-level vacuum and automatic maintenance
 - Expand SQL coverage and improve query planning

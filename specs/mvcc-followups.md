@@ -1,6 +1,7 @@
 # Spec: MVCC follow-ups — clog compaction + per-page latching
 
-Status: **Phase 6 implemented; Phase 7 not started**
+Status: **Phase 6 implemented (fixed in 0.5.1, see below); Phase 7 steps 1–2
+implemented, steps 3–5 open**
 Depends on: `specs/mvcc-concurrent-transactions.md` phases 1–5 (all merged).
 Scope: two independent follow-ups. **Phase 6** is small and low-risk (do first).
 **Phase 7** is the large per-page-latching rewrite (§11 of the parent spec).
@@ -21,6 +22,14 @@ taken; the array was **not** rebased onto a stored base offset, so the clog file
 does not shrink — one byte per four transaction ids was judged small enough that
 the extra indirection is not worth it (documented on `Clog::compact`).
 `committed_before_snapshot` needed no change, as predicted by step 5.
+
+**Erratum (0.5.1).** Condition (2) below was under-discharged: vacuum reclaimed
+versions with an aborted *creator*, but a rolled-back DELETE/UPDATE leaves the
+live version stamped with an aborted *deleter*, which no rule removed. After
+compaction (and a later commit truncating the WAL) the absent deleter read as
+committed on reopen and the row vanished. Vacuum now clears aborted-deleter
+stamps (`vacuum::aborted_deleter_is_clearable`); regression in
+`tests/mvcc_frozen_xid.rs::rolled_back_delete_survives_compaction_and_reopen`.
 
 ### Problem
 `frozen_xid` is persisted in page-0 meta (`Pager`, bytes 24..32) but is **never
@@ -112,6 +121,20 @@ Estimated size: small (~150–250 lines + tests).
 ---
 
 ## Phase 7 — per-page latching (real reader/writer concurrency)
+
+Status: **steps 1–2 implemented** (commit d8ef6d7): `Pager` is a `&self`
+buffer pool of `RwLock` frames with `with_page`/`with_page_mut`, I/O behind its
+own mutex, ascending latch order asserted in debug builds (`LatchOrderGuard`),
+and `BTree` copies page bytes out and releases each latch before descending.
+**Steps 3–5 open**: `Database` still holds one `Mutex<Core>`, so operations are
+serialized end to end.
+
+0.5.1 also fixed a B-Tree split bug that predates this phase but matters for it:
+`insert_in_parent` placed the new sibling by key comparison, misordering
+children among repeated separators (frequent under MVCC). It now inserts next
+to the split page, and an internal-node split no longer leaves a split-off child
+in the left half with a stale parent pointer. Point lookups were moved from full scans to a key-range walk
+(`BTree::key_versions`), which shortens the latch traffic each probe generates.
 
 ### Problem
 `src/db.rs` guards all physical access with one `Arc<Mutex<Core>>`. Correct and
@@ -208,3 +231,28 @@ multi-session, multi-step, needs stress + deadlock tests).
 Do **Phase 6 first** (small, independent, bounds clog growth). Then Phase 7,
 strictly step-by-step with a green suite between steps — step 1 (interior
 mutability + BTree guard rewrite) is the make-or-break checkpoint.
+
+---
+
+## Deferred maintenance (recorded in 0.5.1)
+
+Found during the 0.5.1 TODO/performance pass; intentionally out of scope there.
+
+- **No repair for already-misordered trees.** Files written by ≤ 0.5.0 under
+  heavy single-key updates may hold internal nodes whose children disagree with
+  the leaf chain. A checker that walks internal nodes against the chain (and a
+  rebuild from the chain, which stays correctly ordered) would fix them.
+- **UPDATE/DELETE predicate evaluation is a full scan.** `execute_update` /
+  `execute_delete` call `scan_visible` and filter, even for `WHERE pk = k`. A
+  key-equality fast path via `find_visible` would make them O(height).
+- **PK uniqueness check scans all visible rows** (`PrimaryKeyConstraint`). For a
+  single-column integer PK equal to the row key, `find_visible` suffices.
+- **In-memory tx table is never pruned.** `advance_frozen_xid` compacts the clog
+  but leaves the in-memory `TransactionTable` intact; `Pager::transaction_table()`
+  (vacuum) still clones it. Prune entries below the watermark that are committed,
+  or keep aborted ones until their stamps are gone.
+- **WAL overlay ignores the watermark on reopen.** Statuses replayed from the WAL
+  are re-recorded into the clog even below `frozen_xid`. Accurate but
+  un-compacts entries; filter by the persisted watermark.
+- **Leaf pages are never merged**, so vacuum can leave empty leaves that point
+  lookups and scans still traverse.

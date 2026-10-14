@@ -116,6 +116,43 @@ fn vacuum_all_compacts_clog_without_changing_visibility() {
 }
 
 #[test]
+fn rolled_back_delete_survives_compaction_and_reopen() {
+    // A rolled-back DELETE leaves the live version stamped with an *aborted*
+    // deleter. Once compaction drops that deleter's status, an absent id below
+    // the bound reads as committed -- so vacuum must clear the stamp first, or
+    // the row silently disappears after reopen.
+    let filename = "mvcc_frozen_aborted_deleter.db";
+
+    {
+        let mut engine = fresh_engine(filename);
+        exec(&mut engine, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+        exec(&mut engine, "INSERT INTO t VALUES (1, 'a')");
+        exec(&mut engine, "INSERT INTO t VALUES (2, 'b')");
+        exec(&mut engine, "BEGIN");
+        exec(&mut engine, "DELETE FROM t WHERE id = 1");
+        exec(&mut engine, "ROLLBACK");
+        exec(&mut engine, "BEGIN");
+        exec(&mut engine, "UPDATE t SET v = 'z' WHERE id = 2");
+        exec(&mut engine, "ROLLBACK");
+        // A later commit truncates the WAL, so after reopen the clog is the only
+        // witness of those aborts.
+        exec(&mut engine, "INSERT INTO t VALUES (3, 'c')");
+        assert_eq!(keys(&mut engine, "t"), vec![1, 2, 3]);
+
+        engine.vacuum_all().unwrap();
+        assert!(engine.frozen_xid() > 0);
+        assert_eq!(keys(&mut engine, "t"), vec![1, 2, 3]);
+    }
+
+    let mut engine = Engine::new(filename);
+    assert_eq!(
+        keys(&mut engine, "t"),
+        vec![1, 2, 3],
+        "rows whose delete was rolled back must stay visible after compaction"
+    );
+}
+
+#[test]
 fn per_table_vacuum_does_not_advance_the_watermark() {
     let filename = "mvcc_frozen_per_table.db";
     let mut engine = fresh_engine(filename);
