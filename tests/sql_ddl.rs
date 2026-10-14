@@ -502,6 +502,27 @@ fn add_duplicate_column_fails() {
 }
 
 #[test]
+fn create_table_duplicate_column_follows_identifier_rule() {
+    let (_dir, mut e) = engine();
+    assert_eq!(state(&mut e, "CREATE TABLE d1 (x INTEGER, X INTEGER)"), "42701");
+    assert_eq!(state(&mut e, "CREATE TABLE d2 (\"x\" INTEGER, x INTEGER)"), "42701");
+    assert_eq!(state(&mut e, "CREATE TABLE d3 (x INTEGER, \"X\" INTEGER)"), "42701");
+    assert_eq!(state(&mut e, "CREATE TABLE d4 (\"x\" INTEGER, \"x\" INTEGER)"), "42701");
+    exec(&mut e, "CREATE TABLE d5 (\"x\" INTEGER, \"X\" INTEGER)");
+    assert_eq!(header(&mut e, "SELECT * FROM d5"), vec!["x", "X"]);
+}
+
+#[test]
+fn add_column_duplicate_follows_identifier_rule() {
+    let (_dir, mut e) = engine();
+    exec(&mut e, "CREATE TABLE f (x INTEGER)");
+    assert_eq!(state(&mut e, "ALTER TABLE f ADD COLUMN X INTEGER"), "42701");
+    assert_eq!(state(&mut e, "ALTER TABLE f ADD COLUMN \"x\" INTEGER"), "42701");
+    exec(&mut e, "ALTER TABLE f ADD COLUMN \"X\" INTEGER");
+    assert_eq!(header(&mut e, "SELECT * FROM f"), vec!["x", "X"]);
+}
+
+#[test]
 fn add_column_unsupported_constraints() {
     let (_dir, mut e) = engine();
     audit_t(&mut e);

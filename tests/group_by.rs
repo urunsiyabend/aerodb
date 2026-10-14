@@ -11,10 +11,10 @@ fn create_matches_table(catalog: &mut Catalog) {
     aerodb::execution::handle_statement(catalog, Statement::CreateTable {
         table_name: "matches".into(),
         columns: vec![
-            aerodb::sql::ast::ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            aerodb::sql::ast::ColumnDef { name: "team".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            aerodb::sql::ast::ColumnDef { name: "league".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            aerodb::sql::ast::ColumnDef { name: "score".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            aerodb::sql::ast::ColumnDef { name: "id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            aerodb::sql::ast::ColumnDef { name: "team".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            aerodb::sql::ast::ColumnDef { name: "league".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            aerodb::sql::ast::ColumnDef { name: "score".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(),
         primary_key: None,

@@ -251,8 +251,17 @@ mod tests {
             (DbError::RowTooLarge(s()), "54000"),
             (DbError::NoActiveTransaction(s()), "25P01"),
         ];
-        // One row per variant (the match above has 33 arms).
-        assert_eq!(table.len(), 33);
+        // One row per variant: the count is derived from the enum definition
+        // itself, so a variant missing from the table fails here.
+        let src = include_str!("error.rs");
+        let body = &src[src.find("pub enum DbError {").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let variants = body
+            .lines()
+            .skip(1)
+            .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_uppercase()))
+            .count();
+        assert_eq!(table.len(), variants, "table rows vs DbError variants");
         let mut seen = std::collections::HashSet::new();
         for (e, code) in &table {
             covered(e);

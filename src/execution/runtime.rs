@@ -532,6 +532,13 @@ fn create_view(catalog: &mut Catalog, name: String, columns: Option<Vec<String>>
     Ok(())
 }
 
+/// Would two column names collide under the identifier rule: if either was
+/// written unquoted they compare case-insensitively, if both were quoted
+/// exactly.
+fn names_collide(a: &str, a_quoted: bool, b: &str, b_quoted: bool) -> bool {
+    if a_quoted && b_quoted { a == b } else { a.eq_ignore_ascii_case(b) }
+}
+
 /// ALTER TABLE t ADD COLUMN: validate the new column against every visible
 /// row (default value or NULL appended; NOT NULL / CHECK / UNIQUE and all
 /// existing constraints re-checked on the new images), then persist the new
@@ -546,7 +553,9 @@ fn alter_add_column(
 ) -> DbResult<()> {
     use crate::sql::ast::TableConstraint;
     let info = catalog.resolve_table(table_name)?.clone();
-    if info.columns.iter().any(|(n, _)| *n == column.name) {
+    // Quotedness of existing columns is not stored: the new name is matched
+    // per the identifier rule (unquoted: case-insensitive, quoted: exact).
+    if info.columns.iter().any(|(n, _)| names_collide(n, true, &column.name, column.quoted)) {
         return Err(DbError::DuplicateColumn(column.name));
     }
     let mut columns = info.columns.clone();
@@ -756,7 +765,7 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             }
             // Same rule as ALTER TABLE ... ADD COLUMN: a declared name twice.
             for (i, c) in columns.iter().enumerate() {
-                if columns[..i].iter().any(|p| p.name == c.name) {
+                if columns[..i].iter().any(|p| names_collide(&p.name, p.quoted, &c.name, c.quoted)) {
                     return Err(DbError::DuplicateColumn(c.name.clone()));
                 }
             }

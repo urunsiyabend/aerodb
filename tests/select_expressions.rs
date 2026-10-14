@@ -28,8 +28,8 @@ fn execute_select_add_expr() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "numbers".into(),
         columns: vec![
-            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "val".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "val".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
@@ -48,8 +48,8 @@ fn execute_select_mul_double_expr() {
     handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "orders".into(),
         columns: vec![
-            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "total".into(), col_type: ColumnType::Double { precision: 8, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "total".into(), quoted: false, col_type: ColumnType::Double { precision: 8, scale: 2, unsigned: true }, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();

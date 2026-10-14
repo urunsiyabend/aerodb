@@ -14,9 +14,9 @@ fn column_aliases() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
         columns: vec![
-            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "first_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "last_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "first_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "last_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
@@ -37,17 +37,17 @@ fn table_aliases() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
         columns: vec![
-            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "first_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "first_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "departments".into(),
         columns: vec![
-            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "department_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
@@ -68,18 +68,18 @@ fn mixed_aliases() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
         columns: vec![
-            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "first_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "last_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "first_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "last_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "departments".into(),
         columns: vec![
-            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "department_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
@@ -100,9 +100,9 @@ fn subquery_alias() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
         columns: vec![
-            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "salary".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "salary".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
@@ -134,17 +134,17 @@ fn handle_statement_join_alias() {
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "employees".into(),
         columns: vec![
-            ColumnDef { name: "id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "first_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "first_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();
     aerodb::execution::handle_statement(&mut catalog, Statement::CreateTable {
         table_name: "departments".into(),
         columns: vec![
-            ColumnDef { name: "department_id".into(), col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
-            ColumnDef { name: "department_name".into(), col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_id".into(), quoted: false, col_type: ColumnType::Integer, not_null: false, default_value: None, auto_increment: false, primary_key: false },
+            ColumnDef { name: "department_name".into(), quoted: false, col_type: ColumnType::Text, not_null: false, default_value: None, auto_increment: false, primary_key: false },
         ],
         fks: Vec::new(), primary_key: None, if_not_exists: false, constraints: Vec::new(),
     }).unwrap();

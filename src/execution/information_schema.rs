@@ -273,7 +273,11 @@ pub fn rows(catalog: &Catalog, view: &InfoView) -> DbResult<Vec<Vec<Value>>> {
                 rels.push((t.name.clone(), rows));
             }
             for v in catalog.all_views() {
-                let types = crate::execution::bind::view_column_types(catalog, &v.query)?;
+                // Fails closed: a view that no longer binds (e.g. a base table
+                // it reads was altered) makes the whole view fail, with an
+                // error naming the broken view rather than a bare binder error.
+                let types = crate::execution::bind::view_column_types(catalog, &v.query)
+                    .map_err(|e| DbError::TypeMismatch(format!("view {} cannot be described: {e}", v.name)))?;
                 let rows = v
                     .columns
                     .iter()

@@ -735,7 +735,7 @@ impl Parser {
     /// returned as table constraints naming this column, REFERENCES as a
     /// single-column foreign key.
     fn parse_column_def(&mut self) -> DbResult<(ColumnDef, Vec<TableConstraint>, Vec<ForeignKey>)> {
-        let name = self.parse_ident()?;
+        let Ident { value: name, quoted } = self.parse_ident_ref()?;
         let col_type = self.parse_column_type()?;
         let mut not_null = false;
         let mut default_value = None;
@@ -821,7 +821,7 @@ impl Parser {
                 return Err(DbError::Syntax("AUTO_INCREMENT columns must be NOT NULL".into()));
             }
         }
-        Ok((ColumnDef { name, col_type, not_null, default_value, auto_increment, primary_key }, constraints, fks))
+        Ok((ColumnDef { name, quoted, col_type, not_null, default_value, auto_increment, primary_key }, constraints, fks))
     }
 
     /// Reads the type words of a column definition and resolves them through

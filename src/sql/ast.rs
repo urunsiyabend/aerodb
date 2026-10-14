@@ -352,6 +352,9 @@ pub enum TableConstraint {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnDef {
     pub name: String,
+    /// The name was written as a quoted identifier (identifier rule: it then
+    /// collides with other names exactly, not case-insensitively).
+    pub quoted: bool,
     pub col_type: ColumnType,
     pub not_null: bool,
     pub default_value: Option<Expr>,

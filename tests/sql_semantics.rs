@@ -731,7 +731,7 @@ fn quoted_identifiers_match_exactly() {
 #[test]
 fn unquoted_identifier_matching_two_columns_is_ambiguous() {
     let (_d, mut e) = engine();
-    exec(&mut e, "CREATE TABLE m (id INTEGER PRIMARY KEY, a INTEGER, \"A\" INTEGER)");
+    exec(&mut e, "CREATE TABLE m (id INTEGER PRIMARY KEY, \"a\" INTEGER, \"A\" INTEGER)");
     exec(&mut e, "INSERT INTO m VALUES (1, 10, 20)");
     assert_eq!(state(&mut e, "SELECT a FROM m"), "42702");
     assert_eq!(q(&mut e, "SELECT \"a\", \"A\" FROM m"), table(&[&["10", "20"]]));
