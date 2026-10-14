@@ -392,7 +392,7 @@ fn build_insert_row(
             None => Some(&row_vals[idx]),
         };
         let auto = info.auto_increment.get(idx).copied().unwrap_or(false);
-        let seq = format!("{}_{}", info.name, col_name);
+        let seq = if auto { catalog.auto_increment_sequence(&info.name, col_name) } else { String::new() };
         let value = match supplied {
             Some(expr) if !matches!(expr, Expr::Default) => {
                 let v = crate::execution::eval::evaluate_constant(expr)?;
@@ -491,10 +491,12 @@ fn ensure_no_dependents(catalog: &Catalog, name: &str, is_view: bool) -> DbResul
 /// schema, and the output names (column list, else the query's) must be
 /// distinct. The stored text is the canonical `Query::to_sql`, re-parsed so
 /// the cached query is exactly what a reopen will see.
-fn create_view(catalog: &mut Catalog, name: String, columns: Option<Vec<String>>, query: Query) -> DbResult<()> {
-    if catalog.relation_exists(&name) {
-        return Err(DbError::DuplicateObject(name));
+fn create_view(catalog: &mut Catalog, name: Ident, columns: Option<Vec<String>>, query: Query) -> DbResult<()> {
+    // Identifier rule, as for CREATE TABLE.
+    if let Some(existing) = catalog.colliding_relation(&name) {
+        return Err(DbError::DuplicateObject(existing));
     }
+    let name = name.value;
     let mut query = query;
     crate::execution::query::expand_wildcards(catalog, &mut query)?;
     let sql = query.to_sql();
@@ -736,13 +738,17 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                     "Only one AUTO_INCREMENT column allowed per table".into(),
                 ));
             }
-            if catalog.relation_exists(&table_name) {
+            // Identifier rule: an unquoted name collides with an existing
+            // table or view case-insensitively (else every unquoted
+            // reference to either would become ambiguous).
+            if let Some(existing) = catalog.colliding_relation(&table_name) {
                 if if_not_exists {
-                    println!("Table {} already exists", table_name);
+                    println!("Table {} already exists", existing);
                     return Ok(());
                 }
-                return Err(DbError::DuplicateObject(table_name));
+                return Err(DbError::DuplicateObject(existing));
             }
+            let table_name = table_name.value;
             // Same rule as ALTER TABLE ... ADD COLUMN: a declared name twice.
             for (i, c) in columns.iter().enumerate() {
                 if columns[..i].iter().any(|p| names_collide(&p.name, p.quoted, &c.name, c.quoted)) {
@@ -784,14 +790,17 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
                 Err(e) => {
                     if if_not_exists && e.to_string().contains("already exists") {
                         println!("Table {} already exists", table_name);
-                    } else {
-                        return Err(DbError::from(e));
+                        return Ok(());
                     }
+                    return Err(DbError::from(e));
                 }
             }
             for (name, _, _, _, ai) in cols {
                 if ai {
-                    let seq_name = format!("{}_{}", table_name, name);
+                    // A fresh sequence under the unambiguous 0.6.0 name (a
+                    // leftover of an earlier table of this name restarts).
+                    let seq_name = Catalog::auto_increment_sequence_name(&table_name, &name);
+                    catalog.drop_sequence(&seq_name)?;
                     catalog.create_sequence(&seq_name, 1, 1)?;
                 }
             }
@@ -806,16 +815,19 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             }
             let info = catalog.resolve_table(&table_name)?.clone();
             let column = &info.columns[resolve_column(&info, &column_name)?].0;
-            catalog.create_index(&index_name, &info.name, column)?;
+            if let Some(existing) = catalog.colliding_index(&index_name) {
+                return Err(DbError::DuplicateObject(existing));
+            }
+            catalog.create_index(&index_name.value, &info.name, column)?;
             println!("Index {} created", index_name);
         }
-        Statement::DropIndex { name } => {
-            if catalog.drop_index(&name)? {
-                println!("Index {} dropped", name);
-            } else {
-                return Err(DbError::NotFound(format!("index '{}' not found", name)));
+        Statement::DropIndex { name } => match catalog.resolve_index(&name)? {
+            Some(declared) => {
+                catalog.drop_index(&declared)?;
+                println!("Index {} dropped", declared);
             }
-        }
+            None => return Err(DbError::NotFound(format!("index \"{}\"", name))),
+        },
         Statement::Insert {
             table_name,
             columns: col_list,
@@ -833,15 +845,15 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             }
         }
         Statement::DropTable { table_name, if_exists } => {
-            if catalog.get_table(&table_name).is_err() {
-                if catalog.get_view(&table_name).is_some() {
-                    return Err(DbError::WrongObjectType(format!("{table_name} is not a table")));
+            // Same identifier rule as every other reference.
+            let table_name = match catalog.resolve_relation(&table_name) {
+                Ok(Relation::Table(t)) => t.name.clone(),
+                Ok(Relation::View(v)) => {
+                    return Err(DbError::WrongObjectType(format!("{} is not a table", v.name)));
                 }
-                if if_exists {
-                    return Ok(());
-                }
-                return Err(DbError::TableNotFound(table_name));
-            }
+                Err(DbError::TableNotFound(_)) if if_exists => return Ok(()),
+                Err(e) => return Err(e),
+            };
             ensure_no_dependents(catalog, &table_name, false)?;
             if catalog.drop_table(&table_name)? {
                 println!("Table {} dropped", table_name);
@@ -851,15 +863,14 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             create_view(catalog, name, columns, *query)?;
         }
         Statement::DropView { name, if_exists } => {
-            if catalog.get_view(&name).is_none() {
-                if catalog.get_table(&name).is_ok() {
-                    return Err(DbError::WrongObjectType(format!("{name} is not a view")));
+            let name = match catalog.resolve_relation(&name) {
+                Ok(Relation::View(v)) => v.name.clone(),
+                Ok(Relation::Table(t)) => {
+                    return Err(DbError::WrongObjectType(format!("{} is not a view", t.name)));
                 }
-                if if_exists {
-                    return Ok(());
-                }
-                return Err(DbError::TableNotFound(name));
-            }
+                Err(DbError::TableNotFound(_)) if if_exists => return Ok(()),
+                Err(e) => return Err(e),
+            };
             ensure_no_dependents(catalog, &name, true)?;
             catalog.drop_view(&name)?;
             println!("View {} dropped", name);
@@ -885,6 +896,9 @@ pub fn handle_statement(catalog: &mut Catalog, stmt: Statement) -> DbResult<()> 
             println!("{} row(s) updated", count);
         }
         Statement::CreateSequence(seq) => {
+            if let Some(existing) = catalog.colliding_sequence(&seq.name) {
+                return Err(DbError::DuplicateObject(existing));
+            }
             catalog.create_sequence(&seq.name, seq.start, seq.increment)?;
             println!("Sequence '{}' created successfully", seq.name);
         }

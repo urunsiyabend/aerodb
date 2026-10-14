@@ -523,14 +523,14 @@ impl Parser {
                 self.advance();
                 if_exists = true;
             }
-            let table_name = self.parse_object_name(false)?.value;
+            let table_name = self.parse_object_name(false)?;
             if self.is_kw("CASCADE") {
                 return Err(unsupported("DROP TABLE ... CASCADE"));
             }
             self.eat_kw("RESTRICT");
             Ok(Statement::DropTable { table_name, if_exists })
         } else if self.eat_kw("INDEX") {
-            let name = self.parse_ident()?;
+            let name = self.parse_ident_ref()?;
             Ok(Statement::DropIndex { name })
         } else if self.eat_kw("VIEW") {
             let mut if_exists = false;
@@ -539,7 +539,7 @@ impl Parser {
                 self.advance();
                 if_exists = true;
             }
-            let name = self.parse_object_name(false)?.value;
+            let name = self.parse_object_name(false)?;
             if self.is_kw("CASCADE") {
                 return Err(unsupported("DROP VIEW ... CASCADE"));
             }
@@ -553,7 +553,7 @@ impl Parser {
     fn parse_create(&mut self) -> DbResult<Statement> {
         self.expect_kw("CREATE")?;
         if self.eat_kw("SEQUENCE") {
-            let name = self.parse_ident()?;
+            let name = self.parse_ident_ref()?;
             let mut start = 1i64;
             let mut increment = 1i64;
             loop {
@@ -575,7 +575,7 @@ impl Parser {
             return Ok(Statement::CreateSequence(CreateSequence { name, start, increment }));
         }
         if self.eat_kw("INDEX") {
-            let index_name = self.parse_ident()?;
+            let index_name = self.parse_ident_ref()?;
             self.expect_kw("ON")?;
             let table_name = self.parse_object_name(false)?;
             self.expect_symbol("(")?;
@@ -593,7 +593,7 @@ impl Parser {
             return Err(unsupported("CREATE OR REPLACE VIEW"));
         }
         if self.eat_kw("VIEW") {
-            let name = self.parse_object_name(true)?.value;
+            let name = self.parse_object_name(true)?;
             let columns = if self.eat_symbol("(") {
                 let mut cols = vec![self.parse_ident()?];
                 while self.eat_symbol(",") {
@@ -616,7 +616,7 @@ impl Parser {
             self.expect_kw("EXISTS")?;
             if_not_exists = true;
         }
-        let table_name = self.parse_object_name(true)?.value;
+        let table_name = self.parse_object_name(true)?;
         self.expect_symbol("(")?;
         let mut columns: Vec<ColumnDef> = Vec::new();
         let mut fks = Vec::new();

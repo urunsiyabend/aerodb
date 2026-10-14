@@ -49,6 +49,11 @@ pub enum DbError {
     CardinalityViolation(String),
     #[error("column reference '{0}' is ambiguous")]
     AmbiguousColumn(String),
+    /// An unquoted table, view or index name that matches more than one
+    /// object case-insensitively (objects created with quoted names that
+    /// differ only in case); quote the name to pick one.
+    #[error("relation name \"{0}\" is ambiguous")]
+    AmbiguousRelation(String),
     #[error("invalid foreign key: {0}")]
     InvalidForeignKey(String),
     #[error("duplicate key value violates unique constraint {constraint}: {key}")]
@@ -103,7 +108,7 @@ impl DbError {
     /// | 40001 | serialization failure (write/write conflict) | `WriteConflict` |
     /// | 42601 | syntax error | `Syntax`, `ParseError` |
     /// | 42701 | duplicate column | `DuplicateColumn` |
-    /// | 42702 | ambiguous column | `AmbiguousColumn` |
+    /// | 42702 | ambiguous column or relation name | `AmbiguousColumn`, `AmbiguousRelation` |
     /// | 42703 | undefined column | `ColumnNotFound` |
     /// | 42704 | undefined object (sequence, index, ...) | `NotFound` |
     /// | 42710 | duplicate object (constraint name) | `DuplicateConstraint` |
@@ -140,6 +145,7 @@ impl DbError {
             DbError::TypeMismatch(_) => "42804",
             DbError::CardinalityViolation(_) => "21000",
             DbError::AmbiguousColumn(_) => "42702",
+            DbError::AmbiguousRelation(_) => "42702",
             DbError::InvalidForeignKey(_) => "42830",
             DbError::UniqueViolation { .. } => "23505",
             DbError::CheckViolation { .. } => "23514",
@@ -199,6 +205,7 @@ mod tests {
             | DbError::TypeMismatch(_)
             | DbError::CardinalityViolation(_)
             | DbError::AmbiguousColumn(_)
+            | DbError::AmbiguousRelation(_)
             | DbError::InvalidForeignKey(_)
             | DbError::UniqueViolation { .. }
             | DbError::CheckViolation { .. }
@@ -250,6 +257,7 @@ mod tests {
             (DbError::TypeMismatch(s()), "42804"),
             (DbError::CardinalityViolation(s()), "21000"),
             (DbError::AmbiguousColumn(s()), "42702"),
+            (DbError::AmbiguousRelation(s()), "42702"),
             (DbError::InvalidForeignKey(s()), "42830"),
             (DbError::UniqueViolation { constraint: s(), key: s() }, "23505"),
             (DbError::CheckViolation { constraint: s() }, "23514"),

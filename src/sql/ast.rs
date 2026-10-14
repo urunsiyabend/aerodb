@@ -364,7 +364,7 @@ pub struct ColumnDef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateSequence {
-    pub name: String,
+    pub name: Ident,
     pub start: i64,
     pub increment: i64,
 }
@@ -372,7 +372,9 @@ pub struct CreateSequence {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     CreateTable {
-        table_name: String,
+        /// As written: the identifier rule decides which existing relation
+        /// names it collides with (unquoted: case-insensitively).
+        table_name: Ident,
         columns: Vec<ColumnDef>,
         fks: Vec<ForeignKey>,
         primary_key: Option<Vec<Ident>>,
@@ -382,26 +384,26 @@ pub enum Statement {
         constraints: Vec<TableConstraint>,
     },
     CreateIndex {
-        index_name: String,
+        index_name: Ident,
         table_name: Ident,
         column_name: Ident,
     },
     DropIndex {
-        name: String,
+        name: Ident,
     },
     DropTable {
-        table_name: String,
+        table_name: Ident,
         if_exists: bool,
     },
     /// `CREATE VIEW name [(columns)] AS query`.
     CreateView {
-        name: String,
+        name: Ident,
         columns: Option<Vec<String>>,
         query: Box<Query>,
     },
     /// `DROP VIEW [IF EXISTS] name [RESTRICT]`.
     DropView {
-        name: String,
+        name: Ident,
         if_exists: bool,
     },
     /// `ALTER TABLE t ADD [COLUMN] column_def`; `constraints` are the column's

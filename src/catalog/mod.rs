@@ -625,10 +625,41 @@ impl Catalog {
         match (hits.next(), hits.next()) {
             (Some(r), None) => Ok(r),
             (None, _) => Err(not_found()),
-            (Some(_), Some(_)) => Err(crate::error::DbError::Syntax(format!(
-                "table name \"{}\" is ambiguous",
-                ident.value
-            ))),
+            (Some(_), Some(_)) => Err(crate::error::DbError::AmbiguousRelation(ident.value.clone())),
+        }
+    }
+
+    /// The existing table or view whose name a relation created as `ident`
+    /// would collide with under the identifier rule: an unquoted name
+    /// collides case-insensitively, a quoted one exactly (existing names are
+    /// compared as declared, like columns in ALTER TABLE ... ADD COLUMN).
+    pub fn colliding_relation(&self, ident: &Ident) -> Option<String> {
+        self.tables.keys().chain(self.views.keys()).find(|n| ident.matches(n)).cloned()
+    }
+
+    /// The existing index `ident` would collide with (identifier rule, as
+    /// [`Catalog::colliding_relation`]).
+    pub fn colliding_index(&self, ident: &Ident) -> Option<String> {
+        self.indexes.keys().find(|n| ident.matches(n)).cloned()
+    }
+
+    /// The existing sequence `ident` would collide with (identifier rule).
+    pub fn colliding_sequence(&self, ident: &Ident) -> Option<String> {
+        self.sequences.keys().find(|n| ident.matches(n)).cloned()
+    }
+
+    /// The declared name of the index `ident` refers to (identifier rule):
+    /// `None` if there is none, `AmbiguousRelation` if an unquoted name
+    /// matches several.
+    pub fn resolve_index(&self, ident: &Ident) -> crate::error::DbResult<Option<String>> {
+        if ident.quoted {
+            return Ok(self.indexes.contains_key(&ident.value).then(|| ident.value.clone()));
+        }
+        let mut hits = self.indexes.keys().filter(|n| ident.matches(n));
+        match (hits.next(), hits.next()) {
+            (None, _) => Ok(None),
+            (Some(n), None) => Ok(Some(n.clone())),
+            (Some(_), Some(_)) => Err(crate::error::DbError::AmbiguousRelation(ident.value.clone())),
         }
     }
 
@@ -984,7 +1015,8 @@ impl Catalog {
                 format!("Sequence '{}' already exists", name),
             ));
         }
-        let key = (self.sequences.len() as i32) + 1;
+        // Keys are never reused (a dropped sequence leaves a gap).
+        let key = self.sequences.values().map(|s| s.key).max().unwrap_or(0) + 1;
         let current = start - increment;
         {
             let mut tree = BTree::open_root(&self.pager, 2)?;
@@ -1002,6 +1034,71 @@ impl Catalog {
                 increment,
             },
         );
+        Ok(())
+    }
+
+    /// Drop sequence `name` if it exists (page 2 is reverted on ROLLBACK and
+    /// reloaded with the catalog). Returns whether it existed.
+    pub fn drop_sequence(&mut self, name: &str) -> io::Result<bool> {
+        let Some(info) = self.sequences.get(name) else {
+            return Ok(false);
+        };
+        let mut tree = BTree::open_root(&self.pager, 2)?;
+        Self::remove_sequence_row(&mut tree, info.key)?;
+        drop(tree);
+        self.sequences.remove(name);
+        Ok(true)
+    }
+
+    /// The internal name of the sequence behind AUTO_INCREMENT column
+    /// `column` of `table` for tables created by 0.6.0 and later. The length
+    /// prefix makes it unambiguous (`a_b`.`c` and `a`.`b_c` differ).
+    pub fn auto_increment_sequence_name(table: &str, column: &str) -> String {
+        format!("{}:{}.{}#auto_increment", table.len(), table, column)
+    }
+
+    /// The `{table}_{column}` name 0.5.x gave AUTO_INCREMENT sequences
+    /// (ambiguous: kept only to find sequences of existing files).
+    fn legacy_auto_increment_sequence_name(table: &str, column: &str) -> String {
+        format!("{}_{}", table, column)
+    }
+
+    /// The sequence that numbers AUTO_INCREMENT column `column` of `table`:
+    /// the 0.6.0 name if that sequence exists, else a 0.5.x `{table}_{column}`
+    /// sequence if one exists, else the 0.6.0 name.
+    pub fn auto_increment_sequence(&self, table: &str, column: &str) -> String {
+        let name = Self::auto_increment_sequence_name(table, column);
+        if self.sequences.contains_key(&name) {
+            return name;
+        }
+        let legacy = Self::legacy_auto_increment_sequence_name(table, column);
+        if self.sequences.contains_key(&legacy) { legacy } else { name }
+    }
+
+    /// Drop the AUTO_INCREMENT sequences of `table` (called by DROP TABLE). A
+    /// 0.5.x-named sequence is kept while another table's AUTO_INCREMENT
+    /// column still maps to the same `{table}_{column}` name.
+    fn drop_auto_increment_sequences(&mut self, table: &TableInfo) -> io::Result<()> {
+        for (i, (column, _)) in table.columns.iter().enumerate() {
+            if !table.auto_increment.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            let name = self.auto_increment_sequence(&table.name, column);
+            let legacy = Self::legacy_auto_increment_sequence_name(&table.name, column);
+            if name == legacy {
+                let shared = self.tables.values().any(|t| {
+                    t.name != table.name
+                        && t.columns.iter().enumerate().any(|(j, (c, _))| {
+                            t.auto_increment.get(j).copied().unwrap_or(false)
+                                && self.auto_increment_sequence(&t.name, c) == legacy
+                        })
+                });
+                if shared {
+                    continue;
+                }
+            }
+            self.drop_sequence(&name)?;
+        }
         Ok(())
     }
 
@@ -1260,6 +1357,9 @@ impl Catalog {
             io::Error::other(format!("internal error: table {name} has no catalog row"))
         })?;
         self.write_catalog_row(key, true, None)?;
+        if let Some(info) = self.tables.get(name).cloned() {
+            self.drop_auto_increment_sequences(&info)?;
+        }
         self.tables.remove(name);
         self.rowid_counters.remove(name);
         Ok(true)
