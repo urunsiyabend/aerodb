@@ -35,7 +35,11 @@ pub struct QueryResult {
 /// bound statically ([`crate::execution::bind`]), so type-category errors
 /// are reported before any row is read; the bound form (character literals
 /// standing for date/time values converted) is what runs.
-pub fn execute_query(catalog: &mut Catalog, query: &Query, outer: Option<&Env>) -> DbResult<QueryResult> {
+pub fn execute_query(
+    catalog: &mut Catalog,
+    query: &Query,
+    outer: Option<&Env>,
+) -> DbResult<QueryResult> {
     let mut bound = query.clone();
     crate::execution::bind::bind_query(catalog, &mut bound, outer)?;
     run_query(catalog, &bound, outer)
@@ -123,23 +127,42 @@ pub fn row_key(row: &[Value]) -> Vec<KeyPart> {
 // FROM / JOIN
 // ---------------------------------------------------------------------------
 
-fn load_table_ref(catalog: &Catalog, tref: &TableRef, outer: Option<&Env>) -> DbResult<(Scope, Vec<Vec<Value>>)> {
+fn load_table_ref(
+    catalog: &Catalog,
+    tref: &TableRef,
+    outer: Option<&Env>,
+) -> DbResult<(Scope, Vec<Vec<Value>>)> {
     match tref {
-        TableRef::Named { schema: Some(schema), name, alias } => {
+        TableRef::Named {
+            schema: Some(schema),
+            name,
+            alias,
+        } => {
             let view = crate::execution::information_schema::resolve(schema, name)?;
             let qualifier = alias.clone().unwrap_or_else(|| view.name.to_string());
             let mut scope = Scope::new();
             for (col, ty) in view.columns {
                 scope.push(Some(qualifier.clone()), col.to_string(), *ty);
             }
-            Ok((scope, crate::execution::information_schema::rows(catalog, view)?))
+            Ok((
+                scope,
+                crate::execution::information_schema::rows(catalog, view)?,
+            ))
         }
-        TableRef::Named { schema: None, name, alias } => match catalog.resolve_relation(name)? {
+        TableRef::Named {
+            schema: None,
+            name,
+            alias,
+        } => match catalog.resolve_relation(name)? {
             Relation::Table(info) => {
                 let qualifier = alias.clone().unwrap_or_else(|| info.name.clone());
                 let mut scope = Scope::new();
                 for (col, ty) in &info.columns {
-                    scope.push(Some(qualifier.clone()), col.clone(), SqlType::from_column_type(ty));
+                    scope.push(
+                        Some(qualifier.clone()),
+                        col.clone(),
+                        SqlType::from_column_type(ty),
+                    );
                 }
                 let snapshot = read_snapshot(catalog);
                 let tree = BTree::open_root(&catalog.pager, info.root_page)?;
@@ -149,7 +172,8 @@ fn load_table_ref(catalog: &Catalog, tref: &TableRef, outer: Option<&Env>) -> Db
                     .into_iter()
                     .map(|r| {
                         // Versions written before an ADD COLUMN are short: pad with NULL.
-                        let mut vals: Vec<Value> = r.data.0.iter().map(Value::from_column_value).collect();
+                        let mut vals: Vec<Value> =
+                            r.data.0.iter().map(Value::from_column_value).collect();
                         vals.resize(width, Value::Null);
                         vals
                     })
@@ -196,7 +220,11 @@ fn concat_rows(a: &[Value], b: &[Value]) -> Vec<Value> {
     v
 }
 
-fn build_source(catalog: &Catalog, sel: &Select, outer: Option<&Env>) -> DbResult<(Scope, Vec<Vec<Value>>)> {
+fn build_source(
+    catalog: &Catalog,
+    sel: &Select,
+    outer: Option<&Env>,
+) -> DbResult<(Scope, Vec<Vec<Value>>)> {
     if sel.from.is_empty() {
         return Ok((Scope::new(), vec![Vec::new()]));
     }
@@ -268,7 +296,10 @@ struct OutItem {
 
 /// Column reference that resolves exactly to scope slot `c`.
 fn exact_column(c: &crate::execution::eval::ScopeColumn) -> Expr {
-    Expr::Column { table: c.qualifier.clone().map(Ident::quoted), name: Ident::quoted(c.name.clone()) }
+    Expr::Column {
+        table: c.qualifier.clone().map(Ident::quoted),
+        name: Ident::quoted(c.name.clone()),
+    }
 }
 
 fn derived_name(expr: &Expr) -> String {
@@ -288,7 +319,12 @@ fn expand_items(sel: &Select, scope: &Scope) -> DbResult<Vec<OutItem>> {
         match item {
             SelectItem::Wildcard => {
                 for (i, c) in scope.columns.iter().enumerate() {
-                    items.push(OutItem { expr: exact_column(c), direct: Some(i), name: c.name.clone(), order_name: true });
+                    items.push(OutItem {
+                        expr: exact_column(c),
+                        direct: Some(i),
+                        name: c.name.clone(),
+                        order_name: true,
+                    });
                 }
             }
             SelectItem::QualifiedWildcard(q) => {
@@ -332,14 +368,20 @@ fn canonicalize(expr: &Expr, scope: &Scope) -> Expr {
 
 /// Canonical form of a column reference resolved to scope slot `i`.
 fn slot_marker(i: usize) -> Expr {
-    Expr::Column { table: Some(Ident::quoted(format!("\u{0}{}", i))), name: Ident::quoted("") }
+    Expr::Column {
+        table: Some(Ident::quoted(format!("\u{0}{}", i))),
+        name: Ident::quoted(""),
+    }
 }
 
 /// Output names paired with whether ORDER BY may match them by name.
 type OutputNames = [(String, bool)];
 
 fn output_names(cols: &[ResultColumn], matchable: &[bool]) -> Vec<(String, bool)> {
-    cols.iter().zip(matchable).map(|(c, m)| (c.name.clone(), *m)).collect()
+    cols.iter()
+        .zip(matchable)
+        .map(|(c, m)| (c.name.clone(), *m))
+        .collect()
 }
 
 /// Resolve an ORDER BY item to an output column (ordinal, output name, or an
@@ -353,7 +395,9 @@ fn resolve_output_order(
 ) -> DbResult<usize> {
     match try_output_order(item, names, item_exprs, scope)? {
         Some(i) => Ok(i),
-        None => Err(DbError::Syntax("ORDER BY expressions must appear in select list".into())),
+        None => Err(DbError::Syntax(
+            "ORDER BY expressions must appear in select list".into(),
+        )),
     }
 }
 
@@ -368,7 +412,10 @@ fn try_output_order(
             if *n >= 1 && (*n as usize) <= names.len() {
                 return Ok(Some(*n as usize - 1));
             }
-            return Err(DbError::Syntax(format!("ORDER BY position {} is not in select list", n)));
+            return Err(DbError::Syntax(format!(
+                "ORDER BY position {} is not in select list",
+                n
+            )));
         }
         Expr::Column { table: None, name } => {
             let hits: Vec<usize> = names
@@ -402,7 +449,10 @@ enum SortKey {
 
 /// Stable sort by precomputed keys; NULLS LAST for ASC and NULLS FIRST for
 /// DESC unless overridden. Comparison errors propagate.
-fn sort_rows(mut keyed: Vec<(Vec<Value>, Vec<Value>)>, order: &[OrderByItem]) -> DbResult<Vec<Vec<Value>>> {
+fn sort_rows(
+    mut keyed: Vec<(Vec<Value>, Vec<Value>)>,
+    order: &[OrderByItem],
+) -> DbResult<Vec<Vec<Value>>> {
     let error: RefCell<Option<DbError>> = RefCell::new(None);
     keyed.sort_by(|(_, a), (_, b)| {
         for (i, item) in order.iter().enumerate() {
@@ -410,14 +460,26 @@ fn sort_rows(mut keyed: Vec<(Vec<Value>, Vec<Value>)>, order: &[OrderByItem]) ->
             let ord = match (a[i].is_null(), b[i].is_null()) {
                 (true, true) => Ordering::Equal,
                 (true, false) => {
-                    if nulls_first { Ordering::Less } else { Ordering::Greater }
+                    if nulls_first {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
                 }
                 (false, true) => {
-                    if nulls_first { Ordering::Greater } else { Ordering::Less }
+                    if nulls_first {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Less
+                    }
                 }
                 (false, false) => match a[i].compare(&b[i]) {
                     Ok(Some(o)) => {
-                        if item.descending { o.reverse() } else { o }
+                        if item.descending {
+                            o.reverse()
+                        } else {
+                            o
+                        }
                     }
                     Ok(None) => Ordering::Equal,
                     Err(e) => {
@@ -458,7 +520,9 @@ fn static_type(expr: &Expr, scope: &Scope) -> SqlType {
             Ok(Some(i)) => scope.columns[i].ty,
             _ => SqlType::Null,
         },
-        Expr::Unary { op: UnaryOp::Not, .. } => SqlType::Boolean,
+        Expr::Unary {
+            op: UnaryOp::Not, ..
+        } => SqlType::Boolean,
         Expr::Unary { expr, .. } => static_type(expr, scope),
         Expr::Binary { op, left, right } => match op {
             BinaryOp::Concat => SqlType::Text,
@@ -475,7 +539,9 @@ fn static_type(expr: &Expr, scope: &Scope) -> SqlType {
         | Expr::Exists { .. }
         | Expr::Between { .. }
         | Expr::Like { .. } => SqlType::Boolean,
-        Expr::Case { whens, else_result, .. } => whens
+        Expr::Case {
+            whens, else_result, ..
+        } => whens
             .iter()
             .map(|(_, t)| t)
             .chain(else_result.iter().map(|e| e.as_ref()))
@@ -529,7 +595,10 @@ fn column_types(items: &[OutItem], scope: &Scope, rows: &[Vec<Value>]) -> Vec<Re
                     .map(Value::sql_type)
                     .unwrap_or_else(|| static_type(&item.expr, scope))
             });
-            ResultColumn { name: item.name.clone(), ty }
+            ResultColumn {
+                name: item.name.clone(),
+                ty,
+            }
         })
         .collect()
 }
@@ -565,7 +634,9 @@ impl GroupCheck<'_> {
         match expr {
             Expr::Aggregate { .. } => Ok(()),
             Expr::Column { table, name } => self.check_column(table.as_ref(), name),
-            Expr::ScalarSubquery(q) | Expr::Exists { query: q, .. } => self.check_query(q, &mut Vec::new()),
+            Expr::ScalarSubquery(q) | Expr::Exists { query: q, .. } => {
+                self.check_query(q, &mut Vec::new())
+            }
             Expr::InSubquery { expr, query, .. } => {
                 self.check(expr)?;
                 self.check_query(query, &mut Vec::new())
@@ -582,9 +653,9 @@ impl GroupCheck<'_> {
     /// A reference that resolves in the grouped scope must be a grouped column.
     fn check_column(&self, table: Option<&Ident>, name: &Ident) -> DbResult<()> {
         match self.scope.resolve(table, name)? {
-            Some(slot) if !self.group_canon.contains(&slot_marker(slot)) => {
-                Err(DbError::GroupByMismatch(display_column(table.map(Ident::as_str), name)))
-            }
+            Some(slot) if !self.group_canon.contains(&slot_marker(slot)) => Err(
+                DbError::GroupByMismatch(display_column(table.map(Ident::as_str), name)),
+            ),
             _ => Ok(()),
         }
     }
@@ -595,7 +666,12 @@ impl GroupCheck<'_> {
         self.check_body(&query.body, &query.order_by, stack)
     }
 
-    fn check_body(&self, body: &SetExpr, order_by: &[OrderByItem], stack: &mut Vec<Scope>) -> DbResult<()> {
+    fn check_body(
+        &self,
+        body: &SetExpr,
+        order_by: &[OrderByItem],
+        stack: &mut Vec<Scope>,
+    ) -> DbResult<()> {
         match body {
             // A set operation's ORDER BY names output columns only.
             SetExpr::SetOp { left, right, .. } => {
@@ -628,7 +704,9 @@ impl GroupCheck<'_> {
                         exprs.push(&o.expr);
                     }
                 }
-                let result = exprs.into_iter().try_for_each(|e| self.check_nested_expr(e, stack));
+                let result = exprs
+                    .into_iter()
+                    .try_for_each(|e| self.check_nested_expr(e, stack));
                 stack.pop();
                 result
             }
@@ -650,7 +728,10 @@ impl GroupCheck<'_> {
                 self.check_nested_expr(expr, stack)?;
                 self.check_query(query, stack)
             }
-            _ => expr.children().into_iter().try_for_each(|c| self.check_nested_expr(c, stack)),
+            _ => expr
+                .children()
+                .into_iter()
+                .try_for_each(|c| self.check_nested_expr(c, stack)),
         }
     }
 }
@@ -685,10 +766,19 @@ fn expand_expr_wildcards(catalog: &Catalog, expr: &mut Expr) -> DbResult<()> {
         };
         match e {
             Expr::ScalarSubquery(q) => Expr::ScalarSubquery(expand(&q, &mut failure)),
-            Expr::Exists { query, negated } => Expr::Exists { query: expand(&query, &mut failure), negated },
-            Expr::InSubquery { expr, query, negated } => {
-                Expr::InSubquery { expr, query: expand(&query, &mut failure), negated }
-            }
+            Expr::Exists { query, negated } => Expr::Exists {
+                query: expand(&query, &mut failure),
+                negated,
+            },
+            Expr::InSubquery {
+                expr,
+                query,
+                negated,
+            } => Expr::InSubquery {
+                expr,
+                query: expand(&query, &mut failure),
+                negated,
+            },
             other => other,
         }
     });
@@ -706,12 +796,23 @@ fn expand_body_wildcards(catalog: &Catalog, body: &mut SetExpr) -> DbResult<()> 
             expand_body_wildcards(catalog, right)
         }
         SetExpr::Select(sel) => {
-            for tref in sel.from.iter_mut().chain(sel.joins.iter_mut().map(|j| &mut j.table)) {
+            for tref in sel
+                .from
+                .iter_mut()
+                .chain(sel.joins.iter_mut().map(|j| &mut j.table))
+            {
                 if let TableRef::Subquery { query, .. } = tref {
                     expand_wildcards(catalog, query)?;
                 }
             }
-            let Select { projection, joins, selection, group_by, having, .. } = &mut **sel;
+            let Select {
+                projection,
+                joins,
+                selection,
+                group_by,
+                having,
+                ..
+            } = &mut **sel;
             let item_exprs = projection.iter_mut().filter_map(|i| match i {
                 SelectItem::Expr { expr, .. } => Some(expr),
                 _ => None,
@@ -724,7 +825,11 @@ fn expand_body_wildcards(catalog: &Catalog, body: &mut SetExpr) -> DbResult<()> 
             {
                 expand_expr_wildcards(catalog, e)?;
             }
-            if !sel.projection.iter().any(|i| !matches!(i, SelectItem::Expr { .. })) {
+            if !sel
+                .projection
+                .iter()
+                .any(|i| !matches!(i, SelectItem::Expr { .. }))
+            {
                 return Ok(());
             }
             let scope = static_source_scope(catalog, sel)?;
@@ -732,9 +837,10 @@ fn expand_body_wildcards(catalog: &Catalog, body: &mut SetExpr) -> DbResult<()> 
             for item in &sel.projection {
                 match item {
                     SelectItem::Wildcard => {
-                        projection.extend(
-                            scope.columns.iter().map(|c| SelectItem::Expr { expr: exact_column(c), alias: None }),
-                        );
+                        projection.extend(scope.columns.iter().map(|c| SelectItem::Expr {
+                            expr: exact_column(c),
+                            alias: None,
+                        }));
                     }
                     SelectItem::QualifiedWildcard(q) => {
                         let before = projection.len();
@@ -743,7 +849,10 @@ fn expand_body_wildcards(catalog: &Catalog, body: &mut SetExpr) -> DbResult<()> 
                                 .columns
                                 .iter()
                                 .filter(|c| c.qualifier.as_deref().is_some_and(|cq| q.matches(cq)))
-                                .map(|c| SelectItem::Expr { expr: exact_column(c), alias: None }),
+                                .map(|c| SelectItem::Expr {
+                                    expr: exact_column(c),
+                                    alias: None,
+                                }),
                         );
                         if projection.len() == before {
                             return Err(DbError::TableNotFound(q.value.clone()));
@@ -764,18 +873,29 @@ fn static_source_scope(catalog: &Catalog, sel: &Select) -> DbResult<Scope> {
     let mut scope = Scope::new();
     for tref in sel.from.iter().chain(sel.joins.iter().map(|j| &j.table)) {
         match tref {
-            TableRef::Named { schema: Some(schema), name, alias } => {
+            TableRef::Named {
+                schema: Some(schema),
+                name,
+                alias,
+            } => {
                 let view = crate::execution::information_schema::resolve(schema, name)?;
                 let qualifier = alias.clone().unwrap_or_else(|| view.name.to_string());
                 for (col, _) in view.columns {
                     scope.push(Some(qualifier.clone()), col.to_string(), SqlType::Null);
                 }
             }
-            TableRef::Named { schema: None, name, alias } => {
-                let (rel_name, columns): (&str, Vec<&String>) = match catalog.resolve_relation(name)? {
-                    Relation::Table(info) => (&info.name, info.columns.iter().map(|(c, _)| c).collect()),
-                    Relation::View(view) => (&view.name, view.columns.iter().collect()),
-                };
+            TableRef::Named {
+                schema: None,
+                name,
+                alias,
+            } => {
+                let (rel_name, columns): (&str, Vec<&String>) =
+                    match catalog.resolve_relation(name)? {
+                        Relation::Table(info) => {
+                            (&info.name, info.columns.iter().map(|(c, _)| c).collect())
+                        }
+                        Relation::View(view) => (&view.name, view.columns.iter().collect()),
+                    };
                 let qualifier = alias.clone().unwrap_or_else(|| rel_name.to_string());
                 for col in columns {
                     scope.push(Some(qualifier.clone()), col.clone(), SqlType::Null);
@@ -796,7 +916,10 @@ fn static_output_names(catalog: &Catalog, body: &SetExpr) -> DbResult<Vec<(Strin
         SetExpr::SetOp { left, .. } => static_output_names(catalog, left),
         SetExpr::Select(sel) => {
             let scope = static_source_scope(catalog, sel)?;
-            Ok(expand_items(sel, &scope)?.into_iter().map(|i| (i.name, i.order_name)).collect())
+            Ok(expand_items(sel, &scope)?
+                .into_iter()
+                .map(|i| (i.name, i.order_name))
+                .collect())
         }
     }
 }
@@ -837,7 +960,10 @@ fn check_aggregate_level(agg: &Expr, scope: &Scope, outer: Option<&Env>) -> DbRe
 fn numeric_sum(vals: &[Value]) -> DbResult<Value> {
     let mut acc = vals[0].clone();
     if !matches!(acc, Value::Int(_) | Value::Decimal(_) | Value::Double(_)) {
-        return Err(DbError::TypeMismatch(format!("SUM/AVG is not defined for {}", acc.type_name())));
+        return Err(DbError::TypeMismatch(format!(
+            "SUM/AVG is not defined for {}",
+            acc.type_name()
+        )));
     }
     for v in &vals[1..] {
         acc = acc.add(v)?;
@@ -906,7 +1032,11 @@ fn compute_aggregate(
             }
         }
         _ => {
-            let want = if func == AggFunc::Min { Ordering::Less } else { Ordering::Greater };
+            let want = if func == AggFunc::Min {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
             let mut best = vals[0].clone();
             for v in &vals[1..] {
                 if v.compare(&best)? == Some(want) {
@@ -935,7 +1065,9 @@ fn run_select(
 
     if let Some(pred) = &sel.selection {
         if pred.contains_aggregate() {
-            return Err(DbError::Syntax("aggregate functions are not allowed in WHERE".into()));
+            return Err(DbError::Syntax(
+                "aggregate functions are not allowed in WHERE".into(),
+            ));
         }
         let mut kept = Vec::with_capacity(rows.len());
         for row in rows {
@@ -947,13 +1079,21 @@ fn run_select(
     }
 
     let items = expand_items(sel, &scope)?;
-    let names: Vec<(String, bool)> = items.iter().map(|i| (i.name.clone(), i.order_name)).collect();
+    let names: Vec<(String, bool)> = items
+        .iter()
+        .map(|i| (i.name.clone(), i.order_name))
+        .collect();
     let item_exprs: Vec<Expr> = items.iter().map(|i| i.expr.clone()).collect();
 
     let mut sort_keys = Vec::with_capacity(order_by.len());
     for item in order_by {
         let key = if sel.distinct {
-            SortKey::Output(resolve_output_order(item, &names, Some(&item_exprs), Some(&scope))?)
+            SortKey::Output(resolve_output_order(
+                item,
+                &names,
+                Some(&item_exprs),
+                Some(&scope),
+            )?)
         } else {
             match try_output_order(item, &names, None, None)? {
                 Some(i) => SortKey::Output(i),
@@ -1015,18 +1155,27 @@ fn run_select(
                     if *n >= 1 && (*n as usize) <= items.len() {
                         item_exprs[*n as usize - 1].clone()
                     } else {
-                        return Err(DbError::Syntax(format!("GROUP BY position {} is not in select list", n)));
+                        return Err(DbError::Syntax(format!(
+                            "GROUP BY position {} is not in select list",
+                            n
+                        )));
                     }
                 }
                 other => other.clone(),
             };
             if g.contains_aggregate() {
-                return Err(DbError::Syntax("aggregate functions are not allowed in GROUP BY".into()));
+                return Err(DbError::Syntax(
+                    "aggregate functions are not allowed in GROUP BY".into(),
+                ));
             }
             group_by.push(g);
         }
         let group_canon: Vec<Expr> = group_by.iter().map(|g| canonicalize(g, &scope)).collect();
-        let checker = GroupCheck { catalog, scope: &scope, group_canon: &group_canon };
+        let checker = GroupCheck {
+            catalog,
+            scope: &scope,
+            group_canon: &group_canon,
+        };
         for e in &item_exprs {
             checker.check(e)?;
         }
@@ -1065,13 +1214,31 @@ fn run_select(
         for group in &groups {
             let mut agg_values = Vec::with_capacity(aggregates.len());
             for a in &aggregates {
-                if let Expr::Aggregate { func, arg, distinct } = a {
-                    let v = compute_aggregate(*func, arg.as_deref(), *distinct, group, &scope, outer, &cx)?;
+                if let Expr::Aggregate {
+                    func,
+                    arg,
+                    distinct,
+                } = a
+                {
+                    let v = compute_aggregate(
+                        *func,
+                        arg.as_deref(),
+                        *distinct,
+                        group,
+                        &scope,
+                        outer,
+                        &cx,
+                    )?;
                     agg_values.push((a.clone(), v));
                 }
             }
             let rep: &[Value] = group.first().map(|r| r.as_slice()).unwrap_or(&null_row);
-            let env = Env { scope: &scope, row: rep, aggregates: &agg_values, outer };
+            let env = Env {
+                scope: &scope,
+                row: rep,
+                aggregates: &agg_values,
+                outer,
+            };
             if let Some(h) = &sel.having
                 && !eval_predicate(h, &env, &cx)?
             {
@@ -1093,7 +1260,13 @@ fn run_select(
     };
     let columns = column_types(&items, &scope, &rows_out);
     let matchable = items.iter().map(|i| i.order_name).collect();
-    Ok((QueryResult { columns, rows: rows_out }, matchable))
+    Ok((
+        QueryResult {
+            columns,
+            rows: rows_out,
+        },
+        matchable,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,10 +1286,19 @@ fn category(t: &SqlType) -> u8 {
     }
 }
 
-fn run_set_expr(catalog: &Catalog, body: &SetExpr, outer: Option<&Env>) -> DbResult<(QueryResult, Vec<bool>)> {
+fn run_set_expr(
+    catalog: &Catalog,
+    body: &SetExpr,
+    outer: Option<&Env>,
+) -> DbResult<(QueryResult, Vec<bool>)> {
     match body {
         SetExpr::Select(sel) => run_select(catalog, sel, &[], outer),
-        SetExpr::SetOp { op, all, left, right } => {
+        SetExpr::SetOp {
+            op,
+            all,
+            left,
+            right,
+        } => {
             let (l, matchable) = run_set_expr(catalog, left, outer)?;
             let (r, _) = run_set_expr(catalog, right, outer)?;
             if l.columns.len() != r.columns.len() {
@@ -1137,13 +1319,20 @@ fn run_set_expr(catalog: &Catalog, body: &SetExpr, outer: Option<&Env>) -> DbRes
                     )));
                 }
                 let ty = if cl == 1 && cr == 1 {
-                    if lc.ty == rc.ty { lc.ty } else { widen_numeric(lc.ty, rc.ty) }
+                    if lc.ty == rc.ty {
+                        lc.ty
+                    } else {
+                        widen_numeric(lc.ty, rc.ty)
+                    }
                 } else if cl == 0 {
                     rc.ty
                 } else {
                     lc.ty
                 };
-                columns.push(ResultColumn { name: lc.name.clone(), ty });
+                columns.push(ResultColumn {
+                    name: lc.name.clone(),
+                    ty,
+                });
             }
             let rows = combine(*op, *all, l.rows, r.rows);
             Ok((QueryResult { columns, rows }, matchable))
@@ -1151,7 +1340,12 @@ fn run_set_expr(catalog: &Catalog, body: &SetExpr, outer: Option<&Env>) -> DbRes
     }
 }
 
-fn combine(op: SetOperator, all: bool, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
+fn combine(
+    op: SetOperator,
+    all: bool,
+    left: Vec<Vec<Value>>,
+    right: Vec<Vec<Value>>,
+) -> Vec<Vec<Value>> {
     use std::collections::HashSet;
     match (op, all) {
         (SetOperator::Union, true) => {
@@ -1209,7 +1403,10 @@ mod tests {
         assert_eq!(key_of(&Value::Int(1)), key_of(&d));
         assert_eq!(key_of(&Value::Double(1.0)), key_of(&d));
         assert_ne!(key_of(&Value::Double(1.5)), key_of(&Value::Int(1)));
-        assert_eq!(key_of(&Value::Char("a  ".into())), key_of(&Value::Text("a".into())));
+        assert_eq!(
+            key_of(&Value::Char("a  ".into())),
+            key_of(&Value::Text("a".into()))
+        );
         assert_eq!(key_of(&Value::Null), key_of(&Value::Null));
     }
 
@@ -1224,9 +1421,41 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ints(combine(SetOperator::Except, true, rows(&[1, 1, 2, 3]), rows(&[1, 3]))), vec![1, 2]);
-        assert_eq!(ints(combine(SetOperator::Intersect, true, rows(&[1, 1, 2]), rows(&[1, 1, 1]))), vec![1, 1]);
-        assert_eq!(ints(combine(SetOperator::Except, false, rows(&[1, 1, 2]), rows(&[2]))), vec![1]);
-        assert_eq!(ints(combine(SetOperator::Union, false, rows(&[1, 1]), rows(&[2, 1]))), vec![1, 2]);
+        assert_eq!(
+            ints(combine(
+                SetOperator::Except,
+                true,
+                rows(&[1, 1, 2, 3]),
+                rows(&[1, 3])
+            )),
+            vec![1, 2]
+        );
+        assert_eq!(
+            ints(combine(
+                SetOperator::Intersect,
+                true,
+                rows(&[1, 1, 2]),
+                rows(&[1, 1, 1])
+            )),
+            vec![1, 1]
+        );
+        assert_eq!(
+            ints(combine(
+                SetOperator::Except,
+                false,
+                rows(&[1, 1, 2]),
+                rows(&[2])
+            )),
+            vec![1]
+        );
+        assert_eq!(
+            ints(combine(
+                SetOperator::Union,
+                false,
+                rows(&[1, 1]),
+                rows(&[2, 1])
+            )),
+            vec![1, 2]
+        );
     }
 }

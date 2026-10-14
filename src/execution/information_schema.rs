@@ -69,7 +69,12 @@ const I: SqlType = SqlType::Integer;
 const VIEWS: &[InfoView] = &[
     InfoView {
         name: "tables",
-        columns: &[("table_catalog", T), ("table_schema", T), ("table_name", T), ("table_type", T)],
+        columns: &[
+            ("table_catalog", T),
+            ("table_schema", T),
+            ("table_name", T),
+            ("table_type", T),
+        ],
     },
     InfoView {
         name: "columns",
@@ -110,10 +115,21 @@ const VIEWS: &[InfoView] = &[
     },
     InfoView {
         name: "referential_constraints",
-        columns: &[("constraint_name", T), ("unique_constraint_name", T), ("update_rule", T), ("delete_rule", T)],
+        columns: &[
+            ("constraint_name", T),
+            ("unique_constraint_name", T),
+            ("update_rule", T),
+            ("delete_rule", T),
+        ],
     },
-    InfoView { name: "check_constraints", columns: &[("constraint_name", T), ("check_clause", T)] },
-    InfoView { name: "views", columns: &[("table_name", T), ("view_definition", T)] },
+    InfoView {
+        name: "check_constraints",
+        columns: &[("constraint_name", T), ("check_clause", T)],
+    },
+    InfoView {
+        name: "views",
+        columns: &[("table_name", T), ("view_definition", T)],
+    },
 ];
 
 const CATALOG_NAME: &str = "aerodb";
@@ -136,7 +152,10 @@ pub fn resolve(schema: &Ident, name: &Ident) -> DbResult<&'static InfoView> {
     if !is_schema(schema) {
         return Err(not_found());
     }
-    VIEWS.iter().find(|v| name.matches(v.name)).ok_or_else(not_found)
+    VIEWS
+        .iter()
+        .find(|v| name.matches(v.name))
+        .ok_or_else(not_found)
 }
 
 fn text(s: impl Into<String>) -> Value {
@@ -159,7 +178,12 @@ fn sql_type_info(ty: &SqlType) -> TypeInfo {
         SqlType::Integer => ("INTEGER", None, Some(32), Some(0)),
         SqlType::SmallInt => ("SMALLINT", None, Some(16), Some(0)),
         SqlType::BigInt => ("BIGINT", None, Some(64), Some(0)),
-        SqlType::Decimal { precision, scale } => ("DECIMAL", None, Some(*precision as i64), Some(*scale as i64)),
+        SqlType::Decimal { precision, scale } => (
+            "DECIMAL",
+            None,
+            Some(*precision as i64),
+            Some(*scale as i64),
+        ),
         SqlType::Double => ("DOUBLE PRECISION", None, Some(53), None),
         SqlType::Char(n) => ("CHARACTER", Some(*n as i64), None, None),
         SqlType::Varchar(n) => ("CHARACTER VARYING", Some(*n as i64), None, None),
@@ -188,11 +212,16 @@ fn sorted_tables(catalog: &Catalog) -> Vec<TableInfo> {
 
 /// The declared name of `col` among `columns` (identifier rule), else as given.
 fn declared(columns: &[(String, ColumnType)], col: &Ident) -> String {
-    columns.iter().find(|(n, _)| col.matches(n)).map_or_else(|| col.value.clone(), |(n, _)| n.clone())
+    columns
+        .iter()
+        .find(|(n, _)| col.matches(n))
+        .map_or_else(|| col.value.clone(), |(n, _)| n.clone())
 }
 
 fn pk_name(t: &TableInfo) -> String {
-    t.primary_key_name.clone().unwrap_or_else(|| default_pk_name(&t.name))
+    t.primary_key_name
+        .clone()
+        .unwrap_or_else(|| default_pk_name(&t.name))
 }
 
 fn fk_columns(t: &TableInfo, fk: &ForeignKey) -> Vec<String> {
@@ -216,7 +245,10 @@ fn unique_constraint_name(catalog: &Catalog, fk: &ForeignKey) -> Option<String> 
     let mut referenced: Vec<String> = if fk.parent_columns.is_empty() {
         parent.primary_key.clone()?
     } else {
-        fk.parent_columns.iter().map(|c| declared(&parent.columns, c)).collect()
+        fk.parent_columns
+            .iter()
+            .map(|c| declared(&parent.columns, c))
+            .collect()
     };
     referenced.sort();
     let same = |cols: &[String]| {
@@ -227,7 +259,11 @@ fn unique_constraint_name(catalog: &Catalog, fk: &ForeignKey) -> Option<String> 
     if parent.primary_key.as_deref().is_some_and(same) {
         return Some(pk_name(parent));
     }
-    parent.uniques.iter().find(|u| same(&u.columns)).map(|u| u.name.clone())
+    parent
+        .uniques
+        .iter()
+        .find(|u| same(&u.columns))
+        .map(|u| u.name.clone())
 }
 
 /// CHECK text as written by a user: the stored expression with the
@@ -235,7 +271,10 @@ fn unique_constraint_name(catalog: &Catalog, fk: &ForeignKey) -> Option<String> 
 fn check_clause(expr: &Expr) -> String {
     expr.transform(&mut |e| match e {
         Expr::Column { table, name } if name.quoted && quote_ident(&name.value) == name.value => {
-            Expr::Column { table, name: Ident::new(name.value) }
+            Expr::Column {
+                table,
+                name: Ident::new(name.value),
+            }
         }
         other => other,
     })
@@ -247,12 +286,20 @@ pub fn rows(catalog: &Catalog, view: &InfoView) -> DbResult<Vec<Vec<Value>>> {
     let mut out = Vec::new();
     match view.name {
         "tables" => {
-            let mut rels: Vec<(String, &str)> =
-                catalog.all_tables().into_iter().map(|t| (t.name, "BASE TABLE")).collect();
+            let mut rels: Vec<(String, &str)> = catalog
+                .all_tables()
+                .into_iter()
+                .map(|t| (t.name, "BASE TABLE"))
+                .collect();
             rels.extend(catalog.all_views().into_iter().map(|v| (v.name, "VIEW")));
             rels.sort();
             for (name, kind) in rels {
-                out.push(vec![text(CATALOG_NAME), text(SCHEMA_NAME), text(name), text(kind)]);
+                out.push(vec![
+                    text(CATALOG_NAME),
+                    text(SCHEMA_NAME),
+                    text(name),
+                    text(kind),
+                ]);
             }
         }
         "columns" => {
@@ -265,8 +312,14 @@ pub fn rows(catalog: &Catalog, view: &InfoView) -> DbResult<Vec<Vec<Value>>> {
                     .iter()
                     .enumerate()
                     .map(|(i, (name, ty))| {
-                        let nullable = !(t.not_null.get(i).copied().unwrap_or(false) || pk.contains(name));
-                        let default = t.default_values.get(i).cloned().flatten().map(|d| d.to_sql());
+                        let nullable =
+                            !(t.not_null.get(i).copied().unwrap_or(false) || pk.contains(name));
+                        let default = t
+                            .default_values
+                            .get(i)
+                            .cloned()
+                            .flatten()
+                            .map(|d| d.to_sql());
                         column_row(&t.name, name, i, default, nullable, column_type_info(ty))
                     })
                     .collect();
@@ -276,8 +329,10 @@ pub fn rows(catalog: &Catalog, view: &InfoView) -> DbResult<Vec<Vec<Value>>> {
                 // Fails closed: a view that no longer binds (e.g. a base table
                 // it reads was altered) makes the whole view fail, with an
                 // error naming the broken view rather than a bare binder error.
-                let types = crate::execution::bind::view_column_types(catalog, &v.query)
-                    .map_err(|e| DbError::TypeMismatch(format!("view {} cannot be described: {e}", v.name)))?;
+                let types =
+                    crate::execution::bind::view_column_types(catalog, &v.query).map_err(|e| {
+                        DbError::TypeMismatch(format!("view {} cannot be described: {e}", v.name))
+                    })?;
                 let rows = v
                     .columns
                     .iter()
@@ -368,7 +423,11 @@ pub fn rows(catalog: &Catalog, view: &InfoView) -> DbResult<Vec<Vec<Value>>> {
                 out.push(vec![text(v.name), text(v.sql)]);
             }
         }
-        other => return Err(DbError::TableNotFound(format!("information_schema.{other}"))),
+        other => {
+            return Err(DbError::TableNotFound(format!(
+                "information_schema.{other}"
+            )));
+        }
     }
     Ok(out)
 }
@@ -404,9 +463,23 @@ mod tests {
     fn every_view_resolves_by_identifier_rule() {
         let schema = Ident::new("INFORMATION_SCHEMA");
         for v in VIEWS {
-            assert_eq!(resolve(&schema, &Ident::new(v.name.to_uppercase())).unwrap().name, v.name);
-            assert_eq!(resolve(&Ident::quoted("information_schema"), &Ident::quoted(v.name)).unwrap().name, v.name);
-            assert!(v.columns.iter().all(|(c, _)| c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')));
+            assert_eq!(
+                resolve(&schema, &Ident::new(v.name.to_uppercase()))
+                    .unwrap()
+                    .name,
+                v.name
+            );
+            assert_eq!(
+                resolve(&Ident::quoted("information_schema"), &Ident::quoted(v.name))
+                    .unwrap()
+                    .name,
+                v.name
+            );
+            assert!(
+                v.columns
+                    .iter()
+                    .all(|(c, _)| c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'))
+            );
         }
         assert!(resolve(&Ident::quoted("INFORMATION_SCHEMA"), &Ident::new("tables")).is_err());
         assert!(resolve(&Ident::new("public"), &Ident::new("tables")).is_err());

@@ -31,9 +31,15 @@ pub fn key_values_equal(a: &[ColumnValue], b: &[ColumnValue]) -> bool {
 
 /// Render a key tuple for error messages: `1`, `(1, 2)`.
 pub fn render_key(values: &[ColumnValue]) -> String {
-    let parts: Vec<String> =
-        values.iter().map(|v| Value::from_column_value(v).to_string()).collect();
-    if parts.len() == 1 { parts[0].clone() } else { format!("({})", parts.join(", ")) }
+    let parts: Vec<String> = values
+        .iter()
+        .map(|v| Value::from_column_value(v).to_string())
+        .collect();
+    if parts.len() == 1 {
+        parts[0].clone()
+    } else {
+        format!("({})", parts.join(", "))
+    }
 }
 
 fn has_null(values: &[ColumnValue]) -> bool {
@@ -57,16 +63,20 @@ fn positions(table: &TableInfo, names: &[Ident]) -> DbResult<Vec<usize>> {
 /// Column positions of the table's PRIMARY KEY, if it has one.
 pub fn primary_key_positions(table: &TableInfo) -> DbResult<Option<Vec<usize>>> {
     match &table.primary_key {
-        Some(cols) if !cols.is_empty() => {
-            cols.iter().map(|c| column_position(table, c)).collect::<DbResult<Vec<_>>>().map(Some)
-        }
+        Some(cols) if !cols.is_empty() => cols
+            .iter()
+            .map(|c| column_position(table, c))
+            .collect::<DbResult<Vec<_>>>()
+            .map(Some),
         _ => Ok(None),
     }
 }
 
 /// The values of `row` at `idx`.
 pub fn key_of(row: &RowData, idx: &[usize]) -> Vec<ColumnValue> {
-    idx.iter().map(|&i| row.0.get(i).cloned().unwrap_or(ColumnValue::Null)).collect()
+    idx.iter()
+        .map(|&i| row.0.get(i).cloned().unwrap_or(ColumnValue::Null))
+        .collect()
 }
 
 /// Changes of the running statement that are not in the B-tree yet: row
@@ -85,7 +95,8 @@ impl Pending {
 
     /// `row` (a visible version of `table`) is being deleted or replaced.
     pub fn remove(&mut self, table: &str, row: &Row) {
-        self.removed.insert((table.to_string(), row.key, row.created_tx));
+        self.removed
+            .insert((table.to_string(), row.key, row.created_tx));
     }
 
     /// `data` is about to become a visible row of `table`.
@@ -94,11 +105,15 @@ impl Pending {
     }
 
     pub fn is_removed(&self, table: &str, row: &Row) -> bool {
-        self.removed.contains(&(table.to_string(), row.key, row.created_tx))
+        self.removed
+            .contains(&(table.to_string(), row.key, row.created_tx))
     }
 
     fn added_rows<'a>(&'a self, table: &'a str) -> impl Iterator<Item = &'a RowData> + 'a {
-        self.added.iter().filter(move |(t, _)| t == table).map(|(_, d)| d)
+        self.added
+            .iter()
+            .filter(move |(t, _)| t == table)
+            .map(|(_, d)| d)
     }
 }
 
@@ -109,7 +124,10 @@ pub fn visible_rows(
     snapshot: &Snapshot,
     pending: &Pending,
 ) -> DbResult<Vec<Row>> {
-    let root = catalog.get_table(&table.name).map(|t| t.root_page).unwrap_or(table.root_page);
+    let root = catalog
+        .get_table(&table.name)
+        .map(|t| t.root_page)
+        .unwrap_or(table.root_page);
     let tree = BTree::open_root(&catalog.pager, root)?;
     Ok(tree
         .scan_visible(snapshot)?
@@ -153,7 +171,11 @@ pub fn check_primary_key(
     let mut seen: Vec<Vec<ColumnValue>> = Vec::with_capacity(candidates.len());
     for c in candidates {
         let key = key_of(c, &pk);
-        if existing.iter().chain(seen.iter()).any(|k| key_values_equal(k, &key)) {
+        if existing
+            .iter()
+            .chain(seen.iter())
+            .any(|k| key_values_equal(k, &key))
+        {
             return Err(DbError::DuplicateKey(render_key(&key)));
         }
         seen.push(key);
@@ -177,17 +199,27 @@ pub fn check_unique(
     }
     let visible = visible_rows(catalog, table, snapshot, pending)?;
     for u in &table.uniques {
-        let idx: Vec<usize> =
-            u.columns.iter().map(|c| column_position(table, c)).collect::<DbResult<_>>()?;
-        let existing: Vec<Vec<ColumnValue>> =
-            visible.iter().map(|r| key_of(&r.data, &idx)).filter(|k| !has_null(k)).collect();
+        let idx: Vec<usize> = u
+            .columns
+            .iter()
+            .map(|c| column_position(table, c))
+            .collect::<DbResult<_>>()?;
+        let existing: Vec<Vec<ColumnValue>> = visible
+            .iter()
+            .map(|r| key_of(&r.data, &idx))
+            .filter(|k| !has_null(k))
+            .collect();
         let mut seen: Vec<Vec<ColumnValue>> = Vec::new();
         for c in candidates {
             let key = key_of(c, &idx);
             if has_null(&key) {
                 continue;
             }
-            if existing.iter().chain(seen.iter()).any(|k| key_values_equal(k, &key)) {
+            if existing
+                .iter()
+                .chain(seen.iter())
+                .any(|k| key_values_equal(k, &key))
+            {
                 return Err(unique_violation(u, &key));
             }
             seen.push(key);
@@ -197,7 +229,10 @@ pub fn check_unique(
 }
 
 fn unique_violation(u: &UniqueConstraint, key: &[ColumnValue]) -> DbError {
-    let values: Vec<String> = key.iter().map(|v| Value::from_column_value(v).to_string()).collect();
+    let values: Vec<String> = key
+        .iter()
+        .map(|v| Value::from_column_value(v).to_string())
+        .collect();
     DbError::UniqueViolation {
         constraint: u.name.clone(),
         key: format!("({})=({})", u.columns.join(", "), values.join(", ")),
@@ -212,7 +247,11 @@ pub fn table_scope(table: &TableInfo) -> Scope {
 fn column_scope(table_name: &str, columns: &[(String, ColumnType)]) -> Scope {
     let mut scope = Scope::new();
     for (name, ty) in columns {
-        scope.push(Some(table_name.to_string()), name.clone(), SqlType::from_column_type(ty));
+        scope.push(
+            Some(table_name.to_string()),
+            name.clone(),
+            SqlType::from_column_type(ty),
+        );
     }
     scope
 }
@@ -229,7 +268,9 @@ pub fn check_checks(table: &TableInfo, row: &RowData) -> DbResult<()> {
     for c in &table.checks {
         let v = eval(&c.expr, &env, &Ctx { catalog: None })?;
         if truth(&v)? == Some(false) {
-            return Err(DbError::CheckViolation { constraint: c.name.clone() });
+            return Err(DbError::CheckViolation {
+                constraint: c.name.clone(),
+            });
         }
     }
     Ok(())
@@ -292,7 +333,10 @@ fn key_provided(
     snapshot: &Snapshot,
     pending: &Pending,
 ) -> DbResult<bool> {
-    if pending.added_rows(&table.name).any(|d| key_values_equal(&key_of(d, idx), key)) {
+    if pending
+        .added_rows(&table.name)
+        .any(|d| key_values_equal(&key_of(d, idx), key))
+    {
         return Ok(true);
     }
     Ok(visible_rows(catalog, table, snapshot, pending)?
@@ -334,7 +378,10 @@ pub fn check_foreign_keys(
 }
 
 fn names(cols: &[Ident]) -> String {
-    cols.iter().map(|c| c.value.as_str()).collect::<Vec<_>>().join(", ")
+    cols.iter()
+        .map(|c| c.value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Why rows are leaving a parent table.
@@ -369,7 +416,11 @@ fn orphaned_references(
     let mut children: Vec<TableInfo> = catalog.all_tables();
     children.sort_by(|a, b| a.name.cmp(&b.name));
     for child in children {
-        for fk in child.fks.iter().filter(|fk| fk.parent_table.value == table.name) {
+        for fk in child
+            .fks
+            .iter()
+            .filter(|fk| fk.parent_table.value == table.name)
+        {
             let parent_idx = positions(table, &fk.parent_columns)?;
             let child_idx = positions(&child, &fk.columns)?;
             // Keys still provided by the remaining/added parent rows, and the
@@ -385,11 +436,16 @@ fn orphaned_references(
                 let provided = match &mut provided {
                     Some(p) => p,
                     slot => {
-                        let mut keys: Vec<Vec<ColumnValue>> = visible_rows(catalog, table, snapshot, pending)?
-                            .iter()
-                            .map(|r| key_of(&r.data, &parent_idx))
-                            .collect();
-                        keys.extend(pending.added_rows(&table.name).map(|d| key_of(d, &parent_idx)));
+                        let mut keys: Vec<Vec<ColumnValue>> =
+                            visible_rows(catalog, table, snapshot, pending)?
+                                .iter()
+                                .map(|r| key_of(&r.data, &parent_idx))
+                                .collect();
+                        keys.extend(
+                            pending
+                                .added_rows(&table.name)
+                                .map(|d| key_of(d, &parent_idx)),
+                        );
                         slot.insert(keys)
                     }
                 };
@@ -402,7 +458,9 @@ fn orphaned_references(
                 };
                 for r in child_rows.iter() {
                     if key_values_equal(&key_of(&r.data, &child_idx), &key)
-                        && !referencing.iter().any(|x| x.key == r.key && x.created_tx == r.created_tx)
+                        && !referencing
+                            .iter()
+                            .any(|x| x.key == r.key && x.created_tx == r.created_tx)
                     {
                         referencing.push(r.clone());
                     }
@@ -432,7 +490,11 @@ pub fn check_removed_keys(
         if removal == Removal::Delete && fk.on_delete == Some(Action::Cascade) {
             continue;
         }
-        let what = if removal == Removal::Update { "update" } else { "delete" };
+        let what = if removal == Removal::Update {
+            "update"
+        } else {
+            "delete"
+        };
         return Err(DbError::ForeignKeyViolation(format!(
             "{} on table \"{}\" violates foreign key constraint \"{}\" on table \"{}\": \
              rows still reference ({}) without a parent",
@@ -470,14 +532,22 @@ pub fn check_restrict(
     let mut children: Vec<TableInfo> = catalog.all_tables();
     children.sort_by(|a, b| a.name.cmp(&b.name));
     for child in &children {
-        for fk in child.fks.iter().filter(|fk| fk.parent_table.value == table.name) {
+        for fk in child
+            .fks
+            .iter()
+            .filter(|fk| fk.parent_table.value == table.name)
+        {
             let parent_idx = positions(table, &fk.parent_columns)?;
             let child_idx = positions(child, &fk.columns)?;
             // Child references after the statement's own changes to the
             // child rows: untouched rows plus new images of updated ones.
             let mut child_keys: Option<Vec<Vec<ColumnValue>>> = None;
             for (old, new) in changes {
-                let action = if new.is_some() { &fk.on_update } else { &fk.on_delete };
+                let action = if new.is_some() {
+                    &fk.on_update
+                } else {
+                    &fk.on_delete
+                };
                 if *action != Some(Action::Restrict) {
                     continue;
                 }
@@ -493,16 +563,25 @@ pub fn check_restrict(
                 let refs = match &mut child_keys {
                     Some(k) => k,
                     slot => {
-                        let mut keys: Vec<Vec<ColumnValue>> = visible_rows(catalog, child, snapshot, statement)?
-                            .iter()
-                            .map(|r| key_of(&r.data, &child_idx))
-                            .collect();
-                        keys.extend(statement.added_rows(&child.name).map(|d| key_of(d, &child_idx)));
+                        let mut keys: Vec<Vec<ColumnValue>> =
+                            visible_rows(catalog, child, snapshot, statement)?
+                                .iter()
+                                .map(|r| key_of(&r.data, &child_idx))
+                                .collect();
+                        keys.extend(
+                            statement
+                                .added_rows(&child.name)
+                                .map(|d| key_of(d, &child_idx)),
+                        );
                         slot.insert(keys)
                     }
                 };
                 if refs.iter().any(|k| key_values_equal(k, &key)) {
-                    let (what, event) = if new.is_some() { ("update", "UPDATE") } else { ("delete", "DELETE") };
+                    let (what, event) = if new.is_some() {
+                        ("update", "UPDATE")
+                    } else {
+                        ("delete", "DELETE")
+                    };
                     return Err(DbError::ForeignKeyViolation(format!(
                         "{} on table \"{}\" violates foreign key constraint \"{}\" on table \"{}\" \
                          (ON {} RESTRICT): key ({}) = {} is referenced",
@@ -546,7 +625,10 @@ pub fn plan_delete(
             if fk.on_delete != Some(Action::Cascade) {
                 continue;
             }
-            let fresh: Vec<Row> = refs.into_iter().filter(|r| !pending.is_removed(&child.name, r)).collect();
+            let fresh: Vec<Row> = refs
+                .into_iter()
+                .filter(|r| !pending.is_removed(&child.name, r))
+                .collect();
             if fresh.is_empty() {
                 continue;
             }
@@ -557,7 +639,8 @@ pub fn plan_delete(
         }
     }
     for (t, batch) in &batches {
-        let changes: Vec<(RowData, Option<RowData>)> = batch.iter().map(|r| (r.data.clone(), None)).collect();
+        let changes: Vec<(RowData, Option<RowData>)> =
+            batch.iter().map(|r| (r.data.clone(), None)).collect();
         check_restrict(catalog, t, &changes, snapshot, &pending)?;
     }
     for (t, batch) in &batches {
@@ -672,11 +755,18 @@ pub fn plan_update(
 
 /// Resolve `ident` against declared column names with the identifier rule.
 fn resolve_column(columns: &[(String, ColumnType)], ident: &Ident, table: &str) -> DbResult<usize> {
-    let hits: Vec<usize> =
-        columns.iter().enumerate().filter(|(_, (n, _))| ident.matches(n)).map(|(i, _)| i).collect();
+    let hits: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, (n, _))| ident.matches(n))
+        .map(|(i, _)| i)
+        .collect();
     match hits.as_slice() {
         [i] => Ok(*i),
-        [] => Err(DbError::ColumnNotFound(format!("{}.{}", table, ident.value))),
+        [] => Err(DbError::ColumnNotFound(format!(
+            "{}.{}",
+            table, ident.value
+        ))),
         _ => Err(DbError::AmbiguousColumn(ident.value.clone())),
     }
 }
@@ -699,7 +789,10 @@ fn resolve_column_list(
     for c in idents {
         let name = columns[resolve_column(columns, c, table_name)?].0.clone();
         if out.contains(&name) {
-            return Err(DbError::Syntax(format!("column \"{}\" appears twice in {} constraint", name, what)));
+            return Err(DbError::Syntax(format!(
+                "column \"{}\" appears twice in {} constraint",
+                name, what
+            )));
         }
         out.push(name);
     }
@@ -710,7 +803,11 @@ fn resolve_column_list(
 /// column references to the declared names (quoted, unqualified): only
 /// columns of the table itself (42703 otherwise); no subqueries or aggregates
 /// (0A000).
-fn resolve_check_expr(expr: &Expr, table_name: &str, columns: &[(String, ColumnType)]) -> DbResult<Expr> {
+fn resolve_check_expr(
+    expr: &Expr,
+    table_name: &str,
+    columns: &[(String, ColumnType)],
+) -> DbResult<Expr> {
     let mut unsupported: Option<&str> = None;
     expr.walk(&mut |e| match e {
         Expr::ScalarSubquery(_) | Expr::Exists { .. } | Expr::InSubquery { .. } => {
@@ -731,7 +828,10 @@ fn resolve_check_expr(expr: &Expr, table_name: &str, columns: &[(String, ColumnT
     let mut failure: Option<DbError> = None;
     let canonical = expr.transform(&mut |e| match e {
         Expr::Column { table, name } => match scope.resolve(table.as_ref(), &name) {
-            Ok(Some(i)) => Expr::Column { table: None, name: Ident::quoted(columns[i].0.clone()) },
+            Ok(Some(i)) => Expr::Column {
+                table: None,
+                name: Ident::quoted(columns[i].0.clone()),
+            },
             Ok(None) => {
                 failure.get_or_insert(DbError::ColumnNotFound(display_column(
                     table.as_ref().map(Ident::as_str),
@@ -759,7 +859,10 @@ pub fn fresh_name(base: String, used: &HashSet<String>) -> String {
     if !used.contains(&base) {
         return base;
     }
-    (1..).map(|n| format!("{}{}", base, n)).find(|c| !used.contains(c)).expect("unbounded")
+    (1..)
+        .map(|n| format!("{}{}", base, n))
+        .find(|c| !used.contains(c))
+        .expect("unbounded")
 }
 
 /// The validated, canonical constraints of a CREATE TABLE.
@@ -792,7 +895,12 @@ pub fn resolve_table_constraints(
     constraints: Vec<TableConstraint>,
 ) -> DbResult<ResolvedConstraints> {
     let pk = match primary_key {
-        Some(cols) => Some(resolve_column_list(columns, &cols, table_name, "primary key")?),
+        Some(cols) => Some(resolve_column_list(
+            columns,
+            &cols,
+            table_name,
+            "primary key",
+        )?),
         None => None,
     };
 
@@ -801,13 +909,18 @@ pub fn resolve_table_constraints(
     let given = constraints
         .iter()
         .filter_map(|c| match c {
-            TableConstraint::Unique { name, .. } | TableConstraint::Check { name, .. } => name.as_ref(),
+            TableConstraint::Unique { name, .. } | TableConstraint::Check { name, .. } => {
+                name.as_ref()
+            }
             TableConstraint::PrimaryKeyName(n) => Some(n),
         })
         .chain(fks.iter().filter_map(|fk| fk.name.as_ref()));
     for n in given {
         if !used.insert(n.clone()) {
-            return Err(DbError::DuplicateConstraint { name: n.clone(), table: table_name.to_string() });
+            return Err(DbError::DuplicateConstraint {
+                name: n.clone(),
+                table: table_name.to_string(),
+            });
         }
     }
     let given_pk_name = constraints.iter().find_map(|c| match c {
@@ -829,14 +942,20 @@ pub fn resolve_table_constraints(
     for c in constraints {
         match c {
             TableConstraint::PrimaryKeyName(_) => {}
-            TableConstraint::Unique { name, columns: cols } => {
+            TableConstraint::Unique {
+                name,
+                columns: cols,
+            } => {
                 let cols = resolve_column_list(columns, &cols, table_name, "unique")?;
                 let name = name.unwrap_or_else(|| {
                     let n = fresh_name(format!("{}_{}_key", table_name, cols.join("_")), &used);
                     used.insert(n.clone());
                     n
                 });
-                uniques.push(UniqueConstraint { name, columns: cols });
+                uniques.push(UniqueConstraint {
+                    name,
+                    columns: cols,
+                });
             }
             TableConstraint::Check { name, expr, column } => {
                 let expr = resolve_check_expr(&expr, table_name, columns)?;
@@ -866,10 +985,20 @@ pub fn resolve_table_constraints(
             .collect::<DbResult<_>>()?;
         let self_ref = fk.parent_table.matches(table_name);
         let (parent_name, parent_cols, parent_pk, parent_uniques) = if self_ref {
-            (table_name.to_string(), columns.to_vec(), pk.clone(), uniques.clone())
+            (
+                table_name.to_string(),
+                columns.to_vec(),
+                pk.clone(),
+                uniques.clone(),
+            )
         } else {
             let p = catalog.resolve_table(&fk.parent_table)?;
-            (p.name.clone(), p.columns.clone(), p.primary_key.clone(), p.uniques.clone())
+            (
+                p.name.clone(),
+                p.columns.clone(),
+                p.primary_key.clone(),
+                p.uniques.clone(),
+            )
         };
         let parent_idents: Vec<Ident> = if fk.parent_columns.is_empty() {
             match &parent_pk {
@@ -896,7 +1025,10 @@ pub fn resolve_table_constraints(
                 parent_name
             )));
         }
-        let referenced: Vec<String> = parent_idx.iter().map(|&i| parent_cols[i].0.clone()).collect();
+        let referenced: Vec<String> = parent_idx
+            .iter()
+            .map(|&i| parent_cols[i].0.clone())
+            .collect();
         let as_set = |cols: &[String]| {
             let mut set: Vec<String> = cols.to_vec();
             set.sort();
@@ -942,7 +1074,13 @@ pub fn resolve_table_constraints(
             name: Some(name),
         });
     }
-    Ok(ResolvedConstraints { primary_key: pk, primary_key_name, fks: resolved, uniques, checks })
+    Ok(ResolvedConstraints {
+        primary_key: pk,
+        primary_key_name,
+        fks: resolved,
+        uniques,
+        checks,
+    })
 }
 
 /// Default name of a table's PRIMARY KEY constraint.
@@ -977,14 +1115,26 @@ mod tests {
             &[ColumnValue::Char("a  ".into())],
             &[ColumnValue::Text("a".into())]
         ));
-        assert!(!key_values_equal(&[ColumnValue::Integer(1)], &[ColumnValue::Integer(2)]));
-        assert!(!key_values_equal(&[ColumnValue::Null], &[ColumnValue::Null]));
+        assert!(!key_values_equal(
+            &[ColumnValue::Integer(1)],
+            &[ColumnValue::Integer(2)]
+        ));
+        assert!(!key_values_equal(
+            &[ColumnValue::Null],
+            &[ColumnValue::Null]
+        ));
         assert!(!key_values_equal(
             &[ColumnValue::Integer(1), ColumnValue::Null],
             &[ColumnValue::Integer(1), ColumnValue::Null]
         ));
-        assert!(!key_values_equal(&[ColumnValue::Integer(1)], &[ColumnValue::Text("1".into())]));
+        assert!(!key_values_equal(
+            &[ColumnValue::Integer(1)],
+            &[ColumnValue::Text("1".into())]
+        ));
         assert_eq!(render_key(&[ColumnValue::Integer(1)]), "1");
-        assert_eq!(render_key(&[ColumnValue::Integer(1), ColumnValue::Integer(2)]), "(1, 2)");
+        assert_eq!(
+            render_key(&[ColumnValue::Integer(1), ColumnValue::Integer(2)]),
+            "(1, 2)"
+        );
     }
 }

@@ -8,8 +8,14 @@ use tempfile::TempDir;
 /// The audit `base` fixture plus the `u` table used by join/subquery probes.
 fn base() -> (TempDir, Engine) {
     let (dir, mut e) = engine();
-    exec(&mut e, "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)");
-    exec(&mut e, "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')");
+    exec(
+        &mut e,
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, s TEXT)",
+    );
+    exec(
+        &mut e,
+        "INSERT INTO t VALUES (1, 20, 'b'), (2, 10, 'a'), (3, NULL, 'c'), (4, 20, 'b')",
+    );
     exec(&mut e, "CREATE TABLE u (id INTEGER PRIMARY KEY, n TEXT)");
     exec(&mut e, "INSERT INTO u VALUES (2, 'two'), (5, 'five')");
     (dir, e)
@@ -51,25 +57,37 @@ fn null_neq() {
 #[test]
 fn null_arithmetic() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT v + 1 FROM t WHERE id = 3"), table(&[&["NULL"]]));
+    assert_eq!(
+        q(&mut e, "SELECT v + 1 FROM t WHERE id = 3"),
+        table(&[&["NULL"]])
+    );
 }
 
 #[test]
 fn null_predicate() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE v IS NULL"), table(&[&["3"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE v IS NULL"),
+        table(&[&["3"]])
+    );
 }
 
 #[test]
 fn three_value_or() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE v = NULL OR id = 2"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE v = NULL OR id = 2"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
 fn three_value_and() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE v = NULL AND id = 3"), table(&[]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE v = NULL AND id = 3"),
+        table(&[])
+    );
 }
 
 fn truth(v: Option<bool>) -> &'static str {
@@ -124,26 +142,41 @@ fn null_comparisons_are_unknown() {
 #[test]
 fn not_excludes_unknown_rows() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE NOT (v = 20)"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE NOT (v = 20)"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
 fn in_list_with_null_member() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE v NOT IN (10, NULL)"), table(&[]));
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE v IN (10, NULL)"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE v NOT IN (10, NULL)"),
+        table(&[])
+    );
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE v IN (10, NULL)"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
 fn in_list() {
     let (_d, mut e) = base();
-    assert_eq!(q_set(&mut e, "SELECT id FROM t WHERE id IN (1, 4)"), table(&[&["1"], &["4"]]));
+    assert_eq!(
+        q_set(&mut e, "SELECT id FROM t WHERE id IN (1, 4)"),
+        table(&[&["1"], &["4"]])
+    );
 }
 
 #[test]
 fn like() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE s LIKE 'a%'"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE s LIKE 'a%'"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
@@ -262,7 +295,10 @@ fn order_by_ordinal() {
 fn order_by_on_join_with_aggregate() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT t.s, COUNT(*) FROM t JOIN u ON t.id = u.id GROUP BY t.s ORDER BY t.s"),
+        q(
+            &mut e,
+            "SELECT t.s, COUNT(*) FROM t JOIN u ON t.id = u.id GROUP BY t.s ORDER BY t.s"
+        ),
         table(&[&["a", "1"]])
     );
 }
@@ -270,7 +306,10 @@ fn order_by_on_join_with_aggregate() {
 #[test]
 fn distinct_order_by_must_use_select_list() {
     let (_d, mut e) = base();
-    assert_eq!(state(&mut e, "SELECT DISTINCT s FROM t ORDER BY id"), "42601");
+    assert_eq!(
+        state(&mut e, "SELECT DISTINCT s FROM t ORDER BY id"),
+        "42601"
+    );
 }
 
 #[test]
@@ -287,7 +326,10 @@ fn limit_and_offset_apply_after_order() {
 #[test]
 fn aggregate_count() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT COUNT(*), COUNT(v) FROM t"), table(&[&["4", "3"]]));
+    assert_eq!(
+        q(&mut e, "SELECT COUNT(*), COUNT(v) FROM t"),
+        table(&[&["4", "3"]])
+    );
 }
 
 #[test]
@@ -299,14 +341,20 @@ fn aggregate_sum() {
 #[test]
 fn aggregate_avg() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT AVG(v) FROM t"), table(&[&["16.666666666666668"]]));
+    assert_eq!(
+        q(&mut e, "SELECT AVG(v) FROM t"),
+        table(&[&["16.666666666666668"]])
+    );
 }
 
 #[test]
 fn aggregate_empty() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT COUNT(*), SUM(v), AVG(v), MIN(v), MAX(v) FROM t WHERE id = 99"),
+        q(
+            &mut e,
+            "SELECT COUNT(*), SUM(v), AVG(v), MIN(v), MAX(v) FROM t WHERE id = 99"
+        ),
         table(&[&["0", "NULL", "NULL", "NULL", "NULL"]])
     );
 }
@@ -315,7 +363,10 @@ fn aggregate_empty() {
 fn all_null_aggregate() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT COUNT(v), SUM(v), AVG(v), MIN(v), MAX(v) FROM t WHERE id = 3"),
+        q(
+            &mut e,
+            "SELECT COUNT(v), SUM(v), AVG(v), MIN(v), MAX(v) FROM t WHERE id = 3"
+        ),
         table(&[&["0", "NULL", "NULL", "NULL", "NULL"]])
     );
 }
@@ -323,14 +374,20 @@ fn all_null_aggregate() {
 #[test]
 fn aggregate_distinct() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT COUNT(DISTINCT v) FROM t"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT COUNT(DISTINCT v) FROM t"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
 fn having() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT s, COUNT(*) FROM t GROUP BY s HAVING COUNT(*) > 1"),
+        q(
+            &mut e,
+            "SELECT s, COUNT(*) FROM t GROUP BY s HAVING COUNT(*) > 1"
+        ),
         table(&[&["b", "2"]])
     );
 }
@@ -338,7 +395,10 @@ fn having() {
 #[test]
 fn group_by_violation() {
     let (_d, mut e) = base();
-    assert_eq!(state(&mut e, "SELECT id, COUNT(*) FROM t GROUP BY s"), "42803");
+    assert_eq!(
+        state(&mut e, "SELECT id, COUNT(*) FROM t GROUP BY s"),
+        "42803"
+    );
 }
 
 // ---- Subqueries -------------------------------------------------------------
@@ -346,13 +406,19 @@ fn group_by_violation() {
 #[test]
 fn scalar_one() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT (SELECT v FROM t WHERE id = 1)"), table(&[&["20"]]));
+    assert_eq!(
+        q(&mut e, "SELECT (SELECT v FROM t WHERE id = 1)"),
+        table(&[&["20"]])
+    );
 }
 
 #[test]
 fn scalar_empty() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT (SELECT v FROM t WHERE id = 99)"), table(&[&["NULL"]]));
+    assert_eq!(
+        q(&mut e, "SELECT (SELECT v FROM t WHERE id = 99)"),
+        table(&[&["NULL"]])
+    );
 }
 
 #[test]
@@ -365,7 +431,10 @@ fn scalar_cardinality() {
 fn correlated_exists() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT id FROM t WHERE EXISTS (SELECT id FROM u WHERE u.id = t.id)"),
+        q(
+            &mut e,
+            "SELECT id FROM t WHERE EXISTS (SELECT id FROM u WHERE u.id = t.id)"
+        ),
         table(&[&["2"]])
     );
 }
@@ -373,14 +442,20 @@ fn correlated_exists() {
 #[test]
 fn in_subquery() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE id IN (SELECT id FROM u)"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE id IN (SELECT id FROM u)"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
 fn in_subquery_null() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT id FROM t WHERE v IN (SELECT v FROM t WHERE id = 3)"),
+        q(
+            &mut e,
+            "SELECT id FROM t WHERE v IN (SELECT v FROM t WHERE id = 3)"
+        ),
         table(&[])
     );
 }
@@ -401,8 +476,16 @@ fn from_subquery_with_where_and_order() {
 fn correlated_scalar_subquery_in_projection() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT id, (SELECT n FROM u WHERE u.id = t.id) FROM t ORDER BY id"),
-        table(&[&["1", "NULL"], &["2", "two"], &["3", "NULL"], &["4", "NULL"]])
+        q(
+            &mut e,
+            "SELECT id, (SELECT n FROM u WHERE u.id = t.id) FROM t ORDER BY id"
+        ),
+        table(&[
+            &["1", "NULL"],
+            &["2", "two"],
+            &["3", "NULL"],
+            &["4", "NULL"]
+        ])
     );
 }
 
@@ -412,7 +495,10 @@ fn correlated_scalar_subquery_in_projection() {
 fn union() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT id FROM t WHERE id = 1 UNION SELECT id FROM t WHERE id = 1"),
+        q(
+            &mut e,
+            "SELECT id FROM t WHERE id = 1 UNION SELECT id FROM t WHERE id = 1"
+        ),
         table(&[&["1"]])
     );
 }
@@ -421,7 +507,10 @@ fn union() {
 fn union_all() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT id FROM t WHERE id = 1 UNION ALL SELECT id FROM t WHERE id = 1"),
+        q(
+            &mut e,
+            "SELECT id FROM t WHERE id = 1 UNION ALL SELECT id FROM t WHERE id = 1"
+        ),
         table(&[&["1"], &["1"]])
     );
 }
@@ -430,7 +519,10 @@ fn union_all() {
 fn union_second_branch() {
     let (_d, mut e) = base();
     assert_eq!(
-        q_set(&mut e, "SELECT id FROM t WHERE id = 1 UNION SELECT id FROM t WHERE id = 2"),
+        q_set(
+            &mut e,
+            "SELECT id FROM t WHERE id = 1 UNION SELECT id FROM t WHERE id = 2"
+        ),
         table(&[&["1"], &["2"]])
     );
 }
@@ -439,7 +531,10 @@ fn union_second_branch() {
 fn union_duplicate_elimination() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT v FROM t WHERE id = 1 UNION SELECT v FROM t WHERE id = 4"),
+        q(
+            &mut e,
+            "SELECT v FROM t WHERE id = 1 UNION SELECT v FROM t WHERE id = 4"
+        ),
         table(&[&["20"]])
     );
 }
@@ -456,26 +551,41 @@ fn except() {
 #[test]
 fn intersect() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t INTERSECT SELECT id FROM u"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t INTERSECT SELECT id FROM u"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
 fn except_all_and_intersect_all_use_multiplicities() {
     let (_d, mut e) = base();
     assert_eq!(
-        q_set(&mut e, "SELECT v FROM t EXCEPT ALL SELECT v FROM t WHERE id = 1"),
+        q_set(
+            &mut e,
+            "SELECT v FROM t EXCEPT ALL SELECT v FROM t WHERE id = 1"
+        ),
         sorted(table(&[&["20"], &["10"], &["NULL"]]))
     );
     assert_eq!(
-        q_set(&mut e, "SELECT v FROM t EXCEPT SELECT v FROM t WHERE id = 1"),
+        q_set(
+            &mut e,
+            "SELECT v FROM t EXCEPT SELECT v FROM t WHERE id = 1"
+        ),
         sorted(table(&[&["10"], &["NULL"]]))
     );
     assert_eq!(
-        q(&mut e, "SELECT s FROM t INTERSECT ALL SELECT s FROM t WHERE id = 1"),
+        q(
+            &mut e,
+            "SELECT s FROM t INTERSECT ALL SELECT s FROM t WHERE id = 1"
+        ),
         table(&[&["b"]])
     );
     assert_eq!(
-        q(&mut e, "SELECT v FROM t INTERSECT ALL SELECT v FROM t WHERE v = 20"),
+        q(
+            &mut e,
+            "SELECT v FROM t INTERSECT ALL SELECT v FROM t WHERE v = 20"
+        ),
         table(&[&["20"], &["20"]])
     );
 }
@@ -483,14 +593,20 @@ fn except_all_and_intersect_all_use_multiplicities() {
 #[test]
 fn union_arity_mismatch() {
     let (_d, mut e) = base();
-    assert_eq!(state(&mut e, "SELECT id FROM t UNION SELECT id, v FROM t"), "42601");
+    assert_eq!(
+        state(&mut e, "SELECT id FROM t UNION SELECT id, v FROM t"),
+        "42601"
+    );
 }
 
 #[test]
 fn set_operation_order_by_applies_to_whole_query() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT id FROM t UNION SELECT id FROM u ORDER BY id DESC"),
+        q(
+            &mut e,
+            "SELECT id FROM t UNION SELECT id FROM u ORDER BY id DESC"
+        ),
         table(&[&["5"], &["4"], &["3"], &["2"], &["1"]])
     );
 }
@@ -500,7 +616,10 @@ fn set_operation_order_by_applies_to_whole_query() {
 #[test]
 fn inner_join() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT t.id, u.n FROM t JOIN u ON t.id = u.id"), table(&[&["2", "two"]]));
+    assert_eq!(
+        q(&mut e, "SELECT t.id, u.n FROM t JOIN u ON t.id = u.id"),
+        table(&[&["2", "two"]])
+    );
 }
 
 #[test]
@@ -508,7 +627,12 @@ fn left_join() {
     let (_d, mut e) = base();
     assert_eq!(
         q_set(&mut e, "SELECT t.id, u.n FROM t LEFT JOIN u ON t.id = u.id"),
-        sorted(table(&[&["1", "NULL"], &["2", "two"], &["3", "NULL"], &["4", "NULL"]]))
+        sorted(table(&[
+            &["1", "NULL"],
+            &["2", "two"],
+            &["3", "NULL"],
+            &["4", "NULL"]
+        ]))
     );
 }
 
@@ -516,7 +640,10 @@ fn left_join() {
 fn right_join() {
     let (_d, mut e) = base();
     assert_eq!(
-        q_set(&mut e, "SELECT t.id, u.n FROM t RIGHT JOIN u ON t.id = u.id"),
+        q_set(
+            &mut e,
+            "SELECT t.id, u.n FROM t RIGHT JOIN u ON t.id = u.id"
+        ),
         sorted(table(&[&["2", "two"], &["NULL", "five"]]))
     );
 }
@@ -539,7 +666,10 @@ fn full_join() {
 #[test]
 fn ambiguous_column_in_join() {
     let (_d, mut e) = base();
-    assert_eq!(state(&mut e, "SELECT id FROM t JOIN u ON t.id = u.id"), "42702");
+    assert_eq!(
+        state(&mut e, "SELECT id FROM t JOIN u ON t.id = u.id"),
+        "42702"
+    );
 }
 
 // ---- Scalar expressions -----------------------------------------------------
@@ -554,9 +684,18 @@ fn cast() {
 #[test]
 fn case() {
     let (_d, mut e) = engine();
-    assert_eq!(single(&mut e, "SELECT CASE WHEN 1 = 1 THEN 7 ELSE 9 END"), "7");
+    assert_eq!(
+        single(&mut e, "SELECT CASE WHEN 1 = 1 THEN 7 ELSE 9 END"),
+        "7"
+    );
     assert_eq!(single(&mut e, "SELECT CASE WHEN 1 = 2 THEN 7 END"), "NULL");
-    assert_eq!(single(&mut e, "SELECT CASE 2 WHEN 1 THEN 'one' WHEN 2 THEN 'two' END"), "two");
+    assert_eq!(
+        single(
+            &mut e,
+            "SELECT CASE 2 WHEN 1 THEN 'one' WHEN 2 THEN 'two' END"
+        ),
+        "two"
+    );
 }
 
 #[test]
@@ -599,7 +738,10 @@ fn exact_numeric_arithmetic() {
 fn update_null() {
     let (_d, mut e) = base();
     exec(&mut e, "UPDATE t SET v = NULL WHERE id = 2");
-    assert_eq!(q(&mut e, "SELECT v FROM t WHERE id = 2"), table(&[&["NULL"]]));
+    assert_eq!(
+        q(&mut e, "SELECT v FROM t WHERE id = 2"),
+        table(&[&["NULL"]])
+    );
 }
 
 #[test]
@@ -630,15 +772,28 @@ fn default_expression_survives_reopen() {
 
 #[test]
 fn database_query_returns_typed_rows() {
-    use aerodb::sql::{decimal::Decimal, value::{SqlType, Value}};
+    use aerodb::sql::{
+        decimal::Decimal,
+        value::{SqlType, Value},
+    };
     let dir = tempfile::tempdir().unwrap();
     let db = aerodb::db::Database::open(dir.path().join("q.db").to_str().unwrap()).unwrap();
     let tx = db.begin().unwrap();
-    db.query(&tx, "CREATE TABLE t (id INTEGER PRIMARY KEY, v DECIMAL(5,2))").unwrap();
+    db.query(
+        &tx,
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v DECIMAL(5,2))",
+    )
+    .unwrap();
     db.query(&tx, "INSERT INTO t VALUES (1, 1.005)").unwrap();
     let r = db.query(&tx, "SELECT v, v * 2 FROM t").unwrap();
     db.commit(tx).unwrap();
-    assert_eq!(r.columns[0].ty, SqlType::Decimal { precision: 5, scale: 2 });
+    assert_eq!(
+        r.columns[0].ty,
+        SqlType::Decimal {
+            precision: 5,
+            scale: 2
+        }
+    );
     let dec = |s: &str| Value::Decimal(Decimal::parse(s).unwrap());
     assert_eq!(r.rows, vec![vec![dec("1.01"), dec("2.02")]]);
 }
@@ -657,19 +812,34 @@ fn grouped_query_subqueries_must_reference_grouped_columns() {
     let (_d, mut e) = base();
     // t.id is not grouped: binding it to an arbitrary row of the group is wrong.
     assert_eq!(
-        state(&mut e, "SELECT s, (SELECT COUNT(*) FROM u WHERE u.id = t.id) FROM t GROUP BY s"),
+        state(
+            &mut e,
+            "SELECT s, (SELECT COUNT(*) FROM u WHERE u.id = t.id) FROM t GROUP BY s"
+        ),
         "42803"
     );
     assert_eq!(
-        state(&mut e, "SELECT s FROM t GROUP BY s HAVING EXISTS (SELECT 1 FROM u WHERE u.id = t.id)"),
+        state(
+            &mut e,
+            "SELECT s FROM t GROUP BY s HAVING EXISTS (SELECT 1 FROM u WHERE u.id = t.id)"
+        ),
         "42803"
     );
     assert_eq!(
-        state(&mut e, "SELECT s FROM t GROUP BY s ORDER BY (SELECT COUNT(*) FROM u WHERE u.id = t.id)"),
+        state(
+            &mut e,
+            "SELECT s FROM t GROUP BY s ORDER BY (SELECT COUNT(*) FROM u WHERE u.id = t.id)"
+        ),
         "42803"
     );
     // An ungrouped outer column inside an inner (locally evaluated) aggregate.
-    assert_eq!(state(&mut e, "SELECT s, (SELECT SUM(u.id + t.id) FROM u) FROM t GROUP BY s"), "42803");
+    assert_eq!(
+        state(
+            &mut e,
+            "SELECT s, (SELECT SUM(u.id + t.id) FROM u) FROM t GROUP BY s"
+        ),
+        "42803"
+    );
     // Nested two levels deep.
     assert_eq!(
         state(
@@ -684,7 +854,10 @@ fn grouped_query_subqueries_must_reference_grouped_columns() {
 fn grouped_query_subqueries_may_reference_grouped_columns() {
     let (_d, mut e) = base();
     assert_eq!(
-        q(&mut e, "SELECT s, (SELECT COUNT(*) FROM t AS t2 WHERE t2.s = t.s) FROM t GROUP BY s ORDER BY s"),
+        q(
+            &mut e,
+            "SELECT s, (SELECT COUNT(*) FROM t AS t2 WHERE t2.s = t.s) FROM t GROUP BY s ORDER BY s"
+        ),
         table(&[&["a", "1"], &["b", "2"], &["c", "1"]])
     );
     assert_eq!(
@@ -696,7 +869,10 @@ fn grouped_query_subqueries_may_reference_grouped_columns() {
     );
     // Inner references to the subquery's own columns are unrestricted.
     assert_eq!(
-        q(&mut e, "SELECT s, (SELECT MAX(u.id) FROM u) FROM t GROUP BY s ORDER BY s"),
+        q(
+            &mut e,
+            "SELECT s, (SELECT MAX(u.id) FROM u) FROM t GROUP BY s ORDER BY s"
+        ),
         table(&[&["a", "5"], &["b", "5"], &["c", "5"]])
     );
 }
@@ -704,11 +880,23 @@ fn grouped_query_subqueries_may_reference_grouped_columns() {
 #[test]
 fn aggregate_over_outer_only_columns_is_unsupported() {
     let (_d, mut e) = base();
-    assert_eq!(state(&mut e, "SELECT (SELECT SUM(t.v) FROM u) FROM t"), "0A000");
-    assert_eq!(state(&mut e, "SELECT id FROM t WHERE (SELECT COUNT(t.v) FROM u) > 0"), "0A000");
+    assert_eq!(
+        state(&mut e, "SELECT (SELECT SUM(t.v) FROM u) FROM t"),
+        "0A000"
+    );
+    assert_eq!(
+        state(
+            &mut e,
+            "SELECT id FROM t WHERE (SELECT COUNT(t.v) FROM u) > 0"
+        ),
+        "0A000"
+    );
     // An argument mixing inner and outer columns aggregates over the inner rows.
     assert_eq!(
-        q(&mut e, "SELECT id, (SELECT SUM(u.id + t.v) FROM u) FROM t WHERE id = 1"),
+        q(
+            &mut e,
+            "SELECT id, (SELECT SUM(u.id + t.v) FROM u) FROM t WHERE id = 1"
+        ),
         table(&[&["1", "47"]])
     );
 }
@@ -717,7 +905,10 @@ fn aggregate_over_outer_only_columns_is_unsupported() {
 fn unquoted_identifiers_match_case_insensitively() {
     let (_d, mut e) = base();
     assert_eq!(q(&mut e, "SELECT ID FROM t WHERE Id = 2"), table(&[&["2"]]));
-    assert_eq!(q(&mut e, "SELECT T.id FROM t WHERE t.ID = 2"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT T.id FROM t WHERE t.ID = 2"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
@@ -725,16 +916,25 @@ fn quoted_identifiers_match_exactly() {
     let (_d, mut e) = base();
     assert_eq!(state(&mut e, "SELECT \"ID\" FROM t"), "42703");
     assert_eq!(state(&mut e, "SELECT \"T\".id FROM t"), "42703");
-    assert_eq!(q(&mut e, "SELECT \"id\" FROM t WHERE \"t\".\"id\" = 2"), table(&[&["2"]]));
+    assert_eq!(
+        q(&mut e, "SELECT \"id\" FROM t WHERE \"t\".\"id\" = 2"),
+        table(&[&["2"]])
+    );
 }
 
 #[test]
 fn unquoted_identifier_matching_two_columns_is_ambiguous() {
     let (_d, mut e) = engine();
-    exec(&mut e, "CREATE TABLE m (id INTEGER PRIMARY KEY, \"a\" INTEGER, \"A\" INTEGER)");
+    exec(
+        &mut e,
+        "CREATE TABLE m (id INTEGER PRIMARY KEY, \"a\" INTEGER, \"A\" INTEGER)",
+    );
     exec(&mut e, "INSERT INTO m VALUES (1, 10, 20)");
     assert_eq!(state(&mut e, "SELECT a FROM m"), "42702");
-    assert_eq!(q(&mut e, "SELECT \"a\", \"A\" FROM m"), table(&[&["10", "20"]]));
+    assert_eq!(
+        q(&mut e, "SELECT \"a\", \"A\" FROM m"),
+        table(&[&["10", "20"]])
+    );
 }
 
 #[test]
@@ -748,12 +948,18 @@ fn correlated_reference_binds_in_innermost_matching_scope() {
     // the innermost scope with any match wins: it binds to i.name, so only
     // o.id = 2 (i.name = 'x') qualifies. Binding to o.Name would give id 1.
     assert_eq!(
-        q(&mut e, "SELECT id FROM o WHERE EXISTS (SELECT 1 FROM i WHERE i.id = o.id AND Name = 'x')"),
+        q(
+            &mut e,
+            "SELECT id FROM o WHERE EXISTS (SELECT 1 FROM i WHERE i.id = o.id AND Name = 'x')"
+        ),
         table(&[&["2"]])
     );
     // Quoted "Name" matches exactly: not i.name, so it binds to the outer o.Name.
     assert_eq!(
-        q(&mut e, "SELECT id FROM o WHERE EXISTS (SELECT 1 FROM i WHERE i.id = o.id AND \"Name\" = 'x')"),
+        q(
+            &mut e,
+            "SELECT id FROM o WHERE EXISTS (SELECT 1 FROM i WHERE i.id = o.id AND \"Name\" = 'x')"
+        ),
         table(&[&["1"]])
     );
 }
@@ -768,14 +974,18 @@ fn order_by_name_ignores_derived_output_names() {
         table(&[&["id", "20"], &["id", "NULL"], &["id", "10"], &["id", "20"]])
     );
     // Plain column outputs and explicit aliases still match.
-    assert_eq!(q(&mut e, "SELECT v AS k, id FROM t ORDER BY k DESC, id"), table(&[
-        &["NULL", "3"],
-        &["20", "1"],
-        &["20", "4"],
-        &["10", "2"]
-    ]));
+    assert_eq!(
+        q(&mut e, "SELECT v AS k, id FROM t ORDER BY k DESC, id"),
+        table(&[&["NULL", "3"], &["20", "1"], &["20", "4"], &["10", "2"]])
+    );
     // A set operation orders by output names of columns/aliases only.
-    assert_eq!(state(&mut e, "SELECT 'id' FROM t UNION SELECT 'x' FROM u ORDER BY id"), "42601");
+    assert_eq!(
+        state(
+            &mut e,
+            "SELECT 'id' FROM t UNION SELECT 'x' FROM u ORDER BY id"
+        ),
+        "42601"
+    );
 }
 
 #[test]
@@ -785,34 +995,64 @@ fn group_by_ordinal_refers_to_select_list() {
         q(&mut e, "SELECT s, COUNT(*) FROM t GROUP BY 1 ORDER BY 1"),
         table(&[&["a", "1"], &["b", "2"], &["c", "1"]])
     );
-    assert_eq!(state(&mut e, "SELECT s, COUNT(*) FROM t GROUP BY 3"), "42601");
-    assert_eq!(state(&mut e, "SELECT s, COUNT(*) FROM t GROUP BY 0"), "42601");
+    assert_eq!(
+        state(&mut e, "SELECT s, COUNT(*) FROM t GROUP BY 3"),
+        "42601"
+    );
+    assert_eq!(
+        state(&mut e, "SELECT s, COUNT(*) FROM t GROUP BY 0"),
+        "42601"
+    );
     assert_eq!(state(&mut e, "SELECT COUNT(*) FROM t GROUP BY 1"), "42601");
 }
 
 #[test]
 fn duplicate_insert_target_column_is_rejected() {
     let (_d, mut e) = base();
-    assert_eq!(state(&mut e, "INSERT INTO u (id, id) VALUES (7, 8)"), "42601");
-    assert_eq!(state(&mut e, "UPDATE t SET v = 1, v = 2 WHERE id = 1"), "42601");
-    assert_eq!(q(&mut e, "SELECT id FROM u ORDER BY id"), table(&[&["2"], &["5"]]));
+    assert_eq!(
+        state(&mut e, "INSERT INTO u (id, id) VALUES (7, 8)"),
+        "42601"
+    );
+    assert_eq!(
+        state(&mut e, "UPDATE t SET v = 1, v = 2 WHERE id = 1"),
+        "42601"
+    );
+    assert_eq!(
+        q(&mut e, "SELECT id FROM u ORDER BY id"),
+        table(&[&["2"], &["5"]])
+    );
     assert_eq!(q(&mut e, "SELECT v FROM t WHERE id = 1"), table(&[&["20"]]));
 }
 
 #[test]
 fn not_in_subquery_containing_null_keeps_no_rows() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE id NOT IN (SELECT v FROM t)"), table(&[]));
+    assert_eq!(
+        q(&mut e, "SELECT id FROM t WHERE id NOT IN (SELECT v FROM t)"),
+        table(&[])
+    );
 }
 
 #[test]
 fn null_in_empty_subquery_is_false() {
     let (_d, mut e) = base();
-    assert_eq!(single(&mut e, "SELECT NULL IN (SELECT id FROM u WHERE id = 99)"), "false");
-    assert_eq!(q(&mut e, "SELECT id FROM t WHERE v IN (SELECT id FROM u WHERE id = 99)"), table(&[]));
+    assert_eq!(
+        single(&mut e, "SELECT NULL IN (SELECT id FROM u WHERE id = 99)"),
+        "false"
+    );
+    assert_eq!(
+        q(
+            &mut e,
+            "SELECT id FROM t WHERE v IN (SELECT id FROM u WHERE id = 99)"
+        ),
+        table(&[])
+    );
     // FALSE negated is TRUE, so the NULL-valued row 3 is kept under NOT IN.
     assert_eq!(
-        q(&mut e, "SELECT id FROM t WHERE v NOT IN (SELECT id FROM u WHERE id = 99) ORDER BY id"),
+        q(
+            &mut e,
+            "SELECT id FROM t WHERE v NOT IN (SELECT id FROM u WHERE id = 99) ORDER BY id"
+        ),
         table(&[&["1"], &["2"], &["3"], &["4"]])
     );
 }
@@ -820,12 +1060,21 @@ fn null_in_empty_subquery_is_false() {
 #[test]
 fn decimal_sum_and_avg_are_exact() {
     let (_d, mut e) = engine();
-    exec(&mut e, "CREATE TABLE dm (id INTEGER PRIMARY KEY, x DECIMAL(5,2))");
+    exec(
+        &mut e,
+        "CREATE TABLE dm (id INTEGER PRIMARY KEY, x DECIMAL(5,2))",
+    );
     exec(&mut e, "INSERT INTO dm VALUES (1, 0.10), (2, 0.20)");
     // AVG(DECIMAL) is SUM / COUNT under exact decimal division (Task 1 scale
     // rule), so the value is exactly 0.15 rendered with the division scale.
-    assert_eq!(q(&mut e, "SELECT SUM(x), AVG(x) FROM dm"), table(&[&["0.30", "0.15000000"]]));
-    assert_eq!(q(&mut e, "SELECT AVG(x) = 0.15 FROM dm"), table(&[&["true"]]));
+    assert_eq!(
+        q(&mut e, "SELECT SUM(x), AVG(x) FROM dm"),
+        table(&[&["0.30", "0.15000000"]])
+    );
+    assert_eq!(
+        q(&mut e, "SELECT AVG(x) = 0.15 FROM dm"),
+        table(&[&["true"]])
+    );
 }
 
 #[test]
@@ -833,7 +1082,10 @@ fn integer_sum_overflow_is_an_error() {
     let (_d, mut e) = engine();
     assert_eq!(state(&mut e, "SELECT 9223372036854775807 + 1"), "22003");
     assert_eq!(
-        state(&mut e, "SELECT SUM(x) FROM (SELECT 9223372036854775807 AS x UNION ALL SELECT 1) AS s"),
+        state(
+            &mut e,
+            "SELECT SUM(x) FROM (SELECT 9223372036854775807 AS x UNION ALL SELECT 1) AS s"
+        ),
         "22003"
     );
 }
@@ -841,12 +1093,24 @@ fn integer_sum_overflow_is_an_error() {
 #[test]
 fn sum_and_avg_distinct() {
     let (_d, mut e) = base();
-    assert_eq!(q(&mut e, "SELECT SUM(DISTINCT v), AVG(DISTINCT v) FROM t"), table(&[&["30", "15"]]));
+    assert_eq!(
+        q(&mut e, "SELECT SUM(DISTINCT v), AVG(DISTINCT v) FROM t"),
+        table(&[&["30", "15"]])
+    );
 }
 
 #[test]
 fn set_operation_order_by_must_name_an_output_column() {
     let (_d, mut e) = base();
-    assert_eq!(state(&mut e, "SELECT id FROM t UNION SELECT id FROM u ORDER BY id + 1"), "42601");
-    assert_eq!(state(&mut e, "SELECT id FROM t UNION SELECT id FROM u ORDER BY v"), "42601");
+    assert_eq!(
+        state(
+            &mut e,
+            "SELECT id FROM t UNION SELECT id FROM u ORDER BY id + 1"
+        ),
+        "42601"
+    );
+    assert_eq!(
+        state(&mut e, "SELECT id FROM t UNION SELECT id FROM u ORDER BY v"),
+        "42601"
+    );
 }

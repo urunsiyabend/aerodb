@@ -318,7 +318,10 @@ impl Decimal {
     /// Converts via the shortest round-trip decimal representation.
     pub fn from_f64(v: f64) -> Result<Self, DecimalError> {
         if !v.is_finite() {
-            return Err(DecimalError::Invalid(format!("{} is not a finite number", v)));
+            return Err(DecimalError::Invalid(format!(
+                "{} is not a finite number",
+                v
+            )));
         }
         Self::parse_inner(&format!("{}", v), true)
     }
@@ -481,7 +484,13 @@ mod tests {
             v.hash(&mut h);
             h.finish()
         };
-        let pairs = [("1.0", "1.00"), ("0", "0.000"), ("-2.50", "-2.5"), ("100", "100.0"), ("1.5", "1.50")];
+        let pairs = [
+            ("1.0", "1.00"),
+            ("0", "0.000"),
+            ("-2.50", "-2.5"),
+            ("100", "100.0"),
+            ("1.5", "1.50"),
+        ];
         for (a, b) in pairs {
             let (x, y) = (d(a), d(b));
             assert_eq!(x.cmp(&y), Ordering::Equal, "{a} vs {b}");
@@ -498,11 +507,20 @@ mod tests {
 
     #[test]
     fn parse_rejects_garbage() {
-        assert!(matches!(Decimal::parse("abc"), Err(DecimalError::Invalid(_))));
-        assert!(matches!(Decimal::parse("1e3"), Err(DecimalError::Invalid(_))));
+        assert!(matches!(
+            Decimal::parse("abc"),
+            Err(DecimalError::Invalid(_))
+        ));
+        assert!(matches!(
+            Decimal::parse("1e3"),
+            Err(DecimalError::Invalid(_))
+        ));
         assert!(matches!(Decimal::parse(""), Err(DecimalError::Invalid(_))));
         assert!(matches!(Decimal::parse("-"), Err(DecimalError::Invalid(_))));
-        assert!(matches!(Decimal::parse("1.2.3"), Err(DecimalError::Invalid(_))));
+        assert!(matches!(
+            Decimal::parse("1.2.3"),
+            Err(DecimalError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -524,10 +542,16 @@ mod tests {
     fn conversions() {
         assert_eq!(d("2.5").to_f64(), 2.5);
         assert_eq!(d("-2.9").to_i64_trunc(), Some(-2));
-        assert_eq!(Decimal::from_i64(i64::MIN).to_string(), "-9223372036854775808");
+        assert_eq!(
+            Decimal::from_i64(i64::MIN).to_string(),
+            "-9223372036854775808"
+        );
         assert_eq!(Decimal::from_f64(0.1).unwrap().to_string(), "0.1");
         assert_eq!(Decimal::from_f64(21.0).unwrap().to_string(), "21");
-        assert!(matches!(Decimal::from_f64(f64::NAN), Err(DecimalError::Invalid(_))));
+        assert!(matches!(
+            Decimal::from_f64(f64::NAN),
+            Err(DecimalError::Invalid(_))
+        ));
         assert!(Decimal::from_f64(f64::INFINITY).is_err());
         assert!(d("0.00").is_zero());
     }

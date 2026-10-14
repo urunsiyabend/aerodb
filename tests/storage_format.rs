@@ -22,7 +22,10 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn fixture_bytes() -> Vec<Vec<u8>> {
-    FIXTURE_FILES.iter().map(|f| fs::read(fixture_dir().join(f)).expect("fixture file")).collect()
+    FIXTURE_FILES
+        .iter()
+        .map(|f| fs::read(fixture_dir().join(f)).expect("fixture file"))
+        .collect()
 }
 
 /// Copy the 0.5.1 fixture (main file + sidecars) into a fresh temp dir and
@@ -70,7 +73,10 @@ fn assert_fixture_content(e: &mut Engine) {
         q(e, "SELECT id, user_id FROM orders ORDER BY id"),
         table(&[&["10", "1"], &["11", "1"], &["12", "2"]])
     );
-    assert_eq!(q_set(e, "SELECT a, b FROM nopk"), table(&[&["1", "x"], &["2", "y"]]));
+    assert_eq!(
+        q_set(e, "SELECT a, b FROM nopk"),
+        table(&[&["1", "x"], &["2", "y"]])
+    );
     assert_eq!(q(e, "SELECT COUNT(*) FROM padded"), table(&[&["0"]]));
 }
 
@@ -114,9 +120,15 @@ fn writes_to_0_5_1_fixture() {
 
     // Cases 0.5.1 itself rejected now work.
     exec(&mut e, "INSERT INTO padded (code) VALUES ('ab')");
-    assert_eq!(q(&mut e, "SELECT code, qty FROM padded"), table(&[&["ab  ", "5"]]));
+    assert_eq!(
+        q(&mut e, "SELECT code, qty FROM padded"),
+        table(&[&["ab  ", "5"]])
+    );
     exec(&mut e, "UPDATE users SET name = 'bobby' WHERE id = 2");
-    assert_eq!(q(&mut e, "SELECT name FROM users WHERE id = 2"), table(&[&["bobby"]]));
+    assert_eq!(
+        q(&mut e, "SELECT name FROM users WHERE id = 2"),
+        table(&[&["bobby"]])
+    );
 
     // Tables without a primary key: new row ids never collide with the
     // legacy physical keys (0.5.1 keyed nopk by its first column).
@@ -124,7 +136,13 @@ fn writes_to_0_5_1_fixture() {
     exec(&mut e, "INSERT INTO nopk VALUES (2, 'y2')");
     assert_eq!(
         q_set(&mut e, "SELECT a, b FROM nopk"),
-        table(&[&["1", "dup"], &["1", "x"], &["2", "y"], &["2", "y2"], &["3", "z"]])
+        table(&[
+            &["1", "dup"],
+            &["1", "x"],
+            &["2", "y"],
+            &["2", "y2"],
+            &["3", "z"]
+        ])
     );
     exec(&mut e, "UPDATE nopk SET b = 'X' WHERE b = 'x'");
     exec(&mut e, "DELETE FROM nopk WHERE b = 'y'");
@@ -134,31 +152,61 @@ fn writes_to_0_5_1_fixture() {
     );
 
     // INSERT/UPDATE/DELETE on keyed tables; the FOREIGN KEY is still enforced.
-    exec(&mut e, "INSERT INTO users VALUES (4, 'dee', 1.5, '2000-02-29')");
-    assert_eq!(err_state(&mut e, "INSERT INTO users VALUES (4, 'dup', NULL, NULL)"), "23505");
+    exec(
+        &mut e,
+        "INSERT INTO users VALUES (4, 'dee', 1.5, '2000-02-29')",
+    );
+    assert_eq!(
+        err_state(&mut e, "INSERT INTO users VALUES (4, 'dup', NULL, NULL)"),
+        "23505"
+    );
     exec(&mut e, "INSERT INTO orders VALUES (13, 4)");
-    assert_eq!(err_state(&mut e, "INSERT INTO orders VALUES (14, 99)"), "23503");
+    assert_eq!(
+        err_state(&mut e, "INSERT INTO orders VALUES (14, 99)"),
+        "23503"
+    );
     assert_eq!(err_state(&mut e, "DELETE FROM users WHERE id = 1"), "23503");
-    assert_eq!(err_state(&mut e, "UPDATE users SET id = 40 WHERE id = 4"), "23503");
+    assert_eq!(
+        err_state(&mut e, "UPDATE users SET id = 40 WHERE id = 4"),
+        "23503"
+    );
     exec(&mut e, "DELETE FROM users WHERE id = 3");
     exec(&mut e, "UPDATE users SET score = score * 2 WHERE id = 1");
 
     // New 0.6.0 DDL on the old file.
-    exec(&mut e, "ALTER TABLE users ADD COLUMN tier INTEGER DEFAULT 1");
-    exec(&mut e, "CREATE VIEW big_spenders AS SELECT u.name, COUNT(*) AS n FROM users u JOIN orders o ON o.user_id = u.id GROUP BY u.name");
+    exec(
+        &mut e,
+        "ALTER TABLE users ADD COLUMN tier INTEGER DEFAULT 1",
+    );
+    exec(
+        &mut e,
+        "CREATE VIEW big_spenders AS SELECT u.name, COUNT(*) AS n FROM users u JOIN orders o ON o.user_id = u.id GROUP BY u.name",
+    );
 
     let expect_after = |e: &mut Engine| {
         assert_eq!(
-            q(e, "SELECT id, name, score, born, tier FROM users ORDER BY id"),
+            q(
+                e,
+                "SELECT id, name, score, born, tier FROM users ORDER BY id"
+            ),
             table(&[
                 &["1", "ann", "21", "1990-01-02", "1"],
                 &["2", "bobby", "NULL", "1985-12-31", "1"],
                 &["4", "dee", "1.5", "2000-02-29", "1"],
             ])
         );
-        assert_eq!(q(e, "SELECT id, user_id FROM orders ORDER BY id"), table(&[&["10", "1"], &["11", "1"], &["12", "2"], &["13", "4"]]));
-        assert_eq!(q_set(e, "SELECT name, n FROM big_spenders"), table(&[&["ann", "2"], &["bobby", "1"], &["dee", "1"]]));
-        assert_eq!(q(e, "SELECT code, qty FROM padded"), table(&[&["ab  ", "5"]]));
+        assert_eq!(
+            q(e, "SELECT id, user_id FROM orders ORDER BY id"),
+            table(&[&["10", "1"], &["11", "1"], &["12", "2"], &["13", "4"]])
+        );
+        assert_eq!(
+            q_set(e, "SELECT name, n FROM big_spenders"),
+            table(&[&["ann", "2"], &["bobby", "1"], &["dee", "1"]])
+        );
+        assert_eq!(
+            q(e, "SELECT code, qty FROM padded"),
+            table(&[&["ab  ", "5"]])
+        );
         assert_eq!(
             q_set(e, "SELECT a, b FROM nopk"),
             table(&[&["1", "X"], &["1", "dup"], &["2", "y2"], &["3", "z"]])
@@ -174,7 +222,10 @@ fn writes_to_0_5_1_fixture() {
     let mut e = open(&path);
     expect_after(&mut e);
     exec(&mut e, "INSERT INTO nopk VALUES (4, 'w')");
-    assert_eq!(err_state(&mut e, "INSERT INTO orders VALUES (15, 3)"), "23503");
+    assert_eq!(
+        err_state(&mut e, "INSERT INTO orders VALUES (15, 3)"),
+        "23503"
+    );
     drop(e);
     let mut e = open(&path);
     assert_eq!(q(&mut e, "SELECT COUNT(*) FROM nopk"), table(&[&["5"]]));
@@ -202,7 +253,10 @@ fn nonfirst_dir() -> PathBuf {
 }
 
 fn nonfirst_bytes() -> Vec<Vec<u8>> {
-    FIXTURE_FILES.iter().map(|f| fs::read(nonfirst_dir().join(f)).expect("fixture file")).collect()
+    FIXTURE_FILES
+        .iter()
+        .map(|f| fs::read(nonfirst_dir().join(f)).expect("fixture file"))
+        .collect()
 }
 
 fn copy_nonfirst() -> (TempDir, PathBuf) {
@@ -216,9 +270,15 @@ fn copy_nonfirst() -> (TempDir, PathBuf) {
 
 /// Every lookup path agrees on the content `rows` (a, n), sorted by n.
 fn assert_nonfirst(e: &mut Engine, rows: &[(&str, &str)]) {
-    let all: Vec<Vec<String>> = rows.iter().map(|(a, n)| vec![a.to_string(), n.to_string()]).collect();
+    let all: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(a, n)| vec![a.to_string(), n.to_string()])
+        .collect();
     assert_eq!(q(e, "SELECT a, n FROM old_nonfirst ORDER BY n"), all);
-    assert_eq!(q(e, "SELECT COUNT(*) FROM old_nonfirst"), table(&[&[&rows.len().to_string()]]));
+    assert_eq!(
+        q(e, "SELECT COUNT(*) FROM old_nonfirst"),
+        table(&[&[&rows.len().to_string()]])
+    );
     for (a, n) in rows {
         assert_eq!(
             q(e, &format!("SELECT a, n FROM old_nonfirst WHERE n = {n}")),
@@ -226,7 +286,11 @@ fn assert_nonfirst(e: &mut Engine, rows: &[(&str, &str)]) {
             "lookup n = {n}"
         );
         // Every existing key is rejected as a duplicate.
-        assert_eq!(err_state(e, &format!("INSERT INTO old_nonfirst VALUES (77, {n})")), "23505", "dup n = {n}");
+        assert_eq!(
+            err_state(e, &format!("INSERT INTO old_nonfirst VALUES (77, {n})")),
+            "23505",
+            "dup n = {n}"
+        );
     }
 }
 
@@ -257,15 +321,27 @@ fn legacy_nonfirst_integer_primary_key_keeps_identity() {
     assert_nonfirst(&mut e, &[("6", "1"), ("9", "200"), ("5", "500")]);
     // n = 2 collides with the live legacy row (9, 200) stored under key 2.
     exec(&mut e, "INSERT INTO old_nonfirst VALUES (7, 2)");
-    assert_nonfirst(&mut e, &[("6", "1"), ("7", "2"), ("9", "200"), ("5", "500")]);
+    assert_nonfirst(
+        &mut e,
+        &[("6", "1"), ("7", "2"), ("9", "200"), ("5", "500")],
+    );
     // Changing the primary key of a legacy row.
     exec(&mut e, "UPDATE old_nonfirst SET n = 300 WHERE n = 200");
-    assert_eq!(err_state(&mut e, "UPDATE old_nonfirst SET n = 1 WHERE n = 300"), "23505");
-    assert_nonfirst(&mut e, &[("6", "1"), ("7", "2"), ("9", "300"), ("5", "500")]);
+    assert_eq!(
+        err_state(&mut e, "UPDATE old_nonfirst SET n = 1 WHERE n = 300"),
+        "23505"
+    );
+    assert_nonfirst(
+        &mut e,
+        &[("6", "1"), ("7", "2"), ("9", "300"), ("5", "500")],
+    );
 
     // Index lookups on the primary key.
     exec(&mut e, "CREATE INDEX idx_n ON old_nonfirst (n)");
-    assert_nonfirst(&mut e, &[("6", "1"), ("7", "2"), ("9", "300"), ("5", "500")]);
+    assert_nonfirst(
+        &mut e,
+        &[("6", "1"), ("7", "2"), ("9", "300"), ("5", "500")],
+    );
     exec(&mut e, "UPDATE old_nonfirst SET a = 70 WHERE n = 2");
     exec(&mut e, "DELETE FROM old_nonfirst WHERE n = 1");
     let expected = [("70", "2"), ("9", "300"), ("5", "500")];
@@ -285,9 +361,18 @@ fn legacy_nonfirst_integer_primary_key_keeps_identity() {
     // The same through the concurrent Database API after another reopen.
     let db = Database::open(path.to_str().unwrap()).unwrap();
     let tx = db.begin().unwrap();
-    let r = db.query(&tx, "SELECT a, n FROM old_nonfirst ORDER BY n").unwrap();
-    let got: Vec<Vec<String>> = r.rows.iter().map(|row| row.iter().map(|v| v.to_string()).collect()).collect();
-    assert_eq!(got, table(&[&["12", "1"], &["70", "2"], &["9", "300"], &["5", "500"]]));
+    let r = db
+        .query(&tx, "SELECT a, n FROM old_nonfirst ORDER BY n")
+        .unwrap();
+    let got: Vec<Vec<String>> = r
+        .rows
+        .iter()
+        .map(|row| row.iter().map(|v| v.to_string()).collect())
+        .collect();
+    assert_eq!(
+        got,
+        table(&[&["12", "1"], &["70", "2"], &["9", "300"], &["5", "500"]])
+    );
     assert_eq!(db.query_all(&tx, "old_nonfirst").unwrap().len(), 4);
     db.commit(tx).unwrap();
     drop(db);
@@ -321,7 +406,10 @@ fn unknown_format_version_is_rejected_without_modification() {
     bytes[32..36].copy_from_slice(&99u32.to_le_bytes());
     fs::write(&path, &bytes).unwrap();
     let sidecars = |p: &Path| -> Vec<Option<Vec<u8>>> {
-        ["wal", "clog"].iter().map(|ext| fs::read(format!("{}.{}", p.display(), ext)).ok()).collect()
+        ["wal", "clog"]
+            .iter()
+            .map(|ext| fs::read(format!("{}.{}", p.display(), ext)).ok())
+            .collect()
     };
     let sidecars_before = sidecars(&path);
 
@@ -337,16 +425,29 @@ fn unknown_format_version_is_rejected_without_modification() {
         Ok(_) => panic!("a version-99 file must not open"),
         Err(e) => e,
     };
-    assert!(err.to_string().contains("unsupported AeroDB storage format version 99"), "{err}");
-    assert_eq!(fs::read(&path).unwrap(), bytes, "a rejected file must not be modified");
-    assert_eq!(sidecars(&path), sidecars_before, "sidecars must not be modified");
+    assert!(
+        err.to_string()
+            .contains("unsupported AeroDB storage format version 99"),
+        "{err}"
+    );
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        bytes,
+        "a rejected file must not be modified"
+    );
+    assert_eq!(
+        sidecars(&path),
+        sidecars_before,
+        "sidecars must not be modified"
+    );
 
     // Version 0 (0.5.x) and the current version open.
     for ok in [0u32, STORAGE_FORMAT_VERSION] {
         let mut patched = bytes.clone();
         patched[32..36].copy_from_slice(&ok.to_le_bytes());
         fs::write(&path, &patched).unwrap();
-        let db = Database::open(path.to_str().unwrap()).unwrap_or_else(|e| panic!("version {ok}: {e}"));
+        let db =
+            Database::open(path.to_str().unwrap()).unwrap_or_else(|e| panic!("version {ok}: {e}"));
         drop(db);
     }
     drop(dir);

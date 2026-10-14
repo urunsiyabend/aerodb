@@ -42,7 +42,8 @@ impl PartialEq for Value {
             (Value::Double(a), Value::Double(b)) => a == b,
             (Value::Text(a), Value::Text(b)) | (Value::Char(a), Value::Char(b)) => a == b,
             (Value::Date(a), Value::Date(b)) => a == b,
-            (Value::DateTime(a), Value::DateTime(b)) | (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
+            (Value::DateTime(a), Value::DateTime(b))
+            | (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
             (Value::Time(a), Value::Time(b)) => a == b,
             (Value::Year(a), Value::Year(b)) => a == b,
             _ => false,
@@ -83,7 +84,9 @@ impl fmt::Display for ValueError {
         match self {
             ValueError::DivisionByZero => write!(f, "division by zero"),
             ValueError::NumericOverflow => write!(f, "numeric value out of range"),
-            ValueError::InvalidCast(m) | ValueError::StringTooLong(m) | ValueError::TypeMismatch(m) => {
+            ValueError::InvalidCast(m)
+            | ValueError::StringTooLong(m)
+            | ValueError::TypeMismatch(m) => {
                 write!(f, "{}", m)
             }
         }
@@ -167,11 +170,7 @@ fn parse_text_like(text: &str, like: &Value) -> Result<Value, ValueError> {
         _ => None,
     };
     parsed.ok_or_else(|| {
-        ValueError::InvalidCast(format!(
-            "'{}' is not a valid {}",
-            text,
-            like.type_name()
-        ))
+        ValueError::InvalidCast(format!("'{}' is not a valid {}", text, like.type_name()))
     })
 }
 
@@ -186,7 +185,9 @@ fn temporal_cmp(a: &Value, b: &Value) -> Option<Ordering> {
     match (a, b) {
         (Value::Date(x), Value::Date(y)) => Some(x.cmp(y)),
         // DATETIME and TIMESTAMP share one representation (seconds).
-        (Value::DateTime(x) | Value::Timestamp(x), Value::DateTime(y) | Value::Timestamp(y)) => Some(x.cmp(y)),
+        (Value::DateTime(x) | Value::Timestamp(x), Value::DateTime(y) | Value::Timestamp(y)) => {
+            Some(x.cmp(y))
+        }
         (Value::Time(x), Value::Time(y)) => Some(x.cmp(y)),
         (Value::Year(x), Value::Year(y)) => Some(x.cmp(y)),
         _ => None,
@@ -203,7 +204,9 @@ fn int_in_range(v: i64, ty: &SqlType) -> bool {
 
 fn round_f64_to_i64(f: f64) -> Result<i64, ValueError> {
     if f.is_nan() {
-        return Err(ValueError::InvalidCast("NaN cannot be cast to an integer".into()));
+        return Err(ValueError::InvalidCast(
+            "NaN cannot be cast to an integer".into(),
+        ));
     }
     let r = f.round(); // half away from zero
     if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&r) {
@@ -297,7 +300,11 @@ impl SqlType {
     pub fn is_numeric(&self) -> bool {
         matches!(
             self,
-            SqlType::Integer | SqlType::SmallInt | SqlType::BigInt | SqlType::Decimal { .. } | SqlType::Double
+            SqlType::Integer
+                | SqlType::SmallInt
+                | SqlType::BigInt
+                | SqlType::Decimal { .. }
+                | SqlType::Double
         )
     }
 
@@ -321,7 +328,9 @@ impl Value {
                 let digits = d.mantissa().unsigned_abs().to_string().len() as u8;
                 let scale = d.scale();
                 SqlType::Decimal {
-                    precision: digits.max(scale + 1).min(crate::sql::decimal::MAX_PRECISION),
+                    precision: digits
+                        .max(scale + 1)
+                        .min(crate::sql::decimal::MAX_PRECISION),
                     scale,
                 }
             }
@@ -378,7 +387,9 @@ impl Value {
             if matches!(self, Value::Double(_)) || matches!(other, Value::Double(_)) {
                 return Ok(cmp_f64(as_f64(self).unwrap(), as_f64(other).unwrap()));
             }
-            return Ok(Some(as_decimal(self).unwrap().cmp(&as_decimal(other).unwrap())));
+            return Ok(Some(
+                as_decimal(self).unwrap().cmp(&as_decimal(other).unwrap()),
+            ));
         }
         if let (Some(a), Some(b)) = (text_of(self), text_of(other)) {
             if matches!(self, Value::Char(_)) || matches!(other, Value::Char(_)) {
@@ -578,7 +589,11 @@ impl Value {
                 v if is_text(v) => parse_f64_text(text_of(v).unwrap()).map(Value::Double),
                 _ => Err(cast_err("DOUBLE")),
             },
-            SqlType::Date | SqlType::DateTime | SqlType::Timestamp | SqlType::Time | SqlType::Year => {
+            SqlType::Date
+            | SqlType::DateTime
+            | SqlType::Timestamp
+            | SqlType::Time
+            | SqlType::Year => {
                 let (like, name) = match ty {
                     SqlType::Date => (Value::Date(0), "DATE"),
                     SqlType::DateTime => (Value::DateTime(0), "DATETIME"),
@@ -596,7 +611,9 @@ impl Value {
                     (Value::DateTime(t), SqlType::Timestamp) => Ok(Value::Timestamp(*t)),
                     (Value::Timestamp(t), SqlType::DateTime) => Ok(Value::DateTime(*t)),
                     (Value::Date(d), SqlType::DateTime) => Ok(Value::DateTime(*d as i64 * 86_400)),
-                    (Value::Date(d), SqlType::Timestamp) => Ok(Value::Timestamp(*d as i64 * 86_400)),
+                    (Value::Date(d), SqlType::Timestamp) => {
+                        Ok(Value::Timestamp(*d as i64 * 86_400))
+                    }
                     (Value::DateTime(t) | Value::Timestamp(t), SqlType::Date) => {
                         i32::try_from(t.div_euclid(86_400))
                             .map(Value::Date)
@@ -660,7 +677,11 @@ impl Value {
         match col {
             ColumnType::Integer => range(integral("INTEGER")?, i32::MIN as i64, i32::MAX as i64),
             ColumnType::SmallInt { unsigned, .. } => {
-                let (lo, hi) = if *unsigned { (0, 65_535) } else { (-32_768, 32_767) };
+                let (lo, hi) = if *unsigned {
+                    (0, 65_535)
+                } else {
+                    (-32_768, 32_767)
+                };
                 range(integral("SMALLINT")?, lo, hi)
             }
             ColumnType::MediumInt { unsigned, .. } => {
@@ -676,10 +697,12 @@ impl Value {
                     Value::Int(i) => Decimal::from_i64(*i),
                     Value::Decimal(d) => *d,
                     Value::Double(f) => Decimal::from_f64(*f).map_err(dec_err)?,
-                    v if is_text(v) => Decimal::parse(text_of(v).unwrap()).map_err(|e| match e {
-                        DecimalError::Invalid(_) => bad("DECIMAL"),
-                        other => dec_err(other),
-                    })?,
+                    v if is_text(v) => {
+                        Decimal::parse(text_of(v).unwrap()).map_err(|e| match e {
+                            DecimalError::Invalid(_) => bad("DECIMAL"),
+                            other => dec_err(other),
+                        })?
+                    }
                     _ => return Err(bad("DECIMAL")),
                 };
                 d.rescale(*precision, *scale)
@@ -812,11 +835,23 @@ mod tests {
 
     #[test]
     fn division_by_zero_in_every_kind() {
-        assert_eq!(Value::Int(1).div(&Value::Int(0)), Err(ValueError::DivisionByZero));
-        assert_eq!(Value::Int(1).rem(&Value::Int(0)), Err(ValueError::DivisionByZero));
-        assert_eq!(Value::Double(1.0).div(&Value::Double(0.0)), Err(ValueError::DivisionByZero));
+        assert_eq!(
+            Value::Int(1).div(&Value::Int(0)),
+            Err(ValueError::DivisionByZero)
+        );
+        assert_eq!(
+            Value::Int(1).rem(&Value::Int(0)),
+            Err(ValueError::DivisionByZero)
+        );
+        assert_eq!(
+            Value::Double(1.0).div(&Value::Double(0.0)),
+            Err(ValueError::DivisionByZero)
+        );
         assert_eq!(dec("1").div(&dec("0.0")), Err(ValueError::DivisionByZero));
-        assert_eq!(Value::Int(1).div(&dec("0")), Err(ValueError::DivisionByZero));
+        assert_eq!(
+            Value::Int(1).div(&dec("0")),
+            Err(ValueError::DivisionByZero)
+        );
     }
 
     #[test]
@@ -918,7 +953,10 @@ mod tests {
     fn cast_numeric_to_integer_rounds_half_away() {
         assert_eq!(dec("2.5").cast_to(&SqlType::Integer), Ok(Value::Int(3)));
         assert_eq!(dec("-2.5").cast_to(&SqlType::Integer), Ok(Value::Int(-3)));
-        assert_eq!(Value::Double(2.4).cast_to(&SqlType::BigInt), Ok(Value::Int(2)));
+        assert_eq!(
+            Value::Double(2.4).cast_to(&SqlType::BigInt),
+            Ok(Value::Int(2))
+        );
         assert_eq!(
             Value::Int(40_000).cast_to(&SqlType::SmallInt),
             Err(ValueError::NumericOverflow)
@@ -931,11 +969,20 @@ mod tests {
 
     #[test]
     fn cast_to_decimal_and_text() {
-        let ty = SqlType::Decimal { precision: 5, scale: 2 };
+        let ty = SqlType::Decimal {
+            precision: 5,
+            scale: 2,
+        };
         assert_eq!(text("1.005").cast_to(&ty), Ok(dec("1.01")));
-        assert_eq!(Value::Int(1000).cast_to(&ty), Err(ValueError::NumericOverflow));
+        assert_eq!(
+            Value::Int(1000).cast_to(&ty),
+            Err(ValueError::NumericOverflow)
+        );
         assert_eq!(dec("0.30").cast_to(&SqlType::Text), Ok(text("0.30")));
-        assert_eq!(text("tRuE").cast_to(&SqlType::Boolean), Ok(Value::Bool(true)));
+        assert_eq!(
+            text("tRuE").cast_to(&SqlType::Boolean),
+            Ok(Value::Bool(true))
+        );
         assert_eq!(text("0").cast_to(&SqlType::Boolean), Ok(Value::Bool(false)));
     }
 
@@ -983,7 +1030,10 @@ mod tests {
 
     #[test]
     fn to_column_value_numeric_types() {
-        let ty = ColumnType::Decimal { precision: 10, scale: 2 };
+        let ty = ColumnType::Decimal {
+            precision: 10,
+            scale: 2,
+        };
         let cv = dec("1.005").to_column_value(&ty, "c").unwrap();
         assert_eq!(cv.to_string_value(), "1.01");
         assert_eq!(
@@ -1004,24 +1054,36 @@ mod tests {
         ));
         assert_eq!(
             Value::Int(-1).to_column_value(
-                &ColumnType::SmallInt { width: 0, unsigned: true },
+                &ColumnType::SmallInt {
+                    width: 0,
+                    unsigned: true
+                },
                 "c"
             ),
             Err(ValueError::NumericOverflow)
         );
         assert_eq!(
             Value::Int(2).to_column_value(
-                &ColumnType::Double { precision: 10, scale: 0, unsigned: false },
+                &ColumnType::Double {
+                    precision: 10,
+                    scale: 0,
+                    unsigned: false
+                },
                 "c"
             ),
             Ok(ColumnValue::Double(2.0))
         );
-        assert_eq!(Value::Null.to_column_value(&ColumnType::Integer, "c"), Ok(ColumnValue::Null));
+        assert_eq!(
+            Value::Null.to_column_value(&ColumnType::Integer, "c"),
+            Ok(ColumnValue::Null)
+        );
     }
 
     #[test]
     fn to_column_value_temporal_and_bool_errors() {
-        let err = text("nope").to_column_value(&ColumnType::Date, "d").unwrap_err();
+        let err = text("nope")
+            .to_column_value(&ColumnType::Date, "d")
+            .unwrap_err();
         match err {
             ValueError::InvalidCast(m) => assert!(m.contains("not a valid DATE"), "{m}"),
             other => panic!("unexpected {other:?}"),
@@ -1040,7 +1102,12 @@ mod tests {
         assert_eq!(text("a").concat(&Value::Int(1)), Ok(text("a1")));
         assert_eq!(Value::Null.to_string(), "NULL");
         assert_eq!(Value::Double(20.0).to_string(), "20");
-        assert_eq!((Value::Double(100.0).div(&Value::Double(6.0))).unwrap().to_string(), "16.666666666666668");
+        assert_eq!(
+            (Value::Double(100.0).div(&Value::Double(6.0)))
+                .unwrap()
+                .to_string(),
+            "16.666666666666668"
+        );
         assert_eq!(Value::Bool(true).to_string(), "true");
     }
 }

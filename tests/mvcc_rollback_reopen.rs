@@ -41,7 +41,10 @@ fn t(s: &str) -> ColumnValue {
 fn rolled_back_insert_then_reopen_does_not_reuse_tx_id() {
     let f = "mvcc_rollback_reopen_insert.db";
     let mut engine = setup_engine(f);
-    exec(&mut engine, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+    exec(
+        &mut engine,
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)",
+    );
     exec(&mut engine, "INSERT INTO t VALUES (1, 'a')");
     exec(&mut engine, "BEGIN");
     exec(&mut engine, "INSERT INTO t VALUES (2, 'x')");
@@ -63,7 +66,10 @@ fn rolled_back_insert_then_reopen_does_not_reuse_tx_id() {
 fn rolled_back_delete_then_reopen_keeps_row() {
     let f = "mvcc_rollback_reopen_delete.db";
     let mut engine = setup_engine(f);
-    exec(&mut engine, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+    exec(
+        &mut engine,
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)",
+    );
     exec(&mut engine, "INSERT INTO t VALUES (1, 'a')");
     exec(&mut engine, "BEGIN");
     exec(&mut engine, "INSERT INTO t VALUES (2, 'x')");
@@ -88,7 +94,10 @@ fn rolled_back_delete_then_reopen_keeps_row() {
 fn failed_autocommit_multirow_insert_then_reopen() {
     let f = "mvcc_rollback_reopen_autocommit.db";
     let mut engine = setup_engine(f);
-    exec(&mut engine, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+    exec(
+        &mut engine,
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)",
+    );
     exec(&mut engine, "INSERT INTO t VALUES (1, 'a')");
     let res = engine.execute(parse_statement("INSERT INTO t VALUES (3, 'p'), (1, 'dup')").unwrap());
     assert!(res.is_err());

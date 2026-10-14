@@ -35,7 +35,11 @@ impl Scope {
     }
 
     pub fn push(&mut self, qualifier: Option<String>, name: String, ty: SqlType) {
-        self.columns.push(ScopeColumn { qualifier, name, ty });
+        self.columns.push(ScopeColumn {
+            qualifier,
+            name,
+            ty,
+        });
     }
 
     pub fn extend(&mut self, other: &Scope) {
@@ -72,7 +76,10 @@ impl Scope {
         match hits.len() {
             0 => Ok(None),
             1 => Ok(Some(hits[0])),
-            _ => Err(DbError::AmbiguousColumn(display_column(table.map(Ident::as_str), name))),
+            _ => Err(DbError::AmbiguousColumn(display_column(
+                table.map(Ident::as_str),
+                name,
+            ))),
         }
     }
 }
@@ -96,7 +103,12 @@ pub struct Env<'a> {
 
 impl<'a> Env<'a> {
     pub fn new(scope: &'a Scope, row: &'a [Value], outer: Option<&'a Env<'a>>) -> Self {
-        Env { scope, row, aggregates: &[], outer }
+        Env {
+            scope,
+            row,
+            aggregates: &[],
+            outer,
+        }
     }
 
     /// Value of `[table.]name`, searching the correlation chain outwards; the
@@ -109,7 +121,10 @@ impl<'a> Env<'a> {
             }
             env = e.outer;
         }
-        Err(DbError::ColumnNotFound(display_column(table.map(Ident::as_str), name)))
+        Err(DbError::ColumnNotFound(display_column(
+            table.map(Ident::as_str),
+            name,
+        )))
     }
 
     /// Whether `[table.]name` resolves in this environment or an outer one.
@@ -134,7 +149,9 @@ pub struct Ctx<'c> {
 
 impl<'c> Ctx<'c> {
     pub fn with_catalog(catalog: &'c Catalog) -> Self {
-        Ctx { catalog: Some(catalog) }
+        Ctx {
+            catalog: Some(catalog),
+        }
     }
 
     fn subquery(&self, query: &Query, env: &Env) -> DbResult<QueryResult> {
@@ -360,11 +377,19 @@ pub fn eval(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<Value> {
             let v = eval(expr, env, cx)?;
             Ok(Value::Bool(v.is_null() != *negated))
         }
-        Expr::IsTruth { expr, value, negated } => {
+        Expr::IsTruth {
+            expr,
+            value,
+            negated,
+        } => {
             let t = truth(&eval(expr, env, cx)?)?;
             Ok(Value::Bool((t == *value) != *negated))
         }
-        Expr::InList { expr, list, negated } => {
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => {
             let v = eval(expr, env, cx)?;
             let mut acc = Some(false);
             for item in list {
@@ -376,7 +401,11 @@ pub fn eval(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<Value> {
             }
             Ok(bool_value(if *negated { not3(acc) } else { acc }))
         }
-        Expr::InSubquery { expr, query, negated } => {
+        Expr::InSubquery {
+            expr,
+            query,
+            negated,
+        } => {
             let v = eval(expr, env, cx)?;
             let result = cx.subquery(query, env)?;
             single_column(&result)?;
@@ -393,7 +422,12 @@ pub fn eval(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<Value> {
             let result = cx.subquery(query, env)?;
             Ok(Value::Bool(result.rows.is_empty() == *negated))
         }
-        Expr::Between { expr, low, high, negated } => {
+        Expr::Between {
+            expr,
+            low,
+            high,
+            negated,
+        } => {
             let v = eval(expr, env, cx)?;
             let lo = eval(low, env, cx)?;
             let hi = eval(high, env, cx)?;
@@ -402,7 +436,12 @@ pub fn eval(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<Value> {
             let r = and3(ge, le);
             Ok(bool_value(if *negated { not3(r) } else { r }))
         }
-        Expr::Like { expr, pattern, escape, negated } => {
+        Expr::Like {
+            expr,
+            pattern,
+            escape,
+            negated,
+        } => {
             let v = eval(expr, env, cx)?;
             let p = eval(pattern, env, cx)?;
             let esc = match escape {
@@ -431,7 +470,11 @@ pub fn eval(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<Value> {
             let pat = compile_like(like_text(&p)?, esc_char)?;
             Ok(Value::Bool(like_match(&text, &pat) != *negated))
         }
-        Expr::Case { operand, whens, else_result } => {
+        Expr::Case {
+            operand,
+            whens,
+            else_result,
+        } => {
             let op_val = match operand {
                 Some(o) => Some(eval(o, env, cx)?),
                 None => None,
@@ -463,14 +506,24 @@ pub fn eval(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<Value> {
             }
             "NULLIF" => {
                 if args.len() != 2 {
-                    return Err(DbError::UndefinedFunction(format!("NULLIF with {} argument(s)", args.len())));
+                    return Err(DbError::UndefinedFunction(format!(
+                        "NULLIF with {} argument(s)",
+                        args.len()
+                    )));
                 }
                 let a = eval(&args[0], env, cx)?;
                 let b = eval(&args[1], env, cx)?;
-                if eq3(&a, &b)? == Some(true) { Ok(Value::Null) } else { Ok(a) }
+                if eq3(&a, &b)? == Some(true) {
+                    Ok(Value::Null)
+                } else {
+                    Ok(a)
+                }
             }
             _ => {
-                let vals = args.iter().map(|a| eval(a, env, cx)).collect::<DbResult<Vec<_>>>()?;
+                let vals = args
+                    .iter()
+                    .map(|a| eval(a, env, cx))
+                    .collect::<DbResult<Vec<_>>>()?;
                 call_scalar(name, &vals)
             }
         },
@@ -496,7 +549,9 @@ pub fn eval(expr: &Expr, env: &Env, cx: &Ctx) -> DbResult<Value> {
                 )),
             }
         }
-        Expr::Default => Err(DbError::Syntax("DEFAULT is not allowed in this context".into())),
+        Expr::Default => Err(DbError::Syntax(
+            "DEFAULT is not allowed in this context".into(),
+        )),
     }
 }
 
@@ -533,8 +588,14 @@ mod tests {
     fn like_patterns() {
         assert_eq!(c("'abc' LIKE 'a%c'").unwrap(), Value::Bool(true));
         assert_eq!(c("'abc' LIKE '%b'").unwrap(), Value::Bool(false));
-        assert_eq!(c("'a_c' LIKE 'a#_c' ESCAPE '#'").unwrap(), Value::Bool(true));
-        assert_eq!(c("'abc' LIKE 'a#_c' ESCAPE '#'").unwrap(), Value::Bool(false));
+        assert_eq!(
+            c("'a_c' LIKE 'a#_c' ESCAPE '#'").unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            c("'abc' LIKE 'a#_c' ESCAPE '#'").unwrap(),
+            Value::Bool(false)
+        );
         assert_eq!(c("'aXbXc' LIKE '%X%X%'").unwrap(), Value::Bool(true));
         assert!(matches!(c("1 LIKE '1'"), Err(DbError::TypeMismatch(_))));
     }
@@ -546,7 +607,10 @@ mod tests {
         assert_eq!(c("UPPER('ab')").unwrap(), Value::Text("AB".into()));
         assert_eq!(c("CHAR_LENGTH('héllo')").unwrap(), Value::Int(5));
         assert_eq!(c("ABS(-3)").unwrap(), Value::Int(3));
-        assert_eq!(c("CASE 1 WHEN NULL THEN 1 ELSE 2 END").unwrap(), Value::Int(2));
+        assert_eq!(
+            c("CASE 1 WHEN NULL THEN 1 ELSE 2 END").unwrap(),
+            Value::Int(2)
+        );
         assert_eq!(c("6 & 3").unwrap(), Value::Int(2));
         assert_eq!(c("4 | 1").unwrap(), Value::Int(5));
         assert_eq!(c("6 ^ 3").unwrap(), Value::Int(5));
@@ -559,13 +623,19 @@ mod tests {
         s.push(Some("u".into()), "id".into(), SqlType::Integer);
         s.push(Some("u".into()), "Name".into(), SqlType::Text);
         let id = |s: &str| Ident::new(s);
-        assert!(matches!(s.resolve(None, &id("id")), Err(DbError::AmbiguousColumn(_))));
+        assert!(matches!(
+            s.resolve(None, &id("id")),
+            Err(DbError::AmbiguousColumn(_))
+        ));
         assert_eq!(s.resolve(Some(&id("u")), &id("id")).unwrap(), Some(1));
         assert_eq!(s.resolve(Some(&id("U")), &id("ID")).unwrap(), Some(1));
         assert_eq!(s.resolve(None, &id("name")).unwrap(), Some(2));
         assert_eq!(s.resolve(None, &Ident::quoted("name")).unwrap(), None);
         assert_eq!(s.resolve(None, &Ident::quoted("Name")).unwrap(), Some(2));
-        assert_eq!(s.resolve(Some(&Ident::quoted("U")), &id("id")).unwrap(), None);
+        assert_eq!(
+            s.resolve(Some(&Ident::quoted("U")), &id("id")).unwrap(),
+            None
+        );
         assert_eq!(s.resolve(None, &id("zzz")).unwrap(), None);
     }
 }

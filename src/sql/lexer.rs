@@ -102,7 +102,11 @@ pub fn tokenize(input: &str) -> DbResult<Vec<Token>> {
             let mut seg_start = i;
             loop {
                 if i >= bytes.len() {
-                    let what = if quote == b'\'' { "string literal" } else { "quoted identifier" };
+                    let what = if quote == b'\'' {
+                        "string literal"
+                    } else {
+                        "quoted identifier"
+                    };
                     return Err(syntax(start, &format!("unterminated {}", what)));
                 }
                 if bytes[i] == quote {
@@ -126,11 +130,15 @@ pub fn tokenize(input: &str) -> DbResult<Vec<Token>> {
                 }
                 TokenKind::QuotedIdent(text)
             };
-            tokens.push(Token { kind, offset: start });
+            tokens.push(Token {
+                kind,
+                offset: start,
+            });
             continue;
         }
         // Numbers: digits, optional fraction, optional exponent; or `.digits`.
-        if c.is_ascii_digit() || (c == b'.' && bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit())) {
+        if c.is_ascii_digit() || (c == b'.' && bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit()))
+        {
             let mut has_point = false;
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
@@ -170,7 +178,10 @@ pub fn tokenize(input: &str) -> DbResult<Vec<Token>> {
             } else {
                 TokenKind::Integer(text)
             };
-            tokens.push(Token { kind, offset: start });
+            tokens.push(Token {
+                kind,
+                offset: start,
+            });
             continue;
         }
         // Identifiers / keywords.
@@ -184,20 +195,29 @@ pub fn tokenize(input: &str) -> DbResult<Vec<Token>> {
                     break;
                 }
             }
-            tokens.push(Token { kind: TokenKind::Ident(input[i..end].to_string()), offset: start });
+            tokens.push(Token {
+                kind: TokenKind::Ident(input[i..end].to_string()),
+                offset: start,
+            });
             i = end;
             continue;
         }
         // Symbols (longest match first).
         let rest = &input[i..];
         if let Some(sym) = SYMBOLS.iter().find(|s| rest.starts_with(**s)) {
-            tokens.push(Token { kind: TokenKind::Symbol(sym), offset: start });
+            tokens.push(Token {
+                kind: TokenKind::Symbol(sym),
+                offset: start,
+            });
             i += sym.len();
             continue;
         }
         return Err(syntax(start, &format!("unexpected character '{}'", ch)));
     }
-    tokens.push(Token { kind: TokenKind::Eof, offset: input.len() });
+    tokens.push(Token {
+        kind: TokenKind::Eof,
+        offset: input.len(),
+    });
     Ok(tokens)
 }
 
@@ -239,7 +259,10 @@ mod tests {
 
     #[test]
     fn comments_are_skipped() {
-        assert_eq!(kinds("-- x\n/* y */ a"), vec![TokenKind::Ident("a".into()), TokenKind::Eof]);
+        assert_eq!(
+            kinds("-- x\n/* y */ a"),
+            vec![TokenKind::Ident("a".into()), TokenKind::Eof]
+        );
         assert!(tokenize("/* open").is_err());
         assert!(tokenize("'open").is_err());
     }
